@@ -1,6 +1,8 @@
-# Using sudocli 0.4
+# Using sudocli 0.5
 
-Complete [first setup](platforms.md), open a new terminal and run `sudocli` from your project. A UTF-8 terminal with Braille/truecolor support displays the supplied antenna. A wide, tall window such as 100 columns by 32 rows leaves room for the dashboard and conversation. Plain output remains available with `NO_COLOR=1` or `TERM=dumb`.
+Complete [first setup](platforms.md), then open a terminal as Administrator on Windows and run `sudocli` from your project. On Linux/macOS, use `sudo "$HOME/.local/bin/sudocli"`, or sudo with the full launcher path. Model sessions require verified administrator/root privileges; setup, help, version and doctor remain available normally. The CLI does not request elevation for you.
+
+A UTF-8 terminal with Braille/truecolor support displays the original supplied antenna. Its characters, spacing and 30 FPS / 1.5-second pulse / 0.20-second delay are preserved. The tower stays soft white; only the red waves animate, and they freeze when AI work stops. A wide, tall window such as 100 columns by 32 rows leaves room for the dashboard and conversation. Plain output remains available with `NO_COLOR=1` or `TERM=dumb`.
 
 ## Connect your first AI
 
@@ -35,6 +37,34 @@ Saved profiles retain name/model/endpoint/protocol and optional context limit, k
 
 Model/endpoint/runtime-option reconnects retain the complete visible chat. The sanitized user/assistant transcript is added to the new AI's next prompt. It is not a summary, and no chat is sent merely by selecting a profile. Hidden reasoning/tool internals and original attachment bytes do not transfer. Context capacity can differ or be unknown; a smaller provider can reject the full conversation. Requests above the CLI's 8 MiB limit fail explicitly rather than silently shortening the chat.
 
+## Personalize each AI
+
+```text
+/personalize setup
+/personalize status
+/personalize on
+/personalize off
+/preferences
+```
+
+Setup optionally saves a persona, language, tone, answer length, format and additional instructions for the connected endpoint/model/protocol. A profile nickname does not change that identity. `/preferences` is an alias for `/personalize`; `clear` removes that connection's personalization. Nothing is enabled until you choose it. These are developer instructions applied alongside task and permission rules; they do not change model weights or make unsupported capabilities available. The 24/7 guardian and working AI use their own separate preferences. See [personalization](personalization.md).
+
+## Resume or start a chat
+
+```text
+/chatt
+/chatt open CHAT_ID
+/chatt save
+/chatt rename New title
+/new
+```
+
+Visible prompts, received assistant text and queued text prompts automatically persist locally for this project. Reopen sudocli in the same project to resume its last chat. An interrupted assistant reply keeps the text already received; reopening provides that partial transcript as context rather than rerunning an old tool operation. Remaining queued prompts are restored. Unsaved keystrokes and original queued attachment bytes are not recovered.
+
+`/chatt` lists saved project chats; use the displayed ID to reopen one. `/chatt save` checkpoints the current chat and `rename TITLE` changes its title. `/new` or `/chatt new` asks whether to keep or discard the current saved chat, then creates a fresh conversation. `/chatt delete ID` explicitly removes the selected saved chat after confirmation. Separate projects have separate last-chat pointers.
+
+The current connection metadata is saved without an API key. Re-enter a key or use its configured environment variable after reopening. Known connection/service keys and terminal controls are removed from saved text; the transcript still contains other personal or confidential text you choose to enter. Storage is bounded and refuses corrupted or symbolic-link records. See [saved chat behavior](chats.md).
+
 ## Reasoning, context and history
 
 ```text
@@ -50,9 +80,9 @@ Model/endpoint/runtime-option reconnects retain the complete visible chat. The s
 
 Default sends no reasoning override. Native overrides are sticky across turns, so `/effort default` reconnects to clear a prior value and queues the visible chat for the next task. `/compact` calls native compaction and waits for completion; it changes model context while preserving the complete separate export history.
 
-`/history` shows the full visible chat in memory. `/handoff [DIRECTORY]` writes both Markdown and canonical JSON; the default directory is `.sudocli/handoffs` under the project. Known connection keys and terminal controls are removed; attachment metadata is included without original file bytes. Chat is not automatically saved on exit. Export any transcript you want to keep.
+`/history` shows the full visible chat. `/handoff [DIRECTORY]` writes a separate portable Markdown and canonical JSON export; the default directory is `.sudocli/handoffs` under the project. Known runtime keys and terminal controls are removed; attachment metadata is included without original file bytes. Autosave continues independently of handoff exports.
 
-`/clear` gives the engine fresh context and keeps export history. `/history clear` removes export history from memory and leaves the current engine context intact. Neither deletes an already exported handoff file.
+`/clear` gives the engine fresh context and keeps visible history. `/history clear` removes that visible history from the current stored chat while leaving the active engine context intact. Neither deletes an already exported handoff file. Use `/new` for a fresh saved chat and fresh engine context together.
 
 ## Attach files and skills
 
@@ -79,7 +109,7 @@ For workspace skills, put a valid `SKILL.md` beneath `.agents/skills/NAME/`. `/s
 /computer-use status
 ```
 
-The URL above is an example; your service must already be running. Ask requests workspace sandboxing plus one-time execution approvals. Windows can report a stricter read-only fallback. `/permissions allow-everything` deliberately grants commands your user's full local access without execution approval prompts; it does not grant administrator/root privileges.
+The URL above is an example; your service must already be running. Ask requests workspace sandboxing plus one-time execution approvals. Windows can report a stricter read-only fallback. `/permissions allow-everything` deliberately grants commands the elevated process's full local access without execution approval prompts. Administrator/root launch does not automatically select Allow Everything.
 
 Web On permits sandboxed command networking and configured HTTP MCP services. Hosted web search additionally requires a compatible Responses provider. The Chat adapter uses command/MCP alternatives rather than hosted search. Web Off excludes hosted search and supplied HTTP MCP servers and requests sandbox networking Off in Ask. It keeps the host model API connection available and is not a firewall for full-access or approved escalated commands. Explicit voice/training service commands use their separately configured APIs.
 
@@ -87,25 +117,62 @@ Web On permits sandboxed command networking and configured HTTP MCP services. Ho
 
 Name-based detection cannot identify every renamed tool. Computer Use Off controls supplied MCP tools; it does not prevent terminal commands from launching OS software under the selected permission policy. `/mcp remove NAME` removes an entire server. The CLI does not install a browser/desktop automation service.
 
-## Voice input and editor
+Changing permissions, Web Access, MCP configuration or computer policy stops foreground and detached background workers. Restart 24/7 mode explicitly to use the new policy. Ordinary model tasks reconnect under the new settings and retain chat history.
+
+## Continuous voice and explicit transcription
 
 ```text
 /voice setup
+/voice speech
 /microphone device "Exact Windows microphone name"
 /microphone on
-/voice record 10
-/voice file "recording.wav"
+/voice live
+/voice status
 /voice off
-/ide code
 ```
 
-Voice setup requests a compatible transcription API base URL, transcription model and optional hidden key. `/voice file` uploads a supported local audio file to `/audio/transcriptions`; `/upload` does not transcribe audio. Files are bounded to 25 MiB. Supported extensions are WAV, MP3, M4A, MP4, OGG, FLAC, WEBM and MPEG, subject to service support.
+`/voice setup` configures a compatible transcription endpoint/model/key. `/voice speech` separately configures the speech endpoint/model/voice/key. `/voice live` or `/live` starts continuous listening: detected utterances become ordinary prompts, and assistant replies play using an AI-generated voice. Listening continues during transcription, AI work and speech playback. New speech stops playback and interrupts an active AI turn. `/voice off`, `/microphone off`, or exiting stops audio capture/playback and pending audio requests.
+
+Live voice requires native FFmpeg and FFplay on PATH and OS microphone permission. Windows needs an exact DirectShow device name, Linux uses PulseAudio, and macOS uses an AVFoundation audio index. Silence remains local and makes no transcription call. Speech is segmented with pre-roll and silence detection, with a 20-second phrase bound and one queued transcription phrase. A slow service that fills the queue asks you to repeat the dropped phrase.
+
+Use headphones for reliable interruption. Energy detection has no acoustic echo cancellation, so speakers can feed the assistant's voice back into its microphone. Recognition quality and latency depend on the microphone, ASR, coding model, TTS and network. A chat-only model endpoint does not automatically supply audio APIs; this is continuous ASR/coding/TTS conversation rather than ChatGPT's exact proprietary backend. See [live voice details](live-voice.md).
+
+With a configured transcription service, explicit input is also available:
+
+```text
+/voice record 10
+/voice file "recording.wav"
+```
+
+`/voice file` uploads a selected audio file to `/audio/transcriptions`; `/upload` does not transcribe audio. Files are bounded to 25 MiB. Supported extensions are WAV, MP3, M4A, MP4, OGG, FLAC, WEBM and MPEG, subject to service support.
 
 Microphone arming alone does not record. `/voice record SECONDS` starts an explicit 1–60-second FFmpeg recording; FFmpeg must be installed on PATH and the OS must permit microphone access. Windows needs an exact DirectShow device name, Linux uses PulseAudio, and macOS uses an AVFoundation audio index. Recordings use an owned temporary WAV that is removed when the command finishes normally.
 
-The transcript is displayed first. It becomes an AI task only when you explicitly answer Yes to sending it. `/microphone off` disarms recording; `/voice off` also clears the transcription-service configuration. Service keys/settings are not saved. This provides speech-to-text prompts, not universal realtime voice chat with any connected model.
+Explicit `record`/`file` modes display the transcript first and ask Yes before sending it. Microphone arming alone does not record; continuous capture begins only with an explicit live-mode command. Service keys/settings remain in memory. Live capture writes no recordings to disk; recognized prompts and assistant replies use normal chat autosave. Spoken text is not treated as a permission approval or automatically executed slash command.
 
 `/ide code` or `/ide cursor` opens the project in installed VS Code or Cursor. The assistant remains in this terminal; this command does not install or attach an editor extension. Missing editors/FFmpeg/backends receive setup errors. See [service details](services.md).
+
+## Keep a guardian available 24/7
+
+```text
+/247 setup
+/247 start
+/247 add Check the failing build and fix its cause.
+/247 list
+/247 result JOB_ID
+/247 retry JOB_ID
+/247 stop
+```
+
+Setup selects a saved, already-running local AI on a loopback endpoint as the guardian and a working AI for heavier tasks. You can optionally supply a standing goal, checked by the local guardian every 60 seconds, and choose project folders to watch. Without a standing goal or queued task, it makes no model calls. Folder changes become explicit inbox jobs; task-generated changes are suppressed while work is active to avoid a feedback loop.
+
+`/247 start` runs in this terminal and stops when the terminal session exits. Use `/247 detach` to launch a separate elevated worker that continues after you close sudocli. `/247 status` reports either worker, and `/247 stop` stops it. Detached operation requires the computer and local model service to remain running; reboot autostart is not installed.
+
+The guardian assesses each job and either completes it locally, sends it to the working AI, or blocks it with a reason. It uses the same permission, web, MCP and computer policies as when started. A detached worker cannot ask you for an execution approval, so required approvals block the job. Changing those policies stops existing workers; restart explicitly with the updated settings. The two AIs retain their separate personalization instructions.
+
+Jobs, reasons and results persist in a separate project inbox. `/247 list` shows their states, `result` displays a saved result, and `retry` requeues a blocked or failed job. Results do not automatically enter your resumed chat; view and use them when relevant. Runtime model/service keys are passed to the worker in memory and are not saved with jobs. See [guardian behavior](always-on.md) and [detached worker details](agent-worker.md).
+
+Optional HTTPS or loopback wake/sleep hooks can start and stop cloud compute around work. This saves hourly GPU charges only if your provider's hook actually stops or deallocates the billed resource. An idle model request or sleeping worker alone does not release a rented GPU, and storage or other provider charges can continue.
 
 ## Export data or run a supported training job
 
@@ -128,8 +195,11 @@ Setup requires a backend implementing compatible Files and Fine-tuning APIs and 
 | Command wrapper and installed runtime | First setup |
 | Numeric worked-time totals | Automatic per-user checkpoints |
 | Named AI metadata | Explicit profile save; no key values |
-| Complete visible chat | RAM until explicit `/handoff` export |
+| Per-AI personalization | Explicit setup/save, independently enabled per connection |
+| Visible chat, received partial replies and queued text prompts | Automatic project chat checkpoints; separate optional `/handoff` exports |
+| 24/7 tasks, status reasons and results | Durable project task inbox |
+| Detached worker control token | Private local record used only to authenticate status/stop |
 | Training JSONL | Explicit `/training export` |
-| Model/service keys, permissions/Web/effort and queued inputs/files | Running process only |
+| Model/service keys, active permission/Web/effort settings and original queued attachment bytes | Running process only; detached workers receive a snapshot in memory |
 
-`SUDO_CLI_STATE_DIR` can choose a different profile/work directory. `/status` reports timers/context/connection state; `/doctor` diagnoses optional configuration. Normal `/quit` saves numeric work totals, cleans the private engine and restores the terminal. Windows x64 and Linux x64 are tested; native macOS/ARM, physical audio capture, production third-party models, desktop automation and real training services remain conditional/unverified. See [verification](verification.md).
+`SUDO_CLI_STATE_DIR` can choose a different persistent state directory for profiles, personalization, chats, work totals and the task inbox. `/status` reports timers/context/connection state; `/doctor` diagnoses optional configuration. Normal `/quit` checkpoints the chat and numeric work totals, stops live audio and foreground guardian work, cleans the private engine and restores the terminal. A detached worker intentionally continues until stopped. Native macOS/ARM, physical audio capture/playback, production third-party models, desktop automation and real training services remain conditional/unverified. See [verification](verification.md) for the tested platforms and boundaries.

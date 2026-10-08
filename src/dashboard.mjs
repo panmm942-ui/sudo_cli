@@ -11,6 +11,9 @@ const LOGO = [
   '|____/ \\___/|____/ \\___/    \\____|_____|___|',
 ];
 export const ART = LOGO.join('\r\n');
+const LOGO_COLOR = '38;2;239;41;41';
+const CREDITS = 'Credits: instagram.com/mimilidhcc/ | github.com/panmm942-ui';
+const SHORT_CREDITS = 'Credits: @mimilidhcc | GitHub: panmm942-ui';
 
 export function workedTime(milliseconds = 0) {
   const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
@@ -64,7 +67,7 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
   columns = Math.max(1, Math.floor(columns || 80) - 1); rows = Math.max(1, Math.floor(rows || 24));
   const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m${BACKGROUND_STYLE}` : text;
   const logoWidth = Math.max(...LOGO.map(line => line.length));
-  const big = columns >= logoWidth + 36 && rows >= LOGO.length + ANTENNA_ROWS.length + 7;
+  const big = columns >= logoWidth + 36 && rows >= LOGO.length + ANTENNA_ROWS.length + 9;
   const artWidth = Math.max(...ANTENNA_ROWS.map(line => line.length));
   const leftWidth = big ? logoWidth : artWidth;
   const beside = columns >= leftWidth + 36;
@@ -88,21 +91,25 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
     field('Web Access', state.webAccess ? 'On' : 'Off', state.webAccess ? 32 : 90),
     field('Effort', state.effort || 'Provider default'),
     field('Worked', `${workedTime(state.worked?.sessionMs)} | In Total: ${workedTime(state.worked?.totalMs)}`),
+    ...(state.chatTitle?[field('Chat',state.chatTitle)]:[]),
+    ...(state.voice?[field('Voice',state.voice.status|| (state.voice.running?'Listening':'Off'),state.voice.running?32:90)]:[]),
+    ...(state.agent?[field('24/7 Agent',state.agent.state||state.agent.phase||state.agent.status||'Idle')]:[]),
     field('Activity', activity),
     field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
   ];
   let lines;
   if (beside) {
     const antenna = renderAntenna({ elapsed: antennaElapsed, idle: antennaIdle, color });
-    const left = big ? [...LOGO.map(line => paint(36, line)), '', ...antenna] : [paint(36, 'SUDO CLI'), ...antenna];
+    const left = big ? [...LOGO.map(line => paint(LOGO_COLOR, line)), '', ...antenna] : [paint(LOGO_COLOR, 'SUDO CLI'), ...antenna];
     lines = Array.from({ length: Math.max(left.length, fields.length) }, (_, index) => {
       const value = left[index] || '';
       return value + ' '.repeat(Math.max(0, leftWidth-width(value))) + '   ' + (fields[index] || '');
     });
-  } else lines = [paint(36, 'SUDO CLI'), ...fields];
-  lines.push(paint(90, fit(`v${VERSION} | / for commands | Connection: estimate | Context: reported`, columns)), paint(90, '-'.repeat(columns)));
+    lines.push('');
+  } else lines = [paint(LOGO_COLOR, 'SUDO CLI'), ...fields];
+  lines.push(paint(90, fit(`v${VERSION} | / for commands | Connection: estimate | Context: reported`, columns)), paint(90, fit(columns >= CREDITS.length ? CREDITS : SHORT_CREDITS, columns)), paint(90, '-'.repeat(columns)));
   if (color) lines[0] = BACKGROUND_STYLE + lines[0];
-  if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [paint(36, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
+  if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [paint(LOGO_COLOR, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
   return { lines, height: lines.length, sticky: true };
 }
 

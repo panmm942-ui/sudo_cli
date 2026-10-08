@@ -10,6 +10,15 @@ const options = (scenario = 'normal', extra = {}) => ({
   env: { ...process.env, ENGINE_SCENARIO: scenario, CODEX_HOME: 'fixture-home', SUDO_CLI_SESSION_KEY: 'fixture-only' },
   requestTimeoutMs: 2000, ...extra,
 });
+test('per-AI personalization is passed as native developer instructions',async t=>{
+  const engine=await createEngine(options('normal',{developerInstructions:'Reply concisely in English.'}));t.after(()=>engine.close());
+  const audit=JSON.parse((await engine.startTurn('test personalization')).items[0].text);
+  assert.equal(audit.thread.developerInstructions,'Reply concisely in English.');
+});
+test('aborting native startup closes a hung child promptly',async()=>{
+  const controller=new AbortController();const pending=createEngine(options('hang-startup',{signal:controller.signal,requestTimeoutMs:10000}));
+  setTimeout(()=>controller.abort(),50);await assert.rejects(within(pending,2000),{name:'AbortError'});
+});
 async function within(promise, ms = 1000) {
   let timeout;
   try {

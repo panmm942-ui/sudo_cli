@@ -20,4 +20,8 @@ jobs:
       - name: Verify engine startup
         run: node bin/sudocli.mjs doctor
       - name: Test real engine and local model fixtures
+        if: runner.os == 'Windows'
         run: node --test
+      - name: Test Unix root admission and real CLI sessions
+        if: runner.os != 'Windows'
+        run: sudo -E "$(command -v node)" --test

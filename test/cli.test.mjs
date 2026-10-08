@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {isElevated} from '../src/privileges.mjs';
 
 const cli = fileURLToPath(new URL('../bin/sudocli.mjs', import.meta.url));
 const run = (args, env = {}) => spawnSync(process.execPath, [cli, ...args], {
@@ -19,7 +20,7 @@ test('branded help works without connecting a model or modifying app settings', 
 test('version works with no runtime installed', () => {
   const result = run(['--version'], { SUDO_CLI_CODEX: 'missing-runtime' });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /0\.4\.0/);
+  assert.match(result.stdout, /0\.5\.0/);
 });
 
 test('missing settings in noninteractive mode are actionable and do not initiate a model request', () => {
@@ -71,4 +72,9 @@ test('permissions and web flags reject invalid values with actionable errors', (
 test('reasoning flag validates before connecting or saving state', () => {
   const result=run(['--effort','invented-level']);
   assert.equal(result.status,1);assert.match(result.stderr,/effort|reasoning/i);
+});
+test('non-elevated model sessions are rejected before model or state access',async t=>{
+  if(await isElevated()){t.skip('Current host is already elevated; token-denial cases are covered by privilege unit tests.');return;}
+  const result=run(['--once','hello','--model','fixture','--base-url','http://127.0.0.1:1/v1'],{SUDO_CLI_CODEX:'missing-runtime',SUDO_CLI_API_KEY:'privilege-fixture-secret'});
+  assert.equal(result.status,1);assert.match(result.stderr,/requires administrator\/root/);assert.doesNotMatch(result.stdout+result.stderr,/privilege-fixture-secret|Unable to start/);
 });

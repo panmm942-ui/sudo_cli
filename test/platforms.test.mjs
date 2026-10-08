@@ -231,14 +231,10 @@ test('Unix launcher preserves spaced paths and literal arguments', { skip: proce
   const root = await fixture(t);
   const directory = join(root, 'launcher with spaces');
   await mkdir(join(directory, 'bin'), { recursive: true });
-  await copyFile(fileURLToPath(new URL('../sudo-cli', import.meta.url)), join(directory, 'sudo-cli'));
-  await copyFile(fileURLToPath(new URL('../sudo', import.meta.url)), join(directory, 'sudo'));
-  await writeFile(join(directory, 'bin', 'sudo-cli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))');
+  await copyFile(fileURLToPath(new URL('../sudocli', import.meta.url)), join(directory, 'sudocli'));
+  await writeFile(join(directory, 'bin', 'sudocli.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))');
   const args = ['argument with spaces', '$(printf should-not-run)', 'single\'quote', 'semi;colon'];
-  const direct = spawnSync('/bin/sh', [join(directory, 'sudo-cli'), ...args], { encoding: 'utf8', shell: false });
+  const direct = spawnSync('/bin/sh', [join(directory, 'sudocli'), ...args], { encoding: 'utf8', shell: false });
   assert.equal(direct.status, 0);
   assert.deepEqual(JSON.parse(direct.stdout), args);
-  const alias = spawnSync('/bin/sh', [join(directory, 'sudo'), 'cli', ...args], { encoding: 'utf8', shell: false });
-  assert.equal(alias.status, 0);
-  assert.deepEqual(JSON.parse(alias.stdout), args);
 });

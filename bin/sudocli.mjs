@@ -7,7 +7,7 @@ const HELP = `codexcli ${VERSION} | sudocli (sudo cli)
 Your terminal. Your model. Powered by the open-source Codex engine.
 
 First setup: node scripts/setup.mjs (or setup.cmd / sh ./setup)
-Start: sudocli
+Start: sudocli in an Administrator terminal (Windows), or sudo with the launcher path (Linux/macOS).
 Choose a model, endpoint and key interactively. /switch saves optional model profiles.
 
 Options:
@@ -27,8 +27,10 @@ Options:
 
 Environment: SUDO_CLI_MODEL, SUDO_CLI_BASE_URL, SUDO_CLI_TRANSPORT,
 SUDO_CLI_API_KEY, SUDO_CLI_CODEX (optional engine executable).
-Keys stay in memory. Saved profiles exclude keys. Worked-time totals persist.
-sudocli does not elevate privileges.
+Keys stay in memory. Saved profiles exclude keys. Chats resume automatically per project.
+/personalize sets per-AI preferences; /voice live starts configured continuous voice.
+/247 starts the local-first agent; /247 detach survives terminal close.
+Model sessions require administrator/root. Help/version/doctor/setup do not elevate.
 `;
 
 function parse(args) {

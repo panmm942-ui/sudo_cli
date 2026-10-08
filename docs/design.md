@@ -1,4 +1,4 @@
-# codexcli 0.4 design
+# codexcli 0.5 design
 
 Project `codexcli`, command `sudocli`, SUDO CLI terminal identity. The custom Node.js frontend uses the unchanged official Codex 0.160.1 app-server over private stdio JSON-RPC. Each connection receives an isolated temporary `CODEX_HOME` and ephemeral thread. It does not reuse desktop authentication or settings. Node builtins supply the implementation; no npm packages are needed.
 
@@ -12,13 +12,15 @@ The command registry drives slash help and Tab completion. Quoted arguments grou
 
 ## State and persistence
 
-Live model keys, session permissions/Web/effort, queued file contents, optional-service settings and visible conversation stay in memory. Explicit saved profiles retain only name, model, base URL, transport, optional context window, key environment-variable name, and user-declared supported effort levels. Key values are excluded. Profile records use hashed names, per-profile locks and atomic replacement. Corrupt records and symbolic links are not overwritten.
+Live model keys, session permissions/Web/effort, queued file contents and optional-service settings stay in memory. Sanitized visible chats, pending prompt text, task-inbox jobs/results and optional per-AI preferences intentionally persist. Explicit saved profiles retain only name, model, base URL, transport, optional context window, key environment-variable name, and user-declared supported effort levels. Key values are excluded. Private atomic records, project identity and bounded storage checks protect saved data; corrupt records and symbolic links are not overwritten.
 
 The chat history stores complete visible user/assistant messages, with final text replacing streamed deltas. It preserves code, Unicode and whitespace after credential/terminal-control filtering. Previously used session keys remain known for export redaction. Tool internals and hidden reasoning are excluded. Attachment metadata is retained; file/image bytes are not embedded in chat exports.
 
 Reconnects for model, endpoint and runtime-policy changes create a fresh engine. The complete sanitized visible transcript is queued as a text context item on the next task. No summary or truncation is substituted. Original attachment files must be queued again when needed. The target model's context limit and the 8 MiB request ceiling still apply; a handoff does not guarantee the new model can accept or reason over the whole conversation.
 
-`/handoff` explicitly writes canonical JSON and readable Markdown. `/training export` explicitly writes JSONL. There is no automatic conversation save. `/clear` clears model context while preserving export history; `/history clear` clears export history while preserving current engine context. Existing exported files remain on disk.
+The project-specific last chat resumes automatically. Streamed checkpoints run at most once a second while work is active; turn/queue/exit boundaries also save. Partial replies remain distinguishable from completed replies. `/chatt` opens, renames or deletes saved chats; `/new` asks whether to retain the previous record. `/handoff` explicitly writes canonical JSON and readable Markdown; `/training export` explicitly writes JSONL. `/clear` clears model context while retaining history; `/history clear` clears and checkpoints visible history while preserving current engine context. Existing exports remain on disk.
+
+Per-AI personalization is keyed by canonical endpoint, exact model and transport, then supplied through native `thread/start.developerInstructions`. Changing preferences reconnects with visible history. Disabling personalization retains its optional settings without applying them.
 
 Worked uses monotonic active agent/tool time and pauses during idle input and approval waits. Session duration resets each launch. Unique atomic numeric records retain lifetime totals without overwriting concurrent sessions. Five-second checkpoints bound normal crash loss to the last successful write. These records contain no model, endpoint, key or chat.
 
@@ -42,13 +44,17 @@ Both model transports use a private authenticated loopback adapter. Responses pr
 
 ## Policies and conditional services
 
-Ask requests workspace-write/on-request, including a stricter read-only Windows fallback when returned by the engine. Allow Everything is explicit never/danger-full-access under the user's privileges. The actual returned policy is validated and exposed.
+Model-session admission requires effective UID zero on Linux/macOS or an elevated Administrator token on Windows. Detection fails closed and never requests elevation itself. Help, version, doctor and setup remain available without elevation. Ask requests workspace-write/on-request, including a stricter read-only Windows fallback when returned by the engine. Allow Everything is explicit never/danger-full-access under the admitted process's privileges. The actual returned policy is validated and exposed.
 
 Web Off disables hosted search and supplied HTTP MCP servers and requests sandboxed-command networking Off in Ask. The host model API stays reachable. Allow Everything and approved escalation can still use OS networking; Web Off is not a system firewall. Web On permits sandboxed networking/MCP; hosted search additionally requires native Responses/provider support. The CLI does not provision a search service.
 
 Computer/browser automation is supplied by configured HTTP MCP services. Computer Use Off reconnects with raw-name `disabled_tools` for detected automation tools in classified mixed servers. Setup-designated computer servers and unclassified/new servers are omitted; failed discovery omits all supplied MCP servers. Adding/replacing a server invalidates its classification. Detection depends on advertised names and is not a universal desktop-security boundary. Shell commands remain governed by the selected execution policy.
 
-Voice uses separately configured compatible `/audio/transcriptions` requests. FFmpeg recording is explicit, bounded to 1–60 seconds, requires microphone arming/device access, and has an owned temporary WAV. The user reviews the transcript and explicitly chooses whether to send it. Native realtime protocol/private voice-host code exists upstream, but this release does not expose a universal realtime speech backend.
+Explicit transcription clips remain available. `/voice live` additionally keeps FFmpeg microphone capture open, segments local PCM with adaptive energy detection, sends WAV phrases to compatible transcription, and plays compatible MP3 speech through hidden FFplay. Barge-in aborts playback and interrupts native model work. Voice transcripts enter a literal task queue; they never execute slash commands or answer permission questions. Audio queues and requests are bounded and cancellation reaps owned child processes. This uses ASR/TTS backends rather than claiming ChatGPT's proprietary realtime audio service or acoustic echo cancellation. Physical audio/server access still depends on the host.
+
+The 24/7 coordinator owns an exclusive durable project inbox. Native local-model sessions assess explicit tasks, chosen folder events or an optional standing goal. Local results complete locally; wait/invalid decisions block without cloud work; cloud decisions launch isolated native working-model tasks. Standing-goal duplicates are suppressed across restart. Idle polling makes no model calls unless a local standing-goal heartbeat was explicitly configured. Provider wake/sleep HTTP hooks control GPU power only when configured; their actual billing effect belongs to the provider.
+
+A hidden detached Node worker can survive terminal exit. Runtime credentials travel once over private IPC. A bounded private control record contains an authentication token and loopback server identity, never model keys. Authenticated status/stop requests do not kill arbitrary PIDs. Detached Ask declines needed approvals and leaves tasks blocked. Foreground policy or personalization changes stop background workers before new permissions apply. Worker startup settings are snapshots; credentials need to be supplied again after worker shutdown/reboot. No automatic boot service is installed.
 
 Training export prepares complete text exchanges for review. Optional job controls call compatible `/files` and `/fine_tuning/jobs` APIs, with explicit upload/start and cancellation decisions. They do not train arbitrary connected models or allocate GPU/cloud resources. `/ide` opens the project in installed VS Code/Cursor; the assistant remains in the terminal and does not attach an editor extension.
 

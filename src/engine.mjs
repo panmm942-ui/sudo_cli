@@ -61,8 +61,10 @@ function pageOptions({ cursor, limit } = {}) {
 export async function createEngine({
   codexPath = 'codex', cwd = process.cwd(), model, providerArgs = [],
   env = process.env, onEvent = () => {}, onApproval = async () => false,
-  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false, supportedEfforts,
+  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false, supportedEfforts, developerInstructions, signal,
 } = {}) {
+  signal?.throwIfAborted();
+  if(developerInstructions !== undefined && (typeof developerInstructions!=='string' || Buffer.byteLength(developerInstructions)>65536 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(developerInstructions)))throw new Error('Developer instructions must be text within 64 KiB.');
   const choices = validateRuntimeOptions({ permissions, webAccess });
   const modelEfforts = validateSupportedEfforts(supportedEfforts);
   const approvalPolicy = choices.permissions === 'ask' ? 'on-request' : 'never';
@@ -212,6 +214,7 @@ export async function createEngine({
 
   function close() {
     if (closing) return closing;
+    signal?.removeEventListener('abort',aborted);
     closed = true;
     fail(new Error('Codex engine is closed.'));
     closing = (async () => {
@@ -229,6 +232,10 @@ export async function createEngine({
     return closing;
   }
 
+  const aborted=()=>{fail(new DOMException('The model task was aborted.','AbortError'));void close();};
+  signal?.addEventListener('abort',aborted,{once:true});
+  if(signal?.aborted)aborted();
+
   try {
     await request('initialize', {
       clientInfo: { name: 'sudo_cli', title: 'sudo', version: VERSION },
@@ -239,7 +246,7 @@ export async function createEngine({
     // The host process must still reach the selected model API. This disables
     // hosted web capabilities and restricts sandboxed commands, not API traffic.
     if (!choices.webAccess) config.web_search = 'disabled';
-    const result = await request('thread/start', { cwd, model, ephemeral: true, approvalPolicy, approvalsReviewer: 'user', sandbox, config });
+    const result = await request('thread/start', { cwd, model, ephemeral: true, approvalPolicy, approvalsReviewer: 'user', sandbox, config, ...(developerInstructions ? {developerInstructions} : {}) });
     if (typeof result?.thread?.id !== 'string' || !result.thread.id) throw new Error('Codex app-server returned an invalid thread response.');
     if (result.thread.ephemeral !== true) throw new Error('Codex app-server must support ephemeral threads. Update Codex and retry.');
     const actual = result.sandbox;

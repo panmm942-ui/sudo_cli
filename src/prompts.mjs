@@ -5,13 +5,13 @@ export function createPromptQueue({ question }) {
   const aborted = () => new DOMException('The prompt was aborted.', 'AbortError');
   const cancel = () => { for (const controller of waiting) controller.abort(); };
   return {
-    ask(prompt, hidden = false) {
+    ask(prompt, hidden = false, metadata = {}) {
       if (closed) return Promise.reject(new Error('Prompt interface is closed.'));
       const controller = new AbortController();
       waiting.add(controller);
       const result = tail.then(() => {
         if (controller.signal.aborted) throw aborted();
-        return question(prompt, { signal: controller.signal, hidden });
+        return question(prompt, { signal: controller.signal, hidden, ...metadata });
       }).finally(() => waiting.delete(controller));
       tail = result.catch(() => {});
       return result;

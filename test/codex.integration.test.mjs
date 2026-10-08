@@ -91,6 +91,7 @@ test('native engine discovers workspace skills, loads typed skill input, propaga
 });
 
 test('actual Codex app-server runs a sudo cli task through the compatibility bridge', { timeout: 45000 }, async (t) => {
+  const {isElevated}=await import('../src/privileges.mjs');if(!await isElevated()){t.skip('A verified Administrator/root token is required for CLI model sessions.');return;}
   let enginePath;
   try { enginePath = localCodex(); } catch { t.skip('Install Codex engine to run its real integration'); return; }
   const workspace = await mkdtemp(join(tmpdir(), 'sudo-cli-e2e-'));
@@ -173,6 +174,7 @@ test('actual Codex engine executes a model tool call inside the selected workspa
 });
 
 test('native Responses monitoring passes through real engine output and retains numeric work totals across launches', { timeout: 45000 }, async (t) => {
+  const {isElevated}=await import('../src/privileges.mjs');if(!await isElevated()){t.skip('A verified Administrator/root token is required for CLI model sessions.');return;}
   let enginePath;
   try { enginePath = localCodex(); } catch { t.skip('Install Codex engine to run its real integration'); return; }
   const workspace = await mkdtemp(join(tmpdir(), 'sudo-cli-responses-e2e-'));
@@ -224,6 +226,12 @@ test('native Responses monitoring passes through real engine output and retains 
   assert.ok(first[0].value.activeMs > 0, 'The first launch must checkpoint real active work');
   await run();
   assert.equal(requests.length, 2);
+  const replay=JSON.stringify(requests[1].body);
+  assert.match(replay,/complete visible conversation/);
+  assert.match(replay,/Native stream \[redacted\] verified/);
+  const {createChatStore}=await import('../src/chat-store.mjs');const chats=await createChatStore({stateDir,cwd:workspace});const saved=await chats.last();
+  assert.equal(saved.history.messages.length,4,'Both launches must append to the same automatically saved chat.');
+  assert.doesNotMatch(JSON.stringify(saved),/fixture-stream-key-do-not-print/);
   assert.equal(stateAtSecondRequest.length, 2);
   assert.equal(stateAtSecondRequest.find(record => record.name !== first[0].name).value.activeMs, 0, 'The new session must start from zero while the first duration remains stored');
   const final = await records();

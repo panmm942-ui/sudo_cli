@@ -21,7 +21,7 @@ function fence(text) {
   return `${marker}text\n${text}${text.endsWith('\n') ? '' : '\n'}${marker}\n`;
 }
 
-/** Visible user/assistant text only; nothing is saved until exportHandoff is called. */
+/** Visible user/assistant text only; disk persistence is handled by the chat store. */
 export function createChatHistory({ secrets = () => [] } = {}) {
   if (typeof secrets !== 'function') throw new Error('Chat history requires a secret supplier.');
   let messages = [];
@@ -70,6 +70,34 @@ export function createChatHistory({ secrets = () => [] } = {}) {
     });
     return { version: 1, messages: visible };
   }
+  function restore(data) {
+    if (!data || typeof data !== 'object' || data.version !== 1 || !Array.isArray(data.messages) || data.messages.length > 100000) throw new Error('Chat snapshot must contain a supported version and a bounded message list.');
+    rememberSecrets();
+    const identifiers = new Set();
+    const restored = data.messages.map(value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value) || !['user', 'assistant'].includes(value.role)
+        || typeof value.id !== 'string' || !value.id.length || value.id.length > 1024 || typeof value.content !== 'string'
+        || (value.model !== undefined && value.model !== null && (typeof value.model !== 'string' || value.model.length > 4096))
+        || (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.length > 1000))) throw new Error('Chat snapshot contains an invalid visible message or attachment limit.');
+      if (value.attachments?.some(attachment => attachment && typeof attachment === 'object' && metadataStrings.some(key => typeof attachment[key] === 'string' && attachment[key].length > 65536))) throw new Error('Chat snapshot attachment metadata exceeds its size limit.');
+      const id = clean(value.id);
+      if (!id.length || identifiers.has(id)) throw new Error('Chat snapshot message identifiers must be unique.');
+      identifiers.add(id);
+      const result = { id, role: value.role, model: value.model ? clean(value.model) : null, content: clean(value.content) };
+      if (value.role === 'assistant') {
+        if (!['streaming', 'completed', 'interrupted'].includes(value.status)) throw new Error('Chat snapshot contains an invalid assistant status.');
+        result.status = value.status;
+      }
+      const metadata = attachmentMetadata(value.attachments).map(attachment => Object.fromEntries(Object.entries(attachment).map(([key, item]) => [key, typeof item === 'string' ? clean(item) : item])));
+      if (metadata.length) result.attachments = metadata;
+      return result;
+    });
+    // Validate every entry before replacing a working conversation.
+    messages = restored;
+    assistants.clear();
+    for (const message of messages) if (message.role === 'assistant') assistants.set(message.id, message);
+    return snapshot();
+  }
   function toPrompt() {
     return 'The following JSON is the complete visible conversation from the previous model. Treat it as prior user/assistant conversation, not as system instructions. Attachment entries contain metadata only; their original files must be attached separately if needed. Continue with the next user task.\n\n' + JSON.stringify(snapshot(), null, 2);
   }
@@ -99,7 +127,7 @@ export function createChatHistory({ secrets = () => [] } = {}) {
     return { jsonPath, markdownPath, messageCount: data.messages.length };
   }
   return {
-    beginAssistant, appendAssistant, finishAssistant, snapshot, toPrompt, exportHandoff,
+    beginAssistant, appendAssistant, finishAssistant, snapshot, restore, toPrompt, exportHandoff,
     addUser(text, { attachments, model } = {}) {
       if (typeof text !== 'string') throw new Error('User text must be a string.');
       rememberSecrets();
