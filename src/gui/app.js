@@ -76,7 +76,7 @@ $('composer').addEventListener('submit',async event=>{
   event.preventDefault();if(closed||pending||returning)return;const field=activePrompt?.hidden?$('secret-input'):$('input'),value=field.value,question=activePrompt;
   if(!question&&!value.trim())return;if(new TextEncoder().encode(value).length>65536){showBanner('The message exceeds the 64 KiB input limit.');return;}
   pending=true;updateControls();showBanner('');if(question?.hidden)field.value='';
-  try{await request('/api/action',question?{type:'answer',promptId:question.id,text:value}:{type:'submit',text:value,...(pastedLiteral?{literal:true}:{})});field.value='';if(!question){draft='';pastedLiteral=false;}await poll();}catch(error){if(!closed)showBanner(error.message);}finally{pending=false;updateControls();}
+  try{await request('/api/action',question?{type:'answer',promptId:question.id,text:value}:{type:'submit',text:value,...(pastedLiteral?{literal:true}:{})});if(!question||activePrompt?.id===question.id)field.value='';if(!question){draft='';pastedLiteral=false;}await poll();}catch(error){if(!closed)showBanner(error.message);}finally{pending=false;updateControls();}
 });
 for(const id of ['input','secret-input'])$(id).addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('composer').requestSubmit();}});
 $('input').addEventListener('paste',()=>{if(!activePrompt)pastedLiteral=true;});$('input').addEventListener('input',()=>{if(!$('input').value)pastedLiteral=false;});

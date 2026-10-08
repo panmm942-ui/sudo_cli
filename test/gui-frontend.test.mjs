@@ -41,6 +41,18 @@ test('frontend clears a hidden answer before settling and prevents duplicate cur
   release();await submitted;assert.equal(ui.get('question').hidden,true);assert.equal(ui.get('secret-input').value,'');
 });
 
+test('a settled visible answer preserves the draft restored by an intervening poll and its literal provenance',async()=>{
+  const state={chat:{promptCount:5,messages:[]}},actions=[];let release;
+  const ui=await view(state,action=>{actions.push(action);return action.type==='answer'?new Promise(resolve=>{release=resolve;}):{accepted:true};});
+  const draft='/stop\nUnsent next task';ui.get('input').value=draft;await ui.get('input').dispatch('paste');
+  state.currentPrompt={id:'permission-1',prompt:'Allow once?',hidden:false,input:false};await ui.refresh();
+  ui.get('input').value='yes';const submitted=ui.get('composer').dispatch('submit');await settle();
+  assert.equal(ui.get('send').disabled,true);assert.deepEqual(actions,[{type:'answer',promptId:'permission-1',text:'yes'}]);
+  state.currentPrompt=null;await ui.refresh();assert.equal(ui.get('input').value,draft);
+  release({accepted:true});await submitted;assert.equal(ui.get('input').value,draft);assert.equal(ui.get('send').disabled,false);
+  await ui.get('composer').dispatch('submit');assert.deepEqual(actions.at(-1),{type:'submit',text:draft,literal:true});
+});
+
 test('frontend keeps pasted slash input literal while command selection requires deliberate send',async()=>{
   const actions=[],ui=await view({commands:[{name:'/status',usage:'',description:'Session status'}]},action=>actions.push(action));ui.get('input').value='/delete\nhttps://demo.invalid/v1';await ui.get('input').dispatch('paste');await ui.get('composer').dispatch('submit');assert.deepEqual(actions,[{type:'submit',text:'/delete\nhttps://demo.invalid/v1',literal:true}]);
   await ui.get('commands').dispatch('click');assert.equal(ui.get('command-dialog').open,true);await ui.get('command-list').children[0].dispatch('click');assert.equal(ui.get('input').value,'/status');assert.equal(actions.length,1);await ui.get('composer').dispatch('submit');assert.deepEqual(actions.at(-1),{type:'submit',text:'/status'});
