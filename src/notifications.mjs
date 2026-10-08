@@ -80,7 +80,7 @@ export function createNotifications(options={}){
   const cooldownMs=boundedInteger(options.cooldownMs,800,0,10000,'cooldown');
   const maxQueue=boundedInteger(options.maxQueue,4,1,8,'queue');
   const maxIds=boundedInteger(options.maxIds,128,1,1024,'ids');
-  let enabled=true,closed=false,stopping=0,epoch=0,backend='unprobed',last=null,preferenceError=null;
+  let enabled=false,closed=false,stopping=0,epoch=0,backend='unprobed',last=null,preferenceError=null;
   let recordPromise,loadPromise,settingsTail=Promise.resolve(),assetsPromise,assetRoot,assetBase,runner,active;
   const paths=new Map(),preparing=new Set(),queue=[],ids=new Map(),lastEvents=new Map();
   const get=()=>({enabled,interactive,closed,backend,pending:queue.length+(active?1:0),rememberedIds:ids.size,last:last?{...last}:null,preferenceError});

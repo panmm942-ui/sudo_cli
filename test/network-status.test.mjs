@@ -7,6 +7,18 @@ import { createNetworkStatus, createNetworkSampler } from '../src/network-status
 
 const iface = (rx, tx, extra = {}) => ({ name: 'wlan0', wifi: true, connected: true, rxBytes: String(rx), txBytes: String(tx), ...extra });
 
+test('network stop waits for a later interval sample and rejects its late update',async t=>{
+  t.mock.timers.enable({apis:['setInterval']});let calls=0,release,settled=false;
+  const monitor=createNetworkStatus({intervalMs:10,sampler:()=>++calls===1?Promise.resolve({supported:true,interfaces:[iface(1,2)]}):new Promise(resolve=>{release=resolve;})});
+  await monitor.start();t.mock.timers.tick(10);assert.equal(calls,2);
+  const stopping=Promise.resolve(monitor.stop()).then(()=>{settled=true;});
+  try{
+    await new Promise(setImmediate);assert.equal(settled,false,'Stop must drain the currently running interval read.');
+    release({supported:true,interfaces:[iface(300,400,{wifi:false})]});await stopping;
+    assert.equal(monitor.snapshot().wifi,'Yes');t.mock.timers.tick(50);assert.equal(calls,2);
+  }finally{release({supported:false,interfaces:[]});await stopping;}
+});
+
 test('actual interface counter deltas produce download/upload rates after two samples', async () => {
   let now = 0, value = { supported: true, interfaces: [iface(1000, 2000)] };
   const monitor = createNetworkStatus({ clock: () => now, intervalMs: 0, sampler: async () => value });

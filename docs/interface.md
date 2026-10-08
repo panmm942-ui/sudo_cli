@@ -8,7 +8,11 @@ Chat and Events scroll independently. The composer stays separate from the chat 
 
 Tab changes the focused scroll panel. Page Up/Down and Home/End navigate that panel. Mouse wheel and scrollbar clicks work where the terminal supports mouse reporting. Narrow terminals use a compact panel layout. The command picker opens with `/`; arrows and Page Up/Down browse, Enter selects, and Escape returns to the composer.
 
-Paste into an active setup field inserts editable text, including a connection URL. Supported bracketed paste keeps slash-prefixed prompts literal. `/prompt` provides multiline entry on other terminals; finish it with `/end`. Hidden credential fields retain hidden input. `/stop` or Ctrl+C interrupts active work; queued prompts remain available.
+Paste into an active setup field inserts editable text, including a connection URL. Ctrl+V and Shift+Insert request a bounded clipboard paste; terminal paste menus also work. Press Enter only after the pasted value appears. Supported bracketed paste keeps slash-prefixed prompts literal. `/prompt` provides multiline entry on other terminals; finish it with `/end`.
+
+API keys start hidden. In the terminal, **Ctrl+R** toggles **Show/Hide** while a hidden setup field is active. In the GUI, use its **Show/Hide** button. Revealing is local and does not submit the key. Sending, closing or changing the question clears the revealed view; hidden answers are excluded from terminal input history. `/stop` or Ctrl+C interrupts active work; queued prompts remain available.
+
+Credits sit below the antenna and status fields. A red horizontal line separates the dashboard from Chat and Events. Notifications start Off; `/notify on` enables event sounds, and `/reset notify` restores Off.
 
 Operational notices, approvals, completion and errors appear in Events. Chat contains user prompts and AI replies. Performance remains a live panel; `/performance` is no longer a command. Your text defaults to green, and the dashboard retains its original red branding and antenna animation.
 

@@ -87,7 +87,7 @@ export async function runUI(opts) {
   const guiClosures=new Set(),pastedChunks=new Map();
   const events=createEventLog({secrets:()=>secrets});
   const promptLabels=createPromptLabels();
-  const renderComposer=()=>{composerScheduled=false;if(guiMode||slashMenu?.snapshot().active)return;dashboard?.setInput?.({prompt:currentPrompt?safe(currentPrompt.prompt):inputReady?promptLabels.next().label+' ':'Starting SUDO CLI… ',text:currentPrompt?.hidden?'':rl?.line||'',cursor:currentPrompt?.hidden?0:rl?.cursor||0,hidden:!!currentPrompt?.hidden});};
+  const renderComposer=()=>{composerScheduled=false;if(guiMode||slashMenu?.snapshot().active)return;const hidden=!!currentPrompt?.hidden&&!currentPrompt.revealed;dashboard?.setInput?.({prompt:currentPrompt?safe(currentPrompt.prompt)+(currentPrompt.hidden?`[Ctrl+R: ${currentPrompt.revealed?'Hide':'Show'}] `:''):inputReady?promptLabels.next().label+' ':'Starting SUDO CLI… ',text:hidden?'':rl?.line||'',cursor:hidden?0:rl?.cursor||0,hidden});};
   const scheduleComposer=()=>{if(!composerScheduled){composerScheduled=true;queueMicrotask(renderComposer);}};
   const terminalTheme=createTerminalTheme({directory:join(stateOptions.stateDir,'preferences'),color,onChange:()=>{dashboard?.redraw();if(slashMenu?.snapshot().active)slashMenu.refresh();else renderComposer();}});
   const write = (text,options) => dashboard ? dashboard.write(text,options) : process.stdout.write(terminalTheme.styleBodyText(text,options));
@@ -109,7 +109,7 @@ export async function runUI(opts) {
   let updateSettings={repository:DEFAULT_GITHUB_REPOSITORY,enabled:true},loopSettings={enabled:true,repeatLimit:4,timeoutMs:120000};
   const history = createChatHistory({secrets:()=>secrets});
   const liveKeys=new Map();
-  const network = createNetworkStatus();
+  const network = createNetworkStatus();let networkStartup;
   const performanceMonitor=createSystemPerformance();
   const notifications=createNotifications({directory:join(stateOptions.stateDir,'preferences'),interactive,output:process.stdout});
   const notifiedErrors=new WeakSet();
@@ -138,7 +138,8 @@ export async function runUI(opts) {
   Object.defineProperty(output, 'columns', { get: () => dashboard?.inputArea().columns||process.stdout.columns });
   let rl;
   const expandPastes=text=>{for(const [marker,value]of pastedChunks)text=text.split(marker).join(value);return text;};
-  const pasteInput=interactive?createPasteInput({input:process.stdin,readClipboard:async options=>{const target=currentPrompt,id=target?.id;const text=await readTerminalClipboard(options);return currentPrompt===target&&currentPrompt?.id===id?text:'';},onPaste:text=>{if(!text)return '';slashMenu?.closeMenu({reason:'paste',restore:false});if(dashboard?.isScrolled())dashboard.scrollToBottom();if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){busyPastedLiteral=true;if(currentPrompt)currentPrompt.literal=true;if(text.includes('\n')){const marker=`[Paste ${randomUUID().slice(0,8)}: ${text.split('\n').length} lines]`;pastedChunks.set(marker,text);return marker;}return text;}return text.replace(/\n/g,' ');},onError:error=>{note(error.message);if(isSessionCleanupError(error)){backgroundCleanupFailure??=error;primaryFailure??=error;terminate();}else notifyError(error);}}):undefined;
+  const onKeyControl=key=>{if(guiMode||!dashboard?.managed||!currentPrompt?.hidden||!key?.ctrl||key.name!=='r')return false;currentPrompt.revealed=!currentPrompt.revealed;renderComposer();return true;};
+  const pasteInput=interactive?createPasteInput({input:process.stdin,onKeyControl,readClipboard:async options=>{const target=currentPrompt,id=target?.id;const text=await readTerminalClipboard(options);return currentPrompt===target&&currentPrompt?.id===id?text:'';},onPaste:text=>{if(!text)return '';slashMenu?.closeMenu({reason:'paste',restore:false});if(dashboard?.isScrolled())dashboard.scrollToBottom();if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){busyPastedLiteral=true;if(currentPrompt)currentPrompt.literal=true;if(text.includes('\n')){const marker=`[Paste ${randomUUID().slice(0,8)}: ${text.split('\n').length} lines]`;pastedChunks.set(marker,text);return marker;}return text;}return text.replace(/\n/g,' ');},onError:error=>{note(error.message);if(isSessionCleanupError(error)){backgroundCleanupFailure??=error;primaryFailure??=error;terminate();}else notifyError(error);}}):undefined;
   const scrollAction=(name,metadata={})=>{if(guiMode)return;const panel=metadata.x?dashboard?.panelAt?.(metadata):dashboard?.eventsState?.().focused?'events':'chat';if(name==='focus-next')return dashboard?.focusPanel?.('next');if(name==='pointer'){if(metadata.release||!panel)return false;dashboard?.focusPanel?.(panel);return dashboard?.scrollPanel?.(panel,'pointer',metadata);}if(dashboard?.scrollPanel)return dashboard.scrollPanel(panel,name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:name==='line-down'?1:name,metadata);if(name==='page-up')return dashboard?.pageUp();if(name==='page-down')return dashboard?.pageDown();if(name==='top')return dashboard?.scrollToTop();if(name==='bottom')return dashboard?.scrollToBottom();return dashboard?.scroll(name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:1);};
   if(interactive)scrollInput=createChatScrollInput({input:pasteInput,getContext:()=>({enabled:!guiMode&&process.env.TERM!=='dumb'&&!slashMenu?.snapshot().active&&(!currentPrompt||currentPrompt.input&&!currentPrompt.hidden&&!currentPrompt.raw),paused:!!dashboard?.isScrolled()}),onScroll:scrollAction,onLive:()=>dashboard?.scrollToBottom(),onError:error=>note(error.message)});
   const terminalInput=interactive?slashMenu=createSlashMenuInput({input:scrollInput,getContext:()=>({enabled:!guiMode&&!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
@@ -152,11 +153,12 @@ export async function runUI(opts) {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');
     if(!input&&dashboard?.isScrolled())dashboard.scrollToBottom();
     if(input&&engine&&queuedInputs.length)throw new DOMException('A queued task is ready.','AbortError');
+    const savedReadlineHistory=hidden?[...rl.history]:undefined;
     const localController=new AbortController();let resolvePaste;const pasted=new Promise(resolve=>{resolvePaste=text=>{resolve(text);localController.abort();};});
     currentPrompt = { id:randomUUID(),prompt, hidden, input,raw,resolvePaste,literal:!!input&&busyPastedLiteral };
     if (hidden) { if(!dashboard?.managed&&!guiMode)process.stdout.write(terminalTheme.styleBodyText(prompt)); muted = true; }
     try { const answer=await Promise.race([rl.question(hidden ? '' : prompt, { signal:AbortSignal.any([signal,localController.signal]) }),pasted]);if(input){lastInputLiteral=currentPrompt.literal||busyPastedLiteral;const expanded=expandPastes(answer);pastedChunks.clear();busyPastedLiteral=false;return expanded.trim();}return raw?answer:answer.trim(); }
-    finally { slashMenu?.closeMenu({reason:'prompt',restore:false});if (hidden) { muted = false;if(!dashboard?.managed&&!guiMode)process.stdout.write('\n'); }if(input&&!rl.line){busyPastedLiteral=false;pastedChunks.clear();}currentPrompt = null;scheduleComposer(); }
+    finally { slashMenu?.closeMenu({reason:'prompt',restore:false});if (hidden) { rl.history.splice(0,rl.history.length,...savedReadlineHistory);muted = false;if(!dashboard?.managed&&!guiMode)process.stdout.write('\n'); }if(input&&!rl.line){busyPastedLiteral=false;pastedChunks.clear();}currentPrompt = null;if(hidden)dashboard?.setInput?.();scheduleComposer(); }
   } });
   const ask = (prompt, hidden = false, metadata) => prompts.ask(green(prompt), hidden, metadata);
 
@@ -189,7 +191,7 @@ export async function runUI(opts) {
       if(action.type==='submit'){if(currentPrompt&&!currentPrompt.input)throw new Error('Answer the current question first.');const text=action.text?.trim();if(!text)throw new Error('Enter a prompt or command.');if(busy)receiveDuringWork(text,{literal:!!action.literal});else enqueue(text,{literal:!!action.literal});return {ok:true};}
       throw new Error('Unsupported GUI action.');
     }});
-    gui=server;guiMode=true;const token=new URLSearchParams(new URL(server.url).hash.slice(1)).get('token');if(token)secrets.push(token);
+    gui=server;guiMode=true;if(currentPrompt)currentPrompt.revealed=false;const token=new URLSearchParams(new URL(server.url).hash.slice(1)).get('token');if(token)secrets.push(token);
     guiClosures.add(server);slashMenu?.closeMenu({reason:'gui',restore:false});dashboard?.suspend?.();
     try{const result=await openGui(server.url);note('GUI opened. Use Return to terminal to come back.');if(!result.opened)process.stdout.write(`\nOpen this local URL in your normal browser:\n${server.url}\n${safe(result.reason||'')}\n`);}
     catch(error){await closeGui();throw error;}
@@ -523,6 +525,7 @@ export async function runUI(opts) {
     await notifications.load().catch(()=>note('Notification preferences could not be loaded; sounds are disabled.'));
     await terminalTheme.load();
     dashboard?.start();
+    if(interactive){performanceMonitor.start();networkStartup=network.start().catch(()=>{});}
     await projectChanges.initialize().catch(error=>note(`File changes unavailable: ${error.message}`));
     if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h');
     const selected = initialConnection;
@@ -567,7 +570,7 @@ export async function runUI(opts) {
     resetCommands=createResetCommands({note,ask,actions:{
       bgcolor:resetAction('Restore the lower chat background.',()=>terminalTheme.reset('bgcolor'),{includeInAll:false}),
       textcolor:resetAction('Restore your text color.',()=>terminalTheme.reset('txtcolor'),{includeInAll:false}),
-      notify:resetAction('Enable distinct AI event sounds.',()=>notifications.set('on')),
+      notify:resetAction('Restore notifications to Off.',()=>notifications.set('off')),
       colors:resetAction('Restore both chat colors.',()=>terminalTheme.reset('colors')),
       permissions:resetAction('Ask before actions requiring approval.',()=>resetPolicy(()=>{settings.permissions='ask';})),
       scope:resetAction('Use the project scope; planning and review remain read-only.',()=>resetPolicy(()=>{const readOnly=['plan','review'].includes(workflow.snapshot().mode);settings.scope=readOnly?'read-only':'project';settings.workflowWriteScope=readOnly?'project':undefined;})),
@@ -595,7 +598,6 @@ export async function runUI(opts) {
       ai:resetAction('Disconnect this AI; preserve saved AIs, credentials and chat.',async()=>{await assistantFeatures.stopForPolicyChange();await cleanup();connection=undefined;settings.pendingContext=history.toPrompt();session.updateConnection(undefined);activity='Offline shell';dashboard?.refresh();},{includeInAll:false}),
     }});
     const handleReset=async command=>{resetRefresh=false;const normalized=command.name==='/reset'&&command.args?.[0]?.toLowerCase()==='txtcolor'?{...command,args:['textcolor',...command.args.slice(1)]}:command;try{return await resetCommands.handle(normalized);}finally{if(resetRefresh&&connection)await connect(connection,{carryHistory:true});}};
-    if(interactive){await network.start();performanceMonitor.start();}
     if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chat remains available.`);}}
     else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chat.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
     if(resumed){dashboard?.replaceBody(chatBody());settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';restorePending(resumed);if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chat opens saved chats.`);}
@@ -641,8 +643,8 @@ export async function runUI(opts) {
     agents?.close();
     try{await cleanup(primaryFailure);}catch(error){finalCleanupError=error;}
     await checkpoint();await chatSession?.flush().catch(()=>note('The final chat checkpoint could not be saved.'));
-    network.stop();
-    await performanceMonitor.stop();
+    const metricShutdown=await Promise.allSettled([network.stop(),performanceMonitor.stop(),networkStartup]);
+    for(const result of metricShutdown)if(result.status==='rejected')finalCleanupError??=result.reason;
     await workMeter?.close().catch(() => note('Worked-time totals could not be saved.'));
     session.setWorking(false); session.markOffline(); activity = 'Session closed'; dashboard?.refresh(); dashboard?.stop();
     await Promise.allSettled([...notificationDeliveries]);

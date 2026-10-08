@@ -1,4 +1,4 @@
-# Using sudocli 0.6.9
+# Using sudocli 0.6.10
 
 Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/textcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
@@ -30,7 +30,7 @@ Use `/new` or `/chat new` for a fresh conversation. The keep question defaults t
 
 `/local` connects Ollama, LM Studio or another compatible server already running on this computer without a cloud API key. `/connect` offers both cloud and local setup. For a model file that has not been loaded yet, use `/local file "PATH"`. It detects the contents, offers supported installed runners and preserves your original file. `/local info "PATH"` inspects without importing. Unsupported formats explain the runner/model files needed. See [local model files](local-model-files.md).
 
-For a server, select its exact model ID, base URL, API format and capacity if known. Supply a hidden key only if the server requires authentication. Chat Completions needs `/chat/completions`; Responses needs a compatible `/responses` endpoint.
+For a server, select its exact model ID, base URL, API format and capacity if known. Paste using Ctrl+V, Shift+Insert or the terminal paste menu, wait for the value to appear, then press Enter. Supply a hidden key only if the server requires authentication. **Ctrl+R** reveals or hides that field in the terminal; the GUI has a **Show/Hide** button. Hidden answers stay out of input history. Chat Completions needs `/chat/completions`; Responses needs a compatible `/responses` endpoint.
 
 Launch flags can supply the connection directly:
 
@@ -269,4 +269,4 @@ Those linked receipts describe their named earlier releases. Version 0.6.6 adds 
 
 The frontend is MIT; bundled OpenAI Codex 0.160.1 and its matching source/notices retain Apache-2.0, and Node.js 24.19.0 retains its license/dependency notices. [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui). See [THIRD_PARTY.md](../THIRD_PARTY.md).
 
-Use `/notify on` or `/notify off` to save your sound preference. `/notify status` reports the sound backend, and `/notify test approval`, `error`, `done` or `interrupted` previews each motif when enabled. `/reset notify` enables notifications again. The antenna stays still during local commands and waiting; it animates during AI tasks and pauses while that AI awaits approval.
+Notifications are Off by default. Use `/notify on` or `/notify off` to save your sound preference; a saved choice survives restarts. `/notify status` reports the sound backend, and `/notify test approval`, `error`, `done` or `interrupted` previews each motif when enabled. `/reset notify` restores Off. The antenna stays still during local commands and waiting; it animates during AI tasks and pauses while that AI awaits approval.

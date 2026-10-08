@@ -41,6 +41,20 @@ test('frontend clears a hidden answer before settling and prevents duplicate cur
   release();await submitted;assert.equal(ui.get('question').hidden,true);assert.equal(ui.get('secret-input').value,'');
 });
 
+test('a hidden setup answer can be revealed locally without sending it and is masked again for the next question',async()=>{
+  const state={currentPrompt:{id:'key-one',prompt:'API key',hidden:true,input:false}},ui=await view(state);
+  const field=ui.get('secret-input'),button=ui.get('reveal-secret');
+  assert.equal(field.type,'password');assert.equal(button.hidden,false);field.value='synthetic-key';
+  await button.dispatch('click');assert.equal(field.type,'text');assert.equal(button.textContent,'Hide');
+  assert.equal(ui.calls.filter(call=>call.path==='/api/action').length,0);
+  await ui.refresh();assert.equal(field.type,'text');assert.equal(field.value,'synthetic-key');
+  state.currentPrompt={id:'key-two',prompt:'Another key',hidden:true,input:false};await ui.refresh();
+  assert.equal(field.type,'password');assert.equal(field.value,'');assert.equal(button.textContent,'Show');
+  await button.dispatch('click');field.value='synthetic-key-two';await ui.get('composer').dispatch('submit');
+  assert.equal(field.type,'password');assert.equal(field.value,'');
+  state.currentPrompt=null;await ui.refresh();assert.equal(button.hidden,true);
+});
+
 test('a settled visible answer preserves the draft restored by an intervening poll and its literal provenance',async()=>{
   const state={chat:{promptCount:5,messages:[]}},actions=[];let release;
   const ui=await view(state,action=>{actions.push(action);return action.type==='answer'?new Promise(resolve=>{release=resolve;}):{accepted:true};});

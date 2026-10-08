@@ -1,6 +1,6 @@
 # Signed release integrity
 
-codexcli 0.6.9 ships an Ed25519-signed source manifest. The launcher and both setup entrypoints authenticate the manifest and their own verification helpers before loading application code, then verify the complete source inventory and SHA-256 of each distributed file. A changed credit, source file, test, notice, upstream source archive, or launcher refuses startup. Missing signatures and manifests refuse startup. There is no environment-variable bypass.
+codexcli 0.6.10 ships an Ed25519-signed source manifest. The launcher and both setup entrypoints authenticate the manifest and their own verification helpers before loading application code, then verify the complete source inventory and SHA-256 of each distributed file. A changed credit, source file, test, notice, upstream source archive, or launcher refuses startup. Missing signatures and manifests refuse startup. There is no environment-variable bypass.
 
 `release-integrity.json` is canonical UTF-8 JSON with one trailing LF. Its fields, in order, are `format`, `schemaVersion`, `version`, `algorithm`, `digest`, `keyId`, and `files`. The format is `codexcli-release-integrity`, schema version is `1`, algorithm is `ed25519`, and digest is `sha256`. `keyId` is the SHA-256 of the publisher public key's SPKI DER encoding. Each sorted file record contains `path`, `bytes`, and `sha256`, in that order. `release-integrity.sig` contains the detached 64-byte Ed25519 signature over the exact manifest bytes. The pinned public key is distributed; the publisher private key is not.
 
@@ -23,7 +23,7 @@ The command refuses existing destinations and writes the public key to the expli
 After all source, metadata, documentation, and launchers are final, sign the exact release tree:
 
 ```text
-node scripts/sign-release.mjs --root /absolute/release/codexcli --version 0.6.9 --key /absolute/publisher/release-ed25519-private.pem
+node scripts/sign-release.mjs --root /absolute/release/codexcli --version 0.6.10 --key /absolute/publisher/release-ed25519-private.pem
 ```
 
 The tool checks package-version agreement, writes both integrity files, and independently verifies the resulting release before reporting its manifest hash. If any distributed source changes afterward, sign again before producing archives and checksums. Source and portable packages share identical signed source bytes; portable packages add separately verified runtime files. Archive extraction must preserve the signed bytes exactly.

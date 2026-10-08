@@ -142,6 +142,6 @@ export function createNetworkStatus({ platform = process.platform, sampler = cre
       if (running && intervalMs > 0) { timer = setInterval(() => { void sample(); }, intervalMs); timer.unref?.(); }
       return snapshot();
     },
-    stop() { running = false; generation++; clearInterval(timer); timer = undefined; },
+    stop() { running = false; generation++; clearInterval(timer); timer = undefined; return inFlight||Promise.resolve(snapshot()); },
   };
 }

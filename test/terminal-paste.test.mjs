@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PassThrough} from 'node:stream';
+import {PassThrough,Writable} from 'node:stream';
+import {createInterface} from 'node:readline/promises';
 import {once} from 'node:events';
 import {createPasteInput} from '../src/terminal-paste.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -35,6 +36,41 @@ test('Ctrl+V explicitly requests bounded clipboard text and keeps later keyboard
   input.write('\x16');assert.equal(reads,1,'Repeated Ctrl+V must not overlap clipboard helpers');
   release('https://example.com/path?q=x&y=λ');await delay(0);assert.deepEqual(pastes,['https://example.com/path?q=x&y=λ']);
   stream.detach();input.destroy();stream.destroy();
+});
+test('split Shift+Insert requests clipboard paste instead of forwarding an Insert key',async()=>{
+  const input=new PassThrough(),pastes=[],plain=[];let reads=0;
+  const stream=createPasteInput({input,onPaste:text=>{pastes.push(text);return text;},readClipboard:async()=>{reads++;return 'https://example.invalid/v1';}});stream.on('data',chunk=>plain.push(chunk));
+  input.write('prefix\x1b[');input.write('2;');input.write('2~');await delay(0);
+  assert.equal(reads,1);assert.deepEqual(pastes,['https://example.invalid/v1']);assert.equal(Buffer.concat(plain).toString(),'prefixhttps://example.invalid/v1');
+  stream.detach();input.destroy();stream.destroy();
+});
+test('editor control callback consumes Ctrl+R only when its current editor accepts it',()=>{
+  const input=new PassThrough(),plain=[],controls=[];let hidden=true;
+  const stream=createPasteInput({input,onPaste:text=>text,onKeyControl:key=>{controls.push(key);return hidden;}});stream.on('data',chunk=>plain.push(chunk));
+  input.write('key\x12suffix');assert.equal(Buffer.concat(plain).toString(),'keysuffix');assert.deepEqual(controls,[{ctrl:true,name:'r'}]);
+  hidden=false;input.write('\x12');assert.equal(Buffer.concat(plain).toString(),'keysuffix\x12');
+  stream.detach();input.destroy();stream.destroy();
+});
+test('literal bracketed paste never invokes secret visibility or Shift+Insert shortcuts',()=>{
+  const input=new PassThrough(),pastes=[],controls=[];let reads=0;
+  const stream=createPasteInput({input,readClipboard:async()=>{reads++;return 'never';},onKeyControl:key=>{controls.push(key);return true;},onPaste:text=>{pastes.push(text);return '';}});stream.resume();
+  input.write('\x1b[200~before\x12\x1b[2;2~after\x1b[201~');assert.equal(reads,0);assert.deepEqual(controls,[]);assert.deepEqual(pastes,['before\x12\x1b[2;2~after']);
+  stream.detach();input.destroy();stream.destroy();
+});
+test('clipboard URL and synthetic API key stay editable in native readline until intentional Enter',async t=>{
+  const input=new PassThrough();input.isTTY=true;let clipboardText,hidden=false,reveals=0,submissions=0;
+  const output=new Writable({write(_chunk,_encoding,done){done();}});output.isTTY=true;output.columns=120;
+  const stream=createPasteInput({input,readClipboard:async()=>clipboardText,onPaste:text=>text,onKeyControl:()=>{if(!hidden)return false;reveals++;return true;}});
+  const rl=createInterface({input:stream,output,terminal:true});t.after(()=>{rl.close();stream.detach();input.destroy();stream.destroy();output.destroy();});
+  for(const [index,text]of ['https://example.invalid/v1?value=a&next=λ','SYNTHETIC_API_KEY_CANARY'].entries()){
+    hidden=index===1;clipboardText=text;
+    const answer=rl.question(hidden?'API key [hidden] > ':'API base URL > ').then(value=>{submissions++;return value;});
+    input.write(index===0?'\x16':'\x1b[2;2~');await delay(0);
+    assert.equal(rl.line,text);assert.equal(submissions,index,'Paste must not submit its current question');
+    input.write('\x01edited-');assert.equal(rl.line,'edited-'+text);
+    if(hidden){input.write('\x12');assert.equal(reveals,1);assert.equal(rl.line,'edited-'+text);}
+    input.write('\r');assert.equal(await answer,'edited-'+text);assert.equal(submissions,index+1);
+  }
 });
 test('Ctrl+V inside literal bracketed paste cannot read the clipboard',()=>{
   const input=new PassThrough(),pastes=[];let reads=0;

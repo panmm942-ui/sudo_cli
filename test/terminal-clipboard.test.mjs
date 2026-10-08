@@ -42,3 +42,33 @@ test('an already canceled clipboard request cannot spawn an OS helper',async()=>
   const controller=new AbortController();controller.abort();let spawned=false;
   await assert.rejects(readTerminalClipboard({platform:'win32',signal:controller.signal,spawnProcess:()=>{spawned=true;}}),{name:'AbortError'});assert.equal(spawned,false);
 });
+test('Windows clipboard cleanup uses its held original child and on-demand birth-checked handshake',{timeout:25000,skip:process.platform!=='win32'},async t=>{
+  const text='SYNTHETIC_LOCAL_KEY',f=synthetic(t,Buffer.from(text).toString('base64')+'\n');let captures=0,closures=0;
+  assert.equal(await readTerminalClipboard({platform:'win32',spawnProcess:f.spawnProcess,ownerFactory:child=>{const owner=ownProcess(child);return {capture:()=>{captures++;throw new Error('Redundant capture was invoked.');},close:async()=>{closures++;await owner.close();}};}}),text);
+  await stopped(f.child);assert.equal(captures,0);assert.equal(closures,1);assert.ok(f.child.exitCode!==null||f.child.signalCode!==null);
+});
+test('actual stock Windows PowerShell preserves synthetic URL and key text without accessing the physical clipboard',{timeout:25000,skip:process.platform!=='win32'},async t=>{
+  const text='https://example.invalid/v1?value=λ\nSYNTHETIC_KEY_CANARY';let child;
+  const spawnProcess=(command,args,options)=>{
+    const script=Buffer.from(args.at(-1),'base64').toString('utf16le');
+    assert.match(script,/Get-Clipboard -Raw/);assert.doesNotMatch(script,/example\.invalid|SYNTHETIC_KEY/);
+    // Override only the clipboard value source. The stock shell, imported
+    // module, encoding, stdin lifetime hold and real owner cleanup all run.
+    const synthetic=`function Get-Clipboard {param([switch]$Raw);if(-not $Raw){throw 'Raw is required'};return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(text).toString('base64')}'))};`;
+    child=spawn(command,[...args.slice(0,-1),Buffer.from(synthetic+script,'utf16le').toString('base64')],options);
+    t.after(async()=>{if(child.exitCode!==null||child.signalCode!==null)return;const exited=once(child,'exit');let timer;const bounded=Promise.race([exited,new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('Synthetic stock clipboard fixture did not stop.')),1000);})]);void bounded.catch(()=>{});try{child.kill('SIGKILL');await bounded;}finally{clearTimeout(timer);}});return child;
+  };
+  assert.equal(await readTerminalClipboard({spawnProcess}),text);await stopped(child);
+  assert.ok(child.exitCode!==null||child.signalCode!==null);
+});
+test('a stock clipboard source failure stays owned until cleanup and cannot close the CLI with an unverified early exit',{timeout:25000,skip:process.platform!=='win32'},async t=>{
+  let child;
+  const spawnProcess=(command,args,options)=>{
+    const script=Buffer.from(args.at(-1),'base64').toString('utf16le');
+    const synthetic="function Get-Clipboard {param([switch]$Raw);throw 'SYNTHETIC_CLIPBOARD_ERROR_CANARY'};";
+    child=spawn(command,[...args.slice(0,-1),Buffer.from(synthetic+script,'utf16le').toString('base64')],options);
+    t.after(async()=>{if(child.exitCode!==null||child.signalCode!==null)return;const exited=once(child,'exit');let timer;const bounded=Promise.race([exited,new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('Synthetic stock clipboard error fixture did not stop.')),1000);})]);void bounded.catch(()=>{});try{child.kill('SIGKILL');await bounded;}finally{clearTimeout(timer);}});return child;
+  };
+  await assert.rejects(readTerminalClipboard({spawnProcess}),error=>error.code===undefined&&/Clipboard could not be read/.test(error.message)&&!/CANARY/.test(error.message));
+  await stopped(child);assert.ok(child.exitCode!==null||child.signalCode!==null);
+});

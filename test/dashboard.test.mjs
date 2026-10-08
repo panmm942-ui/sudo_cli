@@ -39,7 +39,8 @@ test('local performance has its own header column and retains accurate compact i
     assert.ok(lines.every(line=>[...line].length<columns),`${columns}: ${text}`);
     if(columns===150){
       const first=lines.findIndex(line=>line.includes('Performance (This PC)'));
-      assert.ok(first===0&&lines[first].includes('Credits:'),'Performance begins in the separate right column');
+      assert.equal(first,0,'Performance begins in the separate right column');
+      assert.match(lines.at(-2),/Credits:/,'Credits remain below the antenna and status');
       assert.equal(lines[first+1].slice(lines[first].indexOf('Performance')).trim(),'','Heading has breathing room');
       assert.ok(lines.some(line=>line.includes(ANTENNA_ROWS[0])),'Exact antenna remains visible');
     }else assert.match(text,/Performance \(This PC\)/);
@@ -103,7 +104,7 @@ test('dashboard shows the requested fields next to a large ASCII logo', async ()
   assert.match(text, /WiFi Connection: Unknown/);
   assert.match(text, /Connected AI: test-model \(unconfirmed\)/);
   assert.match(text, /Context: Unknown/);
-  assert.ok(view.lines.some(line=>line.includes('SUDO CLI')&&line.includes('Time:')), 'Brand and details must share a row');assert.match(view.lines[0],/Credits:/);
+  assert.ok(view.lines.some(line=>line.includes('SUDO CLI')&&line.includes('Time:')), 'Brand and details must share a row');assert.match(view.lines.at(-2),/Credits:/);
   assert.doesNotMatch(text, /\x1b/);
 });
 

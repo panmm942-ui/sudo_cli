@@ -7,6 +7,9 @@ import { tmpdir } from 'node:os';
 import { windowsGpuInventory } from '../src/system-performance-windows.mjs';
 import { isolatedEnvironment } from '../src/permission-scope.mjs';
 import { runFixtureProcess } from './fixtures/native-process.mjs';
+import childProcess from 'node:child_process';
+import {EventEmitter} from 'node:events';
+import {syncBuiltinESMExports} from 'node:module';
 
 const api = await import('../src/system-performance.mjs').catch(error => {
   if (error.code === 'ERR_MODULE_NOT_FOUND') return {};
@@ -22,6 +25,38 @@ const nvidiaPnp = 'PCI\\VEN_10DE&DEV_2D98&SUBSYS_800D17AA&REV_A1\\NVIDIA_INSTANC
 const unavailableNvidia = () => ({ id: deviceId(nvidiaPnp), pnpDeviceId: nvidiaPnp, name: 'NVIDIA GeForce RTX 5050 Laptop GPU',
   identified: true, dedicatedBytes: 8 * 1024 ** 3, sharedBytes: null, driverErrorCode: 43,
   deviceStatus: 'driver-error', capacitySource: 'windows-driver-registry-qword' });
+
+test('performance stop waits for its pending aborted sampler and discards its late result',async()=>{
+  let release,signal,settled=false;
+  const monitor=feature('createSystemPerformance')({intervalMs:0,gpuIntervalMs:0,gpuSampler:options=>{signal=options.signal;return new Promise(resolve=>{release=resolve;});}});
+  const sampling=monitor.sample();
+  const stopping=Promise.resolve(monitor.stop()).then(()=>{settled=true;});
+  try{
+    assert.equal(signal.aborted,true);
+    await new Promise(setImmediate);
+    assert.equal(settled,false,'Stop must wait for the sampler to drain after abort.');
+    release({source:'fixture',adapters:[{id:'late',percent:99}]});await stopping;await sampling;
+    assert.equal(monitor.snapshot().status,'stopped');assert.equal(monitor.snapshot().gpu.percent,null);
+  }finally{release({source:'unavailable',adapters:[]});await stopping;await sampling;}
+});
+
+test('an aborted performance probe cannot finish before its child close event',async t=>{
+  const child=new EventEmitter();let settled=false;
+  t.mock.method(childProcess,'execFile',(_command,_args,options,done)=>{
+    // Node execFile calls back eagerly on an AbortSignal error, but its normal
+    // completion callback runs on close. Keep that real boundary distinction.
+    options.signal?.addEventListener('abort',()=>done(Object.assign(new Error('private-child-error'),{code:'ABORT_ERR'}),''),{once:true});
+    child.once('close',()=>done(null,'fixture-result'));return child;
+  });syncBuiltinESMExports();
+  t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  const controller=new AbortController(),pending=feature('runPerformanceProbe')('fixture-probe',[],{signal:controller.signal});
+  pending.then(()=>{settled=true;},()=>{settled=true;});
+  try{
+    controller.abort();await new Promise(setImmediate);
+    assert.equal(settled,false,'The AbortSignal callback is not proof that the child has closed.');
+    child.emit('close',null,'SIGKILL');await assert.rejects(pending,/Performance probe unavailable/);
+  }finally{child.emit('close',null,'SIGKILL');await pending.catch(()=>{});}
+});
 
 test('CPU shows measured busy time after two samples while RAM uses current OS bytes', async () => {
   let rows = [cpu(10, 90), cpu(20, 80)], free = 600, now = 1000;

@@ -1,7 +1,7 @@
 const $=id=>document.getElementById(id);
 const token=new URLSearchParams(location.hash.slice(1)).get('token')||'';
 history.replaceState(null,'',location.pathname);
-let snapshot={},activePrompt=null,draft='',draftLiteral=false,pastedLiteral=false,closed=false,pending=false,polling=false,returning=false;
+let snapshot={},activePrompt=null,draft='',draftLiteral=false,pastedLiteral=false,closed=false,pending=false,polling=false,returning=false,secretRevealed=false;
 let chatKey='',eventKey='',changeKey='',performanceKey='',timer;
 const text=value=>typeof value==='string'||typeof value==='number'?String(value):'Unknown';
 const node=(tag,className,content)=>{const element=document.createElement(tag);if(className)element.className=className;if(content!==undefined)element.textContent=text(content);return element;};
@@ -18,9 +18,10 @@ async function request(path,body){
   if(!response.ok)throw new Error(response.status===413?'This view exceeds its display limit. Inspect it in the terminal.':'The action is unavailable. Check the current question and session events.');
   return response.json();
 }
-function end(message){closed=true;clearTimeout(timer);$('secret-input').value='';showBanner(message);$('connection').textContent='GUI closed';$('connection-dot').classList.add('offline');$('footer-status').textContent='CONTINUE IN TERMINAL';$('command-dialog').close();updateControls();}
+function revealSecret(revealed=false){secretRevealed=!!revealed;$('secret-input').type=secretRevealed?'text':'password';$('reveal-secret').textContent=secretRevealed?'Hide':'Show';$('reveal-secret').ariaPressed=String(secretRevealed);}
+function end(message){closed=true;clearTimeout(timer);$('secret-input').value='';revealSecret();showBanner(message);$('connection').textContent='GUI closed';$('connection-dot').classList.add('offline');$('footer-status').textContent='CONTINUE IN TERMINAL';$('command-dialog').close();updateControls();}
 function updateControls(){
-  for(const id of ['input','secret-input','send','commands','model','stop','refresh-changes','return'])$(id).disabled=closed||pending||returning||(id==='commands'||id==='model')&&!!activePrompt;
+  for(const id of ['input','secret-input','reveal-secret','send','commands','model','stop','refresh-changes','return'])$(id).disabled=closed||pending||returning||(id==='commands'||id==='model')&&!!activePrompt;
   $('stop').disabled=closed||returning||!snapshot.session?.working;
 }
 function prompt(value){
@@ -28,9 +29,10 @@ function prompt(value){
   if(next?.id!==activePrompt?.id){
     if(next&&!activePrompt){draft=$('input').value;draftLiteral=pastedLiteral;}
     $('secret-input').value='';$('input').value=next?'':draft;pastedLiteral=next?false:draftLiteral;
+    revealSecret();
   }
   activePrompt=next;$('question').hidden=!next;$('question-text').textContent=next?text(next.prompt):'';$('question-privacy').textContent=next?.hidden?'Hidden answer: cleared from this view after sending.':'';
-  $('input').hidden=!!next?.hidden;$('secret-input').hidden=!next?.hidden;$('send-label').textContent=next?'Answer':'Send';
+  $('input').hidden=!!next?.hidden;$('secret-input').hidden=!next?.hidden;$('reveal-secret').hidden=!next?.hidden;$('send-label').textContent=next?'Answer':'Send';
   const sequence=Number.isSafeInteger(snapshot.chat?.promptCount)?snapshot.chat.promptCount+1:null;
   $('composer-label').textContent=next?'Answer the current question':sequence?`${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} · ${String(sequence).padStart(2,'0')}@you >`:'Message your AI';
   $('input').placeholder=next?'Your answer…':'Ask, build, investigate…';updateControls();
@@ -75,10 +77,11 @@ $('model').addEventListener('click',()=>openCommands('/model'));
 $('composer').addEventListener('submit',async event=>{
   event.preventDefault();if(closed||pending||returning)return;const field=activePrompt?.hidden?$('secret-input'):$('input'),value=field.value,question=activePrompt;
   if(!question&&!value.trim())return;if(new TextEncoder().encode(value).length>65536){showBanner('The message exceeds the 64 KiB input limit.');return;}
-  pending=true;updateControls();showBanner('');if(question?.hidden)field.value='';
+  pending=true;updateControls();showBanner('');if(question?.hidden){field.value='';revealSecret();}
   try{await request('/api/action',question?{type:'answer',promptId:question.id,text:value}:{type:'submit',text:value,...(pastedLiteral?{literal:true}:{})});if(!question||activePrompt?.id===question.id)field.value='';if(!question){draft='';pastedLiteral=false;}await poll();}catch(error){if(!closed)showBanner(error.message);}finally{pending=false;updateControls();}
 });
 for(const id of ['input','secret-input'])$(id).addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('composer').requestSubmit();}});
+$('reveal-secret').addEventListener('click',()=>{if(closed||pending||returning||!activePrompt?.hidden)return;revealSecret(!secretRevealed);$('secret-input').focus();});
 $('input').addEventListener('paste',()=>{if(!activePrompt)pastedLiteral=true;});$('input').addEventListener('input',()=>{if(!$('input').value)pastedLiteral=false;});
 $('stop').addEventListener('click',async()=>{try{await request('/api/action',{type:'stop'});await poll();}catch(error){showBanner(error.message);}});
 $('refresh-changes').addEventListener('click',async()=>{try{await request('/api/action',{type:'changes'});await poll();}catch(error){showBanner(error.message);}});

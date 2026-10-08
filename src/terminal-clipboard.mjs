@@ -6,7 +6,7 @@ import {ownProcess} from './owned-process.mjs';
 // Fixed stock command, invoked only by an explicit paste key. Clipboard text
 // never enters arguments, environment, logs or files. Hold the process at stdin
 // until the existing owner can observe and verify its original lifetime.
-const SCRIPT="$ErrorActionPreference='Stop';$env:PSModulePath=$PSHOME+'\\Modules';Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Management\\Microsoft.PowerShell.Management.psd1');$PSModuleAutoLoadingPreference='None';$value=[string](Get-Clipboard -Raw);[Console]::WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value)));$null=[Console]::ReadLine()";
+const SCRIPT="$ErrorActionPreference='Stop';$env:PSModulePath=$PSHOME+'\\Modules';Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Management\\Microsoft.PowerShell.Management.psd1');$PSModuleAutoLoadingPreference='None';try{$value=[string](Get-Clipboard -Raw);[Console]::WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value)))}finally{$null=[Console]::ReadLine()}";
 const failure=()=>new Error('Clipboard could not be read. Use the terminal paste menu.');
 
 /** Windows Ctrl+V fallback; native terminal paste remains the portable default. */
@@ -42,7 +42,11 @@ export async function readTerminalClipboard({platform=process.platform,env=proce
       signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
       timer=setTimeout(()=>finish(failure()),timeoutMs);timer.unref?.();
     });
-    const [,text]=await Promise.all([owner.capture(Date.now()+timeoutMs),result]);return text;
+    // The held Windows child stays alive until close's existing on-demand,
+    // birth-checked ownership handshake. An eager second CIM process adds
+    // startup latency and can discard a successful read before that handshake.
+    // Unix still needs its initial detached process-group capture.
+    const [,text]=await Promise.all([process.platform==='win32'?Promise.resolve():owner.capture(Date.now()+timeoutMs),result]);return text;
   }catch(problem){if(problem?.name==='AbortError')throw problem;throw failure();}
   finally{
     clearTimeout(timer);signal?.removeEventListener('abort',abort);

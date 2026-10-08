@@ -39,7 +39,9 @@ test('divider, credits and footer occupy separate stable layout bounds',t=>{
   assert.ok(layout.events.left>layout.divider.left);assert.ok(layout.chat.right<layout.divider.left);
   assert.ok(layout.input.top>layout.chat.bottom);assert.ok(layout.footer.top>layout.input.bottom);
   const rendered=renderDashboard({state,columns:150,rows:44});
-  assert.match(stripVTControlCharacters(rendered.lines[0]),/Credits:/);
+  assert.doesNotMatch(stripVTControlCharacters(rendered.lines[0]),/Credits:/);
+  assert.match(stripVTControlCharacters(rendered.lines.at(-2)),/Credits:/);
+  assert.equal(stripVTControlCharacters(rendered.lines.at(-1)),'─'.repeat(rendered.mainWidth)+'┼'+'─'.repeat(rendered.panelWidth));
   assert.doesNotMatch(rendered.lines.join('\n'),/\/ for commands/);
 });
 test('composer caret survives header refresh and panel scrolling without visibility cycling',t=>{
@@ -76,6 +78,7 @@ test('compact panel switching keeps chat and events distinct and leaves an edita
   dashboard.write('COMPACT_CHAT');dashboard.event('COMPACT_EVENT');output.text='';dashboard.focusPanel('events');
   assert.match(output.text,/COMPACT_EVENT/);assert.doesNotMatch(output.text,/COMPACT_CHAT/);
   assert.match(output.text,/Performance \(This PC\)/);assert.match(output.text,/CPU: 12/);
+  assert.match(output.text,/Credits:/,'Credits remain visible in compact Events mode');
   assert.ok(dashboard.inputArea().rows>=1);assert.equal(dashboard.layout().compact,true);
 });
 test('compact performance overflow is explicit and leaves bounded Events/composer rows',t=>{
@@ -92,7 +95,17 @@ test('wide header divider stays in one terminal cell column for joined emoji and
   const rendered=renderDashboard({state:{...state,chatTitle:'Chat 👩‍💻 🇬🇷',connectedAI:'モデル 🚀',cwd:'/demo-👩‍💻'},columns:150,rows:44});
   const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
   const cellCount=value=>[...segments.segment(value)].reduce((total,{segment})=>total+(/\p{Emoji_Presentation}|\p{Regional_Indicator}/u.test(segment)?2:[...segment].reduce((count,char)=>count+(/\p{Mark}|\p{Default_Ignorable_Code_Point}/u.test(char)?0:char.codePointAt(0)>=0x2e80&&char.codePointAt(0)<=0xa4cf?2:1),0)),0);
-  for(const value of rendered.lines){const prefix=stripVTControlCharacters(value).split('│')[0];assert.equal(cellCount(prefix),rendered.mainWidth,'Status text moved the divider');}
+  for(const value of rendered.lines.slice(0,-1)){const prefix=stripVTControlCharacters(value).split('│')[0];assert.equal(cellCount(prefix),rendered.mainWidth,'Status text moved the divider');}
+});
+
+test('dashboard boundary stays red across both panes after a lower pane redraw',t=>{
+  const {output,dashboard}=fixture(t,{color:true});const layout=dashboard.layout();
+  assert.equal(layout.separator.top,layout.header.bottom);
+  assert.equal(layout.separator.right,149);
+  assert.match(output.text,/\x1b\[38;2;239;41;41m─+/);
+  output.text='';dashboard.focusPanel('events');
+  assert.ok(!output.text.includes(`\x1b[${layout.separator.top};${layout.divider.left}H`),'Body redraw must preserve the red header intersection');
+  assert.ok(layout.chat.top>layout.separator.top);assert.ok(layout.events.top>layout.separator.top);
 });
 test('all tiny terminal coordinates remain positive and inside the actual screen',t=>{
   for(const rows of [1,2,4,8])for(const columns of [1,12,35]){

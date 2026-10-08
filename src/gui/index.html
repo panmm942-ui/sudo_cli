@@ -43,6 +43,7 @@
         <label id="composer-label" class="composer-label" for="input">Message your AI</label>
         <textarea id="input" rows="3" maxlength="65536" placeholder="Ask, build, investigate…" autocomplete="off" spellcheck="false"></textarea>
         <input id="secret-input" type="password" maxlength="65536" aria-labelledby="composer-label" autocomplete="off" spellcheck="false" hidden>
+        <button id="reveal-secret" class="button secondary" type="button" aria-controls="secret-input" aria-pressed="false" hidden>Show</button>
         <div class="composer-bottom"><button type="button" id="commands" class="button subtle" aria-haspopup="dialog"><svg><use href="#icon-command"/></svg>Commands</button><span class="composer-hint">Ctrl / ⌘ + Enter to send</span><button type="button" id="stop" class="icon-button" title="Stop current work" aria-label="Stop current work"><svg><use href="#icon-stop"/></svg></button><button id="send" class="button primary" type="submit"><span id="send-label">Send</span><svg><use href="#icon-send"/></svg></button></div>
       </form>
     </section>

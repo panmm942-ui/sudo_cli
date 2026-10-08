@@ -68,8 +68,10 @@ with tempfile.TemporaryDirectory(prefix='sudo-panels-pty-') as directory:
     try:
         first=wait(lambda value:value['caret'] is not None,'editable composer')
         divider=first['layout']['divider']['left']-1
-        assert all(row[divider][0]=='│' for row in screen.grid),'Right divider is not continuous'
-        assert 'Credits:' in screen.lines()[0] and 'v0.' in screen.lines()[-1],'Credits/footer placement'
+        boundary=first['layout']['separator']['top']-1
+        assert all(row[divider][0]==('┼' if index==boundary else '│') for index,row in enumerate(screen.grid)),'Right divider is not continuous'
+        assert 'Credits:' in screen.lines()[boundary-1] and 'v0.' in screen.lines()[-1],'Credits/footer placement'
+        assert all(character in '─┼' and foreground=='#ef2929' for character,foreground,_background in screen.grid[boundary][:-1]),'Dashboard boundary is not red'
         url='https://example.com/a/b?q=one%20two&next=%2Fdocs#λ'
         send('\x1b[200~'+url+'\x1b[201~');value=wait(lambda value:value['input']['text']==url,'literal editable URL')
         assert value['submissions']==[],'Paste submitted before Enter'

@@ -21,19 +21,33 @@ async function fixture(run){
 const fakeOutput=()=>({isTTY:true,bells:[],write(text){this.bells.push({text,time:Date.now()});return true;}});
 const missing=()=>Object.assign(new Error('missing player'),{code:'ENOENT'});
 
-test('notification preferences default on, survive restart, and never sound during setup',async()=>fixture(async directory=>{
+test('fresh notification preferences stay off without playback, assets, or a saved implicit choice',async()=>fixture(async directory=>{
+  const {createNotifications}=await api();let plays=0,executions=0;const output=fakeOutput();
+  const options={directory,interactive:true,output,play:async()=>{plays++;},execute:async()=>{executions++;}};
+  const notifications=createNotifications(options);
+  assert.equal(notifications.get().enabled,false);
+  await notifications.load();
+  for(const event of ['connected','approval','error','done','interrupted','disconnected'])assert.equal((await notifications.notify(event)).status,'disabled');
+  await notifications.close();
+  const restored=createNotifications(options);await restored.load();
+  assert.equal((await restored.notify('done')).status,'disabled');await restored.close();
+  assert.equal(plays,0);assert.equal(executions,0);assert.deepEqual(output.bells,[]);assert.deepEqual(await readdir(directory),[]);
+}));
+
+test('explicit notification preferences survive restart and never sound during setup',async()=>fixture(async directory=>{
   const {createNotifications}=await api();let plays=0;
   const options={directory,interactive:true,play:async()=>{plays++;}};
   const notifications=createNotifications(options);
-  assert.equal(notifications.get().enabled,true);
-  await notifications.load();await notifications.off();
-  assert.equal(notifications.status().enabled,false);
+  await notifications.load();await notifications.on();
+  assert.equal(notifications.status().enabled,true);
+  assert.deepEqual(JSON.parse(await readFile(join(directory,'notifications.json'),'utf8')),{version:1,enabled:true});
+  const restored=createNotifications(options);await restored.load();assert.equal(restored.get().enabled,true);assert.equal(plays,0);
+  assert.equal((await restored.notify('done')).status,'played');assert.equal(plays,1);
+  await restored.off();assert.equal(restored.get().enabled,false);
+  const off=createNotifications(options);await off.load();assert.equal((await off.notify('done')).status,'disabled');assert.equal(plays,1);
   assert.deepEqual(JSON.parse(await readFile(join(directory,'notifications.json'),'utf8')),{version:1,enabled:false});
-  const restored=createNotifications(options);await restored.load();assert.equal(restored.get().enabled,false);
-  assert.equal((await restored.notify('done')).status,'disabled');
-  await restored.on();assert.equal(restored.get().enabled,true);assert.equal(plays,0);
   if(process.platform!=='win32')assert.equal((await stat(join(directory,'notifications.json'))).mode&0o777,0o600);
-  await notifications.close();await restored.close();
+  await notifications.close();await restored.close();await off.close();
 }));
 
 test('each lifecycle event has an original, bounded, distinct PCM melody',async()=>{
@@ -80,6 +94,7 @@ test('events validate identifiers and bounds before invoking any player',async()
 test('deduplication is scoped to events, cooldown is bounded, and remembered IDs are capped',async()=>fixture(async directory=>{
   const {createNotifications}=await api();let now=0;const calls=[];
   const notifications=createNotifications({directory,interactive:true,cooldownMs:100,maxIds:2,now:()=>now,play:async item=>{calls.push(item.event);}});
+  await notifications.on();
   assert.equal((await notifications.notify('done',{id:'turn-1'})).status,'played');
   assert.equal((await notifications.notify('ai-done',{id:'turn-1'})).status,'duplicate');
   assert.equal((await notifications.notify('done',{id:'turn-2'})).status,'cooldown');
@@ -92,6 +107,7 @@ test('deduplication is scoped to events, cooldown is bounded, and remembered IDs
 test('notification bursts use a bounded serial queue without overlapping players',async()=>fixture(async directory=>{
   const {createNotifications}=await api();const releases=[];let active=0,peak=0;
   const notifications=createNotifications({directory,interactive:true,cooldownMs:0,maxQueue:2,play:()=>new Promise(resolve=>{active++;peak=Math.max(peak,active);releases.push(()=>{active--;resolve();});})});
+  await notifications.on();
   const first=notifications.notify('approval'),second=notifications.notify('error'),third=notifications.notify('done');
   assert.equal((await third).status,'busy');
   while(!releases.length)await new Promise(resolve=>setTimeout(resolve,2));releases.shift()();assert.equal((await first).status,'played');
@@ -106,7 +122,7 @@ test('private WAV assets exist only during the session and are removed by stop a
     assert.equal((await readFile(path)).toString('ascii',0,4),'RIFF');
     if(process.platform!=='win32')assert.equal((await stat(path)).mode&0o777,0o600);
   }});
-  await notifications.notify('done');await notifications.stop();await assert.rejects(()=>stat(paths[0]),{code:'ENOENT'});
+  await notifications.on();await notifications.notify('done');await notifications.stop();await assert.rejects(()=>stat(paths[0]),{code:'ENOENT'});
   await notifications.notify('interrupted');assert.notEqual(dirname(paths[0]),dirname(paths[1]));await notifications.close();
   await assert.rejects(()=>stat(paths[1]),{code:'ENOENT'});assert.equal((await notifications.notify('done')).status,'cancelled');
   assert.ok((await readdir(directory)).every(name=>!name.startsWith('notification-sounds-')));
@@ -115,6 +131,7 @@ test('private WAV assets exist only during the session and are removed by stop a
 test('off and close cancel active and queued work even when an injected player never settles',async()=>fixture(async directory=>{
   const {createNotifications}=await api();const signals=[];
   const notifications=createNotifications({directory,interactive:true,cooldownMs:0,play:({signal})=>{signals.push(signal);return new Promise(()=>{});}});
+  await notifications.on();
   const active=notifications.notify('approval'),queued=notifications.notify('error');
   while(!signals.length)await new Promise(resolve=>setTimeout(resolve,2));await notifications.off();
   assert.equal(signals[0].aborted,true);assert.equal((await active).status,'cancelled');assert.equal((await queued).status,'cancelled');
@@ -126,6 +143,7 @@ test('off and close cancel active and queued work even when an injected player n
 test('hung playback is timed out and aborted without silently claiming a sound played',async()=>fixture(async directory=>{
   const {createNotifications}=await api();let signal;
   const notifications=createNotifications({directory,interactive:true,timeoutMs:35,play:item=>{signal=item.signal;return new Promise(()=>{});}});
+  await notifications.on();
   const started=Date.now(),result=await notifications.notify('error');assert.equal(result.status,'unavailable');assert.match(result.reason,/timed out/i);
   assert.equal(signal.aborted,true);assert.ok(Date.now()-started<1000);assert.equal(notifications.get().pending,0);assert.equal(notifications.get().backend,'unavailable');await notifications.close();
 }));
@@ -133,6 +151,7 @@ test('hung playback is timed out and aborted without silently claiming a sound p
 test('Windows playback uses a fixed SoundPlayer script, safe argument boundaries, and a hidden non-shell process',async()=>fixture(async directory=>{
   const {createNotifications}=await api();let call;
   const notifications=createNotifications({directory,interactive:true,platform:'win32',env:{SystemRoot:'C:\\Windows',PATH:'runtime-path',OPENAI_API_KEY:'fixture-provider-key',AWS_SECRET_ACCESS_KEY:'fixture-cloud-key',OTHER:'excluded'},execute:async(file,args,options)=>{call={file,args,options};}});
+  await notifications.on();
   assert.equal((await notifications.notify('approval')).status,'played');
   assert.equal(call.file,'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');assert.equal(call.options.shell,false);assert.equal(call.options.windowsHide,true);
   assert.ok(call.args.includes('-NoProfile'));assert.ok(call.args.includes('-NonInteractive'));const index=call.args.indexOf('-EncodedCommand');assert.ok(index>=0);
@@ -146,6 +165,7 @@ test('macOS and Linux players receive only a private file argument and fall thro
   const {createNotifications}=await api();
   for(const platform of ['darwin','linux']){
     const calls=[];const notifications=createNotifications({directory,interactive:true,platform,env:{PATH:'runtime-path',HOME:'/fixture/home',XDG_RUNTIME_DIR:'/fixture/runtime',OPENAI_API_KEY:'fixture-provider-key',ANTHROPIC_API_KEY:'fixture-provider-key'},execute:async(file,args,options)=>{calls.push({file,args,options});if(file==='paplay')throw missing();}});
+    await notifications.on();
     assert.equal((await notifications.notify('done')).status,'played');assert.deepEqual(calls.map(call=>call.file),platform==='darwin'?['afplay']:['paplay','aplay']);
     for(const call of calls){assert.equal(call.options.shell,false);assert.equal(call.options.windowsHide,true);assert.ok(call.args.at(-1).startsWith(directory));assert.equal(call.options.signal.aborted,false);assert.ok(!call.args.includes('-c'));assert.equal(call.options.env.PATH,'runtime-path');assert.equal(call.options.env.HOME,'/fixture/home');assert.equal(call.options.env.XDG_RUNTIME_DIR,'/fixture/runtime');assert.equal(call.options.env.OPENAI_API_KEY,undefined);assert.equal(call.options.env.ANTHROPIC_API_KEY,undefined);}
     if(platform==='linux')assert.deepEqual(calls[1].args.slice(0,-1),['-q']);await notifications.close();
@@ -156,6 +176,7 @@ test('missing audio players report terminal-bell fallback with distinguishable r
   const {createNotifications}=await api();const counts=[];
   for(const event of ['connected','done','approval','interrupted']){
     const output=fakeOutput(),notifications=createNotifications({directory,interactive:true,platform:'linux',output,execute:async()=>{throw missing();}});
+    await notifications.on();
     const result=await notifications.notify(event);assert.equal(result.status,'terminal-bell');assert.equal(notifications.get().backend,'terminal-bell');
     assert.ok(output.bells.every(item=>item.text==='\x07'));counts.push(output.bells.length);await notifications.close();
   }
@@ -164,8 +185,10 @@ test('missing audio players report terminal-bell fallback with distinguishable r
 
 test('no usable player or writable TTY is truthfully unavailable, and fallback timers cancel on close',async()=>fixture(async directory=>{
   const {createNotifications}=await api();const quiet=createNotifications({directory,interactive:true,platform:'unknown',output:{isTTY:false,write(){assert.fail('must stay silent');}}});
+  await quiet.on();
   assert.equal((await quiet.notify('error')).status,'unavailable');assert.equal(quiet.get().backend,'unavailable');await quiet.close();
   const output=fakeOutput(),notifications=createNotifications({directory,interactive:true,platform:'unknown',output});
+  await notifications.on();
   const sound=notifications.notify('interrupted');while(!output.bells.length)await new Promise(resolve=>setTimeout(resolve,2));await notifications.close();assert.equal((await sound).status,'cancelled');
   await new Promise(resolve=>setTimeout(resolve,210));assert.equal(output.bells.length,1);
 }));
@@ -184,7 +207,7 @@ test('backend and saved-state failures expose fixed safe messages instead of raw
   const {createNotifications}=await api();
   const marker='PRIVATE_FIXTURE_MARKER';
   for(const options of [{platform:'linux',execute:async()=>{throw new Error(marker+' private-path encoded-script');}},{play:async()=>{throw new Error(marker+' recording-output');}}]){
-    const notifications=createNotifications({directory,interactive:true,...options});const outcome=await notifications.notify('error');
+    const notifications=createNotifications({directory,interactive:true,...options});await notifications.on();const outcome=await notifications.notify('error');
     assert.equal(outcome.status,'unavailable');assert.doesNotMatch(JSON.stringify(outcome),new RegExp(marker));assert.doesNotMatch(JSON.stringify(notifications.get()),new RegExp(marker));assert.match(outcome.reason,/audio|player/i);await notifications.close();
   }
   await writeFile(join(directory,'notifications.json'),marker);

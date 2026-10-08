@@ -16,6 +16,7 @@ import {parseCommand} from '../src/commands.mjs';
 const source=(await readFile(new URL('../src/ui.mjs',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
 const extract=(start,end)=>{const first=source.indexOf(start),last=source.indexOf(end,first);assert.ok(first>=0&&last>first,'Current input admission source is unavailable.');return source.slice(first,last);};
 const composer=extract('  const renderComposer=','  const scheduleComposer='),question=extract('  const prompts = createPromptQueue','  const ask = ');
+const keyControl=extract('  const onKeyControl=','  const pasteInput=');
 const accept=extract('  const acceptSubmission=','  const displaySubmission='),enqueue=extract('  const enqueue=','  const displayed = ');
 const receive=extract('  const receiveDuringWork=','  rl?.on(\'line\''),listener=extract('  rl?.on(\'line\', text => {','  try {\n');
 const onPaste=/onPaste:text=>\{(.*?)\},onError:/s.exec(source)?.[1];assert.ok(onPaste);
@@ -23,7 +24,7 @@ const drain=/    inputReady=true;for\(const input of earlyInputs\.splice\(0\)\)e
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(t){
   const input=new PassThrough(),output=new PassThrough();input.isTTY=true;input.setRawMode=()=>{};output.isTTY=true;output.on('data',()=>{});
-  let pasteCallback;const paste=createPasteInput({input,onPaste:(...args)=>pasteCallback(...args)}),rl=createInterface({input:paste,output,terminal:true});
+  let pasteCallback,keyCallback;const paste=createPasteInput({input,onPaste:(...args)=>pasteCallback(...args),onKeyControl:key=>keyCallback(key)}),rl=createInterface({input:paste,output,terminal:true});
   const make=new Function('rl','createPromptQueue','createPromptLabels','createChatHistory','randomUUID','parseCommand',`
     let currentPrompt=null,inputReady=false,guiMode=false,composerScheduled=false,busy=false,quitting=false,muted=false,busyPastedLiteral=false,lastInputLiteral=false;
     const earlyInputs=[],queuedInputs=[],pastedChunks=new Map(),notices=[],renders=[],shown=[],controls=[],questions=new Set();
@@ -32,14 +33,14 @@ function fixture(t){
     const safe=value=>value,note=text=>notices.push(text),checkpoint=()=>Promise.resolve(),scheduleComposer=()=>{},displaySubmission=(text,meta)=>shown.push({text,...meta}),signal=()=>controls.push('stop'),notifyError=error=>{throw error;},handleRuntimeCommands=async command=>controls.push(command.name),terminalTheme={styleBodyText:text=>text};
     const expandPastes=text=>{for(const [marker,value]of pastedChunks)text=text.split(marker).join(value);return text;};
     const onPaste=text=>{${onPaste}};
-    ${composer}${question}${accept}${enqueue}${receive}
+    ${composer}${keyControl}${question}${accept}${enqueue}${receive}
     const install=()=>{${listener}};install();
-    return {onPaste,render:renderComposer,drain(){${drain}},hydrate(data){history.restore(data);promptLabels.restore(history.snapshot());},ready(){inputReady=true;},busy:value=>busy=value,quit:()=>quitting=true,
-      ask(metadata={}){const promise=prompts.ask('Synthetic question > ',false,metadata);questions.add(promise);void promise.then(()=>questions.delete(promise),()=>questions.delete(promise));return promise;},
+    return {onPaste,onKeyControl,render:renderComposer,drain(){${drain}},hydrate(data){history.restore(data);promptLabels.restore(history.snapshot());},ready(){inputReady=true;},busy:value=>busy=value,quit:()=>quitting=true,
+      ask(metadata={}){const promise=prompts.ask('Synthetic question > ',!!metadata.hidden,metadata);questions.add(promise);void promise.then(()=>questions.delete(promise),()=>questions.delete(promise));return promise;},
       accept:acceptSubmission,queued:()=>queuedInputs.map(item=>({...item})),early:()=>earlyInputs.map(item=>({...item})),shown:()=>shown.map(item=>({...item})),notices:()=>[...notices],renders:()=>[...renders],count:()=>history.snapshot().promptCount,next:()=>promptLabels.next().sequence,literal:()=>lastInputLiteral,
       async close(){prompts.close();rl.close();await Promise.allSettled([...questions]);}};
   `);
-  const control=make(rl,createPromptQueue,createPromptLabels,createChatHistory,randomUUID,parseCommand);pasteCallback=control.onPaste;
+  const control=make(rl,createPromptQueue,createPromptLabels,createChatHistory,randomUUID,parseCommand);pasteCallback=control.onPaste;keyCallback=control.onKeyControl;
   t.after(async()=>{try{await control.close();}finally{await paste.detach();paste.destroy();input.destroy();output.destroy();}});
   return {control,rl,async send(value){input.write(value);await settle();}};
 }
@@ -74,6 +75,19 @@ test('an active editable question consumes its answer without a duplicate line s
 
 test('a setup or approval answer never enters startup input or prompt numbering',{timeout:5000},async t=>{
   const {control,send}=fixture(t);control.hydrate(saved(6));const answer=control.ask();await settle();await send('https://example.com/v1\r');assert.equal(await answer,'https://example.com/v1');assert.equal(control.early().length,0);assert.equal(control.queued().length,0);assert.equal(control.count(),6);assert.equal(control.next(),7);
+});
+
+test('hidden key reveal is deliberate, editable, cleared after submission and excluded from readline history',{timeout:5000},async t=>{
+  const {control,send,rl}=fixture(t);control.hydrate(saved(6));control.ready();rl.history.push('previous command');
+  const answer=control.ask({hidden:true});await settle();await send('\x1b[200~synthetic-key\x1b[201~');
+  control.render();assert.equal(control.renders().at(-1).hidden,true);assert.equal(control.renders().at(-1).text,'');
+  await send('\x12');assert.equal(control.renders().at(-1).hidden,false);assert.equal(control.renders().at(-1).text,'synthetic-key');
+  assert.equal(rl.line,'synthetic-key');assert.equal(control.queued().length,0);
+  await send('\x12');assert.equal(control.renders().at(-1).hidden,true);
+  await send('\r');assert.equal(await answer,'synthetic-key');assert.deepEqual(rl.history,['previous command']);
+  assert.equal(control.renders().at(-1),undefined);assert.equal(control.count(),6);
+  const second=control.ask({hidden:true});await settle();control.render();assert.equal(control.renders().at(-1).hidden,true);
+  await send('other synthetic answer\r');await second;
 });
 
 test('busy input reuses its single accepted metadata when enqueued and keeps paste literal',{timeout:5000},async t=>{

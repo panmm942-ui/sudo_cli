@@ -147,18 +147,21 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
     });
     lines.push('');
   } else lines = [paint(LOGO_COLOR, 'SUDO CLI'), ...fields];
-  lines.unshift(paint(90,fit(mainWidth>=CREDITS.length?CREDITS:SHORT_CREDITS,mainWidth)),'');
   const performanceContent=[paint(37,'Performance (This PC)'),'',...performanceLines(performance,sidebar?panelWidth:columns,paint)];
-  const limit=Math.max(1,rows-8);
-  lines=lines.slice(0,limit);
+  const limit=Math.max(1,rows-9);
+  lines=lines.slice(0,Math.max(0,limit-1));
+  const credits=paint(90,fit(mainWidth>=CREDITS.length?CREDITS:SHORT_CREDITS,mainWidth));
+  lines.push(credits);
   if(sidebar){
     const headerRows=Math.min(limit,Math.max(lines.length,performanceContent.length));
+    const mainLines=lines;
     lines=Array.from({length:headerRows},(_,index)=>{
-      const main=lines[index]||'';
+      const main=index===headerRows-1?credits:mainLines[index]===credits?'':mainLines[index]||'';
       const item=index===headerRows-1&&performanceContent.length>headerRows?paint(90,'More: enlarge terminal'):performanceContent[index]||'';
       return main+' '.repeat(Math.max(0,mainWidth-width(main)))+paint(90,'│')+item;
     });
   }
+  lines.push(paint(LOGO_COLOR,sidebar?'─'.repeat(mainWidth)+'┼'+'─'.repeat(panelWidth):'─'.repeat(columns)));
   if (color) lines[0] = BACKGROUND_STYLE + lines[0];
   const footer=fit(`v${VERSION} | / commands | Tab: Chat/Events | PgUp/PgDn Home/End | Context: reported`,columns);
   if (rows<12||columns<=logoWidth) return {lines:[(color?BACKGROUND_STYLE:'')+paint(LOGO_COLOR,fit('SUDO CLI | Enlarge terminal',columns))],height:1,sticky:false,sidebar:false,mainWidth:columns,performance:performanceContent,footer};
@@ -178,8 +181,10 @@ export function createDashboard({output=process.stdout,snapshot,now=()=>new Date
   const view=()=>{
     const state=snapshot(),elapsed=antennaClock.elapsed(!!state.working),rendered=renderDashboard({state,columns:output.columns||80,rows:output.rows||24,color:enabled(),now:now(),timeZone,platform,arch,activity:activity(),antennaElapsed:elapsed,antennaIdle:!antennaClock.hasWorked()});
     if(!rendered.sidebar&&rendered.sticky&&focus==='events'){
-      const lines=[rendered.lines[0],'',...rendered.performance],limit=Math.max(1,(output.rows||24)-8);
+      const lines=[rendered.lines[0],'',...rendered.performance],limit=Math.max(1,(output.rows||24)-10);
       const visible=lines.slice(0,limit);if(lines.length>limit)visible[visible.length-1]=enabled()?'\x1b[90mMore: enlarge terminal'+BACKGROUND_STYLE:'More: enlarge terminal';
+      visible.push(rendered.lines.at(-2));
+      visible.push((enabled()?`\x1b[${LOGO_COLOR}m`:'')+'─'.repeat(Math.max(1,(output.columns||80)-1))+(enabled()?'\x1b[0m'+BACKGROUND_STYLE:''));
       return {...rendered,lines:visible,height:visible.length};
     }
     return rendered;
@@ -204,6 +209,7 @@ export function createDashboard({output=process.stdout,snapshot,now=()=>new Date
     const footerTop=rows,composerRows=Math.min(3,Math.max(1,rows-current.height-3)),composerTop=Math.min(Math.max(1,rows-1),Math.max(current.height+2,footerTop-composerRows));
     const bodyTop=Math.min(composerTop-1,current.height+1),contentTop=Math.min(composerTop-1,bodyTop+1),contentBottom=Math.max(contentTop,composerTop-1);
     rectangles={compact:!right,header:{top:1,bottom:Math.min(rows,current.height),left:1,right:columns},chat:{top:Math.max(1,contentTop),bottom:Math.max(1,contentBottom),left:1,right:main},events:{top:Math.max(1,contentTop),bottom:right?rows:Math.max(1,contentBottom),left:right?main+2:1,right:columns},input:{top:composerTop,bottom:Math.max(composerTop,footerTop-1),left:1,right:main,rows:Math.max(1,footerTop-composerTop),columns:main},footer:{top:footerTop,bottom:rows,left:1,right:main},titles:{top:Math.max(1,bodyTop),bottom:Math.max(1,bodyTop),left:1,right:main},divider:right?{top:1,bottom:rows,left:main+1,right:main+1}:undefined};
+    rectangles.separator=current.sticky?{top:current.height,bottom:current.height,left:1,right:columns}:undefined;
     body.resize({columns:Math.max(1,rectangles.chat.right-rectangles.chat.left),rows:Math.max(1,rectangles.chat.bottom-rectangles.chat.top+1)});
     events.resize({columns:Math.max(1,rectangles.events.right-rectangles.events.left),rows:Math.max(1,rectangles.events.bottom-rectangles.events.top+1)});
   }
@@ -257,7 +263,7 @@ export function createDashboard({output=process.stdout,snapshot,now=()=>new Date
   function lower(){
     let result='';if(rectangles.compact)result+=drawPanel(focus);else result+=drawPanel('chat')+drawPanel('events');
     result+=row(rectangles.footer,0,current.footer);result+=composer()+menuPaint();
-    if(rectangles.divider)for(let line=1;line<=rectangles.divider.bottom;line++)result+=at(line,rectangles.divider.left)+style('│');
+    if(rectangles.divider)for(let line=rectangles.header.bottom+1;line<=rectangles.divider.bottom;line++)result+=at(line,rectangles.divider.left)+style('│');
     return result;
   }
   function redraw(){

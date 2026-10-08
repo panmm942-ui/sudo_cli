@@ -6,7 +6,7 @@ The dashboard labels this block **Performance (This PC)** beside the antenna.
 
 The **Performance (This PC)** panel shows each detected graphics card by name. System RAM and graphics memory are separate: an integrated card with 512 MiB does not replace a discrete card with about 8 GiB. Dedicated VRAM and shared system RAM have separate lines. Wider terminals place the named blocks above Events, beside the antenna. In compact terminals, switch to Events to see the Performance panel. `/gui` opens the same session with its Performance view.
 
-The display reads cached samples and updates automatically, including while idle. Monitoring makes no model requests. `/performance` was removed in version 0.6.9.
+The display reads cached samples and updates automatically, including while idle. Monitoring starts as soon as the dashboard opens, before waiting for the initial file scan or connection setup. CPU/RAM sampling runs independently of network and graphics-driver probes. Monitoring makes no model requests. `/performance` was removed in version 0.6.9.
 
 CPU and RAM refresh every 1.5 seconds. GPU and graphics memory refresh every 3 seconds. CPU starts with a baseline and shows a percentage after a second sample. A genuine idle reading can be 0%; an unsupported, denied, failed, or missing reading is **Unavailable**. A first delta sample is **Measuring**. A memory reading can show current usage while its capacity remains unavailable.
 
@@ -41,7 +41,7 @@ GPU usage, memory usage and capacity can have different availability. A card can
 
 ## Lifecycle and API
 
-`createSystemPerformance()` returns `start()`, `stop()`, `sample()`, and `snapshot()`. `start()` immediately returns a plain snapshot and starts the independent background timers. `sample()` provides an asynchronous manual refresh for checks. Concurrent GPU refreshes share one outstanding probe. `stop()` clears timers, aborts the outstanding subprocess, rejects its late updates, and resets delta baselines so a later restart does not average across the stopped period.
+`createSystemPerformance()` returns `start()`, `stop()`, `sample()`, and `snapshot()`. `start()` immediately returns a plain snapshot and starts the independent background timers. `sample()` provides an asynchronous manual refresh for checks. Concurrent GPU refreshes share one outstanding probe. `stop()` immediately clears timers, cancels the pending sample's result, and resets delta baselines so a later restart does not average across the stopped period. Await its returned promise to drain the pending read. Already-started fixed read-only GPU probes finish under their unchanged query deadlines; their cancelled results cannot update the display. Network shutdown also drains the current interval read. The UI awaits both monitors before exit.
 
 Snapshots contain `scope: 'local-computer'`, lifecycle status, timestamps, and separate `cpu`, `ram`, `gpu`, and `vram` objects. `null` means unknown. Metric status is `available`, `warming-up`, `unavailable`, or (for memory with known usage and unknown capacity) `partial`. GPU entries include identity, name, utilization, dedicated/shared bytes, memory kind, device status, error code and capacity source. Caller changes cannot modify the monitor's state. Errors never expose child diagnostic text, environment values, or provider credentials.
 

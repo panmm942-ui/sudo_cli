@@ -1,6 +1,6 @@
 # SUDO CLI
 
-[![Version](https://img.shields.io/badge/version-0.6.9-EF2929)](https://github.com/panmm942-ui/sudo_cli/releases)
+[![Version](https://img.shields.io/badge/version-0.6.10-EF2929)](https://github.com/panmm942-ui/sudo_cli/releases)
 [![Node](https://img.shields.io/badge/Node.js-22%2B-4B8F29)](docs/platforms.md)
 [![License](https://img.shields.io/badge/frontend-MIT-blue)](LICENSE)
 [![Engine](https://img.shields.io/badge/engine-OpenAI%20Codex-555)](THIRD_PARTY.md)

@@ -31,12 +31,16 @@ export function runPerformanceProbe(command, args, { signal, timeoutMs = 2500, m
   if (typeof command !== 'string' || !Array.isArray(args) || args.some(value => typeof value !== 'string')
       || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000
       || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) return Promise.reject(new Error('Performance probe unavailable.'));
+  if(signal?.aborted)return Promise.reject(new Error('Performance probe unavailable.'));
   return new Promise((resolve, reject) => {
     try {
-      execFile(command, args, { shell: false, windowsHide: true, encoding: 'utf8', signal,
+      // AbortSignal's execFile error callback can fire before child close.
+      // These fixed read-only probes finish under their existing deadline;
+      // cancellation rejects their result only after normal process drainage.
+      execFile(command, args, { shell: false, windowsHide: true, encoding: 'utf8',
         timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: maxBytes, cwd: os.tmpdir(),
         env: isolatedEnvironment(env, { LC_ALL: 'C', LANG: 'C' }) }, (error, stdout) => {
-        if (error) reject(new Error('Performance probe unavailable.'));
+        if (error||signal?.aborted) reject(new Error('Performance probe unavailable.'));
         else resolve(stdout);
       });
     } catch { reject(new Error('Performance probe unavailable.')); }
@@ -332,6 +336,7 @@ export function createSystemPerformance({ platform = process.platform, system = 
       clearInterval(cpuTimer); clearInterval(gpuTimer); cpuTimer = gpuTimer = undefined;
       controller?.abort();
       try { gpuSampler.reset?.(); } catch { /* A provider reset cannot prevent timer/probe cleanup. */ }
+      return inFlight||Promise.resolve(snapshot());
     },
   };
 }

@@ -19,8 +19,6 @@ async function fixture(t){
 
 test('each detached outcome reads the current saved preference and closes its fresh controller',async t=>{
   const stateDir=await fixture(t),directory=join(stateDir,'preferences'),played=[],controllers=[];
-  const preference=createNotifications({directory,interactive:false});
-  await preference.off();await preference.close();
   const notificationsFactory=options=>{
     assert.equal(options.directory,directory);assert.equal(options.interactive,true);
     assert.equal(options.output.isTTY,false);assert.equal(options.maxQueue,1);
@@ -28,6 +26,7 @@ test('each detached outcome reads the current saved preference and closes its fr
     controllers.push(controller);return controller;
   };
   assert.equal((await playDetachedNotification({stateDir,event:'done',id:'first',notificationsFactory})).status,'disabled');
+  assert.deepEqual(await readdir(directory),[]);assert.deepEqual(played,[]);
   const current=createNotifications({directory,interactive:false});await current.on();await current.close();
   assert.equal((await playDetachedNotification({stateDir,event:'approval',id:'second',notificationsFactory})).status,'played');
   assert.deepEqual(played,['approval']);assert.equal(controllers.length,2);
@@ -37,9 +36,10 @@ test('each detached outcome reads the current saved preference and closes its fr
 
 test('failed or missing audio produces one generic message, never a terminal bell or private error',async t=>{
   const stateDir=await fixture(t),logs=[],writes=[];
+  const preference=createNotifications({directory:join(stateDir,'preferences'),interactive:false});await preference.on();await preference.close();
   const value=await playDetachedNotification({stateDir,event:'error',id:'failure',log:(...args)=>logs.push(args),notificationsFactory:options=>createNotifications({...options,platform:'linux',output:{...options.output,write:value=>writes.push(value)},execute:async()=>{throw Object.assign(new Error('SECRET private audio path'),{code:'ENOENT'});}})});
   assert.equal(value.status,'unavailable');assert.deepEqual(writes,[]);assert.equal(logs.length,1);
-  assert.ok(!JSON.stringify(logs).includes('SECRET'));assert.deepEqual(await readdir(join(stateDir,'preferences')),[]);
+  assert.ok(!JSON.stringify(logs).includes('SECRET'));assert.deepEqual(await readdir(join(stateDir,'preferences')),['notifications.json']);
 });
 
 test('factory, playback and cleanup failures do not escape or include their private details',async t=>{
@@ -57,11 +57,12 @@ test('factory, playback and cleanup failures do not escape or include their priv
 
 test('an uncooperative player is bounded and private WAV files are removed on close',async t=>{
   const stateDir=await fixture(t),logs=[];let controller;
+  const preference=createNotifications({directory:join(stateDir,'preferences'),interactive:false});await preference.on();await preference.close();
   const started=Date.now();
   const result=await playDetachedNotification({stateDir,event:'done',id:'timeout',timeoutMs:25,log:(...args)=>logs.push(args),notificationsFactory:options=>(controller=createNotifications({...options,play:()=>new Promise(()=>{})}))});
   assert.equal(result.status,'unavailable');assert.ok(Date.now()-started<2000);
   assert.equal(controller.get().closed,true);assert.equal(logs.length,1);
-  assert.deepEqual(await readdir(join(stateDir,'preferences')),[]);
+  assert.deepEqual(await readdir(join(stateDir,'preferences')),['notifications.json']);
 });
 
 test('detached reporter shutdown drains a coordinator error already in flight and closes its controller',async t=>{
@@ -75,6 +76,7 @@ test('detached reporter shutdown drains a coordinator error already in flight an
 
 test('the detached task reporter emits exactly one terminal sound per real attempt, including reason-only outcomes',async t=>{
   const stateDir=await fixture(t),played=[];
+  const preference=createNotifications({directory:join(stateDir,'preferences'),interactive:false});await preference.on();await preference.close();
   const reporter=createDetachedTaskReporter({stateDir,work:{result:async(_job,patch)=>patch},notificationsFactory:options=>createNotifications({...options,play:async value=>played.push(value.event)})});
   const scenarios=[{status:'completed',result:'completed result'},{status:'blocked',code:'APPROVAL_REQUIRED',reason:'Permission required.'},{status:'failed',reason:'A task failed.'},{status:'cancelled',reason:'Stopped before completion.'},{status:'blocked',reason:'Need more information.'}];
   for(const [index,patch] of scenarios.entries()){

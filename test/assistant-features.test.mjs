@@ -61,6 +61,7 @@ async function backgroundFixture(t,{assess,runCloud,observeUpdates=false}={}){
   const inbox=await createTaskInbox({cwd:root,stateDir:root}),events=[],outcomes=[],deliveries=[];
   const updates=observeUpdates?observeTaskUpdates(inbox):undefined;
   const notifications=createNotifications({directory:join(root,'preferences'),interactive:true,cooldownMs:0,play:async({event})=>events.push(event)});
+  await notifications.on();
   async function delivered(){
     let timer;try{
       // Audio has its existing 4s bound; preparation/receipt checks get a separate 1s allowance.

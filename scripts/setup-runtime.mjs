@@ -6,7 +6,7 @@ import {lstat, open, realpath} from 'node:fs/promises';
 import {dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-const EXPECTED_VERSION = '0.6.9';
+const EXPECTED_VERSION = '0.6.10';
 const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA4K479LYZa8nbL423kpLOKjpMlsLwXTiGGaqESDeZYRM=
 -----END PUBLIC KEY-----
