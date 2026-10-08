@@ -10,6 +10,8 @@ Windows checks the original live engine and captured descendants before terminat
 
 Windows metadata helpers restrict module discovery to the stock Windows PowerShell system module directory before loading Microsoft modules. They do not use inherited user module paths.
 
+If an owned Windows process exits between the identity check and `taskkill`, the CLI checks its birth identity again before accepting the stop. Native error output does not bypass that check; a matching process that remains live still makes cleanup fail.
+
 On macOS, a known helper in a separate process group may exit naturally during the existing 250 ms shutdown grace, such as when its input closes. The CLI does not send individual signals using macOS's second-precision birth metadata. A helper that remains live after that grace keeps cleanup unverified.
 
 `/stop` interrupts the current turn and requests termination of its native background commands. It retains the AI connection for another turn. Closing the session performs the additional process cleanup described above.

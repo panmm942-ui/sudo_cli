@@ -452,7 +452,7 @@ test('unverified cleanup outranks stop and duration aborts, releases the lease a
     const watches=interceptedWatches(t),errors=[],outcomes=[];let reached,dispatches=0,releases=0,ended=0,schedulerTicks=0,firstId,wakeFailed=false;
     const ready=new Promise(resolve=>reached=resolve),secret='synthetic-cleanup-cause-secret';
     const failAfterAbort=signal=>new Promise((resolve,reject)=>{const fail=()=>reject(Object.assign(new Error('Native session cleanup needs review.'),{code,cause:new Error(`Safe primary failure ${secret}`)}));reached();if(signal.aborted)fail();else signal.addEventListener('abort',fail,{once:true});});
-    const created=await fixture(t,{inboxSecrets:()=>[secret],watchPaths:['.'],idleSleepMs:10000,scheduler:{tick:async()=>{schedulerTicks++;}},beginTask:async()=>mode==='duration'?{timeoutMs:200}:{},endTask:async()=>{ended++;},
+    const created=await fixture(t,{inboxSecrets:()=>[secret],watchPaths:['.'],idleSleepMs:10000,scheduler:{tick:async()=>{schedulerTicks++;}},beginTask:async id=>mode==='duration'&&id===firstId?{timeoutMs:200}:{},endTask:async()=>{ended++;},
       onError:error=>errors.push(error),onTaskResult:async(job,patch)=>{outcomes.push({id:job.id,status:patch.status});return patch;},
       assess:async(job,{signal})=>job.id===firstId&&stage==='assess'?failAfterAbort(signal):{action:'cloud'},
       wake:async({signal})=>{if(stage==='wake'&&!wakeFailed){wakeFailed=true;return failAfterAbort(signal);}},
