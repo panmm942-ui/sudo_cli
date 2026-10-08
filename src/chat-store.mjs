@@ -33,7 +33,7 @@ async function assertDirectoryPath(path) {
   }
 }
 
-/** Atomic, credential-free visible transcripts, with a last-chat pointer per project. */
+/** Atomic, credential-free transcripts and optional AI replay context, with a last-chat pointer per project. */
 export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = process.cwd(), secrets = () => [] } = {}) {
   if (!validString(stateDir) || !validString(cwd) || typeof secrets !== 'function') throw new Error('Saved chats require a valid storage directory, project directory and secret supplier.');
   let project;
@@ -104,6 +104,7 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
       || !validString(value.cwd) || !timestamp(value.createdAt) || !timestamp(value.updatedAt) || typeof value.title !== 'string' || value.history === undefined) throw new Error('invalid');
     const history = sanitizeHistory(value.history);
     const result = { version: 1, id: value.id, title: title(value.title, history), cwd: value.cwd, createdAt: value.createdAt, updatedAt: value.updatedAt, history, pendingInputs: sanitizePending(value.pendingInputs) };
+    if(value.contextHistory!==undefined)result.contextHistory=sanitizeHistory(value.contextHistory);
     const submissions=sanitizeSubmissions(value.pendingSubmissions,result.pendingInputs,history);if(submissions)result.pendingSubmissions=submissions;
     const connection = sanitizeConnection(value.connection);
     if (connection) result.connection = connection;
@@ -210,11 +211,12 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
     directory,
     warnings() { return [...warnings]; },
     get,
-    async create({ title: selectedTitle, connection, history: suppliedHistory, pendingInputs,pendingSubmissions } = {}) {
+    async create({ title: selectedTitle, connection, history: suppliedHistory, contextHistory: suppliedContext, pendingInputs,pendingSubmissions } = {}) {
       await readPointer();
       const metadata = sanitizeConnection(connection);
       const history = sanitizeHistory(suppliedHistory);
       const record = { version: 1, id: randomUUID(), title: title(selectedTitle, history), cwd: project, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), history, pendingInputs: sanitizePending(pendingInputs) };
+      if(suppliedContext!==undefined&&suppliedContext!==null)record.contextHistory=sanitizeHistory(suppliedContext);
       const submissions=sanitizeSubmissions(pendingSubmissions,record.pendingInputs,history);if(submissions)record.pendingSubmissions=submissions;
       if (metadata) record.connection = metadata;
       await locked(`chat-${record.id}.json`, async () => {
@@ -224,17 +226,20 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
       await setLast(record.id);
       return record;
     },
-    async save({ id, title: selectedTitle, connection, history: suppliedHistory, pendingInputs,pendingSubmissions } = {}) {
+    async save({ id, title: selectedTitle, connection, history: suppliedHistory, contextHistory: suppliedContext, pendingInputs,pendingSubmissions } = {}) {
       validId(id);
       if (suppliedHistory === undefined) throw new Error('Saving a chat requires an explicit history snapshot.');
       const metadata = connection === undefined ? undefined : sanitizeConnection(connection);
       const history = sanitizeHistory(suppliedHistory);
+      const context = suppliedContext===undefined||suppliedContext===null?undefined:sanitizeHistory(suppliedContext);
       const pending = pendingInputs === undefined ? undefined : sanitizePending(pendingInputs);
       return locked(`chat-${id}.json`, async () => {
         const previous = await get(id);
         if (!previous) throw new Error('Saved chat was not found. Create a chat before saving it.');
         if (!sameProject(previous.cwd, project)) throw new Error('Saved chat belongs to another project; existing chat was left unchanged.');
         const record = { version: 1, id, title: title(selectedTitle ?? (previous.title === 'New chat' ? undefined : previous.title), history), cwd: project, createdAt: previous.createdAt, updatedAt: new Date().toISOString(), history, pendingInputs: pending ?? previous.pendingInputs };
+        const selectedContext=suppliedContext===undefined?previous.contextHistory:context;
+        if(selectedContext)record.contextHistory=selectedContext;
         const submissions=sanitizeSubmissions(pendingSubmissions??(pending===undefined?previous.pendingSubmissions:undefined),record.pendingInputs,history);if(submissions)record.pendingSubmissions=submissions;
         const selectedConnection = connection === undefined ? previous.connection : metadata;
         if (selectedConnection) record.connection = selectedConnection;

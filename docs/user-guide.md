@@ -1,4 +1,4 @@
-# Using sudocli 0.6.10
+# Using sudocli 0.6.11
 
 Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/textcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
@@ -144,7 +144,12 @@ Full visible chat remains archived and is never silently shortened. Before repla
 
 If full replay exceeds the allowance, it stops before provider traffic. `/context review` displays numbered messages, accepts your reviewed summary until `/end`, then asks for comma-separated message numbers. Choose the relevant excerpts yourself. It retains the complete archive and replays the bounded summary/excerpts as conversation input, never as higher-trust developer instructions. An oversized reviewed selection is also refused.
 
-`/compact` invokes native compaction while retaining the archive. `/clear` gives the engine fresh context and retains visible history. `/new` or `/chat new` creates a separate saved chat after the keep/discard choice and clears its display only on success. `/history clear` clears the current visible archive without resetting the active engine. `/handoff [DIRECTORY]` exports full Markdown/JSON separately; hidden reasoning/tool internals and original attachment bytes are not transferred.
+`/compact` invokes native compaction while retaining the archive. `/clear` removes the visible user and AI messages from the current saved chat and asks **Also forget previous messages? [y/N]**.
+
+- **No** or Enter keeps the earlier conversation as internal AI context, including after reopening the chat. The display stays cleared.
+- **Yes** removes that retained conversation and starts fresh native AI context.
+
+Both choices keep the current chat ID, title and prompt counter. Canceling the question leaves the chat unchanged. `/new` or `/chat new` creates a separate chat after the keep/discard choice. `/history clear` remains a visible-history action without resetting the active engine. `/handoff [DIRECTORY]` and training exports include the current visible transcript, not the earlier context hidden by `/clear`. Existing export files and approved project memory are unaffected. See [saved-chat storage](chats.md).
 
 `/memory edit` accepts project rules/preferences/decisions until `/end`; `on|off|clear` controls that approved memory. Model output and discovered files cannot silently become approved memory. `/personalize setup` separately saves persona, language, tone, reply length/format and other instructions per endpoint/model/protocol. `/preferences` is its alias. These are developer instructions, not training or execution permissions.
 
@@ -212,18 +217,18 @@ Explicit `/voice record 10` or `/voice file PATH` shows a transcript and asks be
 ## Run durable background work
 
 ```text
-/247 setup
-/247 start
-/247 add Check the failing build and explain the cause.
-/247 list
-/247 result JOB_ID
-/247 retry JOB_ID
+/24.7 setup
+/24.7 start
+/24.7 add Check the failing build and explain the cause.
+/24.7 list
+/24.7 result JOB_ID
+/24.7 retry JOB_ID
 /schedule add
 /startup setup
 /startup plan
 ```
 
-Setup chooses a saved, already-running local guardian AI on loopback and a working AI for heavier tasks. Explicit inbox jobs, selected folder changes or an optional standing goal trigger work. With no goal/job, idle makes no model calls. The guardian finishes locally, calls the working AI or blocks the job with a reason. Foreground `/247 start` stops on terminal exit; `/247 detach` survives terminal close. `/247 stop` stops either worker. Detached execution declines approvals requiring a person.
+Setup chooses a saved, already-running local guardian AI on loopback and a working AI for heavier tasks. Explicit inbox jobs, selected folder changes or an optional standing goal trigger work. With no goal/job, idle makes no model calls. The guardian finishes locally, calls the working AI or blocks the job with a reason. The canonical command is `/24.7`; `/247` remains an unlisted compatibility alias. Foreground `/24.7 start` stops on terminal exit; `/24.7 detach` survives terminal close. `/24.7 stop` stops either worker. Detached execution declines approvals requiring a person.
 
 Tasks/results and schedule occurrences persist. Interrupted active work requires review/retry rather than assuming completion; occurrences are enqueued idempotently. `/schedule add` requires an ISO time with an explicit timezone and optional repeat minutes. List/pause/resume/remove manage a schedule. The guardian must run to process due work; machine sleep/off and unavailable local services still stop execution.
 

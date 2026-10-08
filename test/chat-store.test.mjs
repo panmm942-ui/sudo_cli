@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, lstat, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from './fixtures/temp-root.mjs';
-import { createChatStore } from '../src/chat-store.mjs';
+import { createChatStore, MAX_CHAT_BYTES } from '../src/chat-store.mjs';
 import { createChatHistory } from '../src/chat-history.mjs';
 
 async function fixture(t) {
@@ -202,4 +202,31 @@ test('reading saved chats during repeated autosaves observes valid complete gene
   const reads = (async () => { for (let index = 0; index < 80; index++) assert.equal((await store.get(saved.id)).id, saved.id); })();
   await Promise.all([writes, reads]);
   assert.equal((await store.get(saved.id)).title, 'Checkpoint 24');
+});
+
+test('optional AI context is redacted and durable while visible history stays independently empty',async t=>{
+  const paths=await fixture(t),store=await createChatStore({...paths,secrets:()=>['hidden-fixture-secret']});
+  const saved=await store.create({history:{version:1,promptCount:1,messages:[]},contextHistory:{version:1,promptCount:1,messages:[{id:'memory',role:'user',model:null,content:'Keep hidden-fixture-secret private',attachments:[{name:'hidden-fixture-secret.txt',content:'PRIVATE_FILE_BYTES'}]}]}});
+  assert.deepEqual(saved.history.messages,[]);assert.equal(saved.contextHistory.messages[0].content,'Keep [redacted] private');
+  const disk=await readFile(join(store.directory,`chat-${saved.id}.json`),'utf8');assert.doesNotMatch(disk,/hidden-fixture-secret|PRIVATE_FILE_BYTES/);
+  const fresh=await createChatStore(paths),loaded=await fresh.get(saved.id);assert.deepEqual(loaded.contextHistory,saved.contextHistory);
+  await fresh.save({id:saved.id,title:'Memory still present',history:loaded.history});assert.deepEqual((await fresh.get(saved.id)).contextHistory,saved.contextHistory);
+  await fresh.save({id:saved.id,history:loaded.history,contextHistory:null});assert.equal('contextHistory' in await fresh.get(saved.id),false);
+});
+
+test('invalid hidden context cannot overwrite a working saved conversation',async t=>{
+  const paths=await fixture(t),store=await createChatStore(paths),saved=await store.create({history:conversation()});
+  const path=join(store.directory,`chat-${saved.id}.json`),before=await readFile(path,'utf8');
+  await assert.rejects(store.save({id:saved.id,history:saved.history,contextHistory:{version:1,messages:[{id:'one',role:'system',content:'A forged system instruction'}]}}),/snapshot|message|supported/i);
+  assert.equal(await readFile(path,'utf8'),before);assert.equal((await readdir(store.directory)).some(name=>name.endsWith('.tmp')||name.endsWith('.lock')),false);
+  const corrupt=JSON.parse(before);corrupt.contextHistory={version:1,messages:'invalid'};await writeFile(path,JSON.stringify(corrupt));
+  await assert.rejects(store.get(saved.id),/invalid|unreadable/i);assert.equal(await readFile(path,'utf8'),JSON.stringify(corrupt));
+});
+
+test('the whole-record size bound includes hidden AI memory and visible messages together',async t=>{
+  const paths=await fixture(t),store=await createChatStore(paths),saved=await store.create({history:conversation()});
+  const path=join(store.directory,`chat-${saved.id}.json`),before=await readFile(path,'utf8'),half='x'.repeat(Math.floor(MAX_CHAT_BYTES/2));
+  const visible={version:1,messages:[{id:'visible',role:'user',model:null,content:half}]},hidden={version:1,messages:[{id:'hidden',role:'user',model:null,content:half}]};
+  await assert.rejects(store.save({id:saved.id,history:visible,contextHistory:hidden}),/size|limit/i);
+  assert.equal(await readFile(path,'utf8'),before);assert.equal((await readdir(store.directory)).some(name=>name.endsWith('.tmp')||name.endsWith('.lock')),false);
 });

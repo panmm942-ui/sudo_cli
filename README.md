@@ -1,6 +1,6 @@
 # SUDO CLI
 
-[![Version](https://img.shields.io/badge/version-0.6.10-EF2929)](https://github.com/panmm942-ui/sudo_cli/releases)
+[![Version](https://img.shields.io/badge/version-0.6.11-EF2929)](https://github.com/panmm942-ui/sudo_cli/releases)
 [![Node](https://img.shields.io/badge/Node.js-22%2B-4B8F29)](docs/platforms.md)
 [![License](https://img.shields.io/badge/frontend-MIT-blue)](LICENSE)
 [![Engine](https://img.shields.io/badge/engine-OpenAI%20Codex-555)](THIRD_PARTY.md)
@@ -57,6 +57,7 @@ The default interactive launch stays offline until you choose an AI.
 - `/connect` configures a cloud or local endpoint; `/switch` selects a saved AI while carrying the chat.
 - `/local file "PATH"` inspects model files and offers supported installed runners. Model loading depends on architecture, runner support and available hardware.
 - `/chat` opens saved project chats; `/new` starts a new one.
+- `/clear` clears the current chat display and asks whether to forget the earlier AI context. **No** or Enter keeps it for continuation, including after reopening; **Yes** forgets it. The chat ID, title and prompt counter stay the same. [Saved-chat details](docs/chats.md)
 
 Keys stay in memory unless you explicitly select OS-protected credential storage. Preferences are saved per endpoint/model/protocol. See [local AI and agents](docs/local-ai-and-agents.md), [model files](docs/local-model-files.md) and [credential controls](docs/user-guide.md).
 
@@ -66,7 +67,7 @@ Keys stay in memory unless you explicitly select OS-protected credential storage
 
 `/changes CHECKPOINT_ID` reviews a saved task checkpoint. `/verify COMMAND` runs your acceptance check; `/undo CHECKPOINT_ID` restores recorded edits while preserving later conflicting changes. Observed project changes can also include your own edits.
 
-`/agents` runs specialists in isolated source copies; applying a proposal is explicit. `/247` manages durable background jobs, with optional schedules and OS startup. These features require configured models and a running computer. [User guide](docs/user-guide.md) · [Agents](docs/local-ai-and-agents.md) · [Background work](docs/always-on.md)
+`/agents` runs specialists in isolated source copies; applying a proposal is explicit. `/24.7` manages durable background jobs, with optional schedules and OS startup. These features require configured models and a running computer. [User guide](docs/user-guide.md) · [Agents](docs/local-ai-and-agents.md) · [Background work](docs/always-on.md)
 
 ## 🔐 Access stays explicit
 

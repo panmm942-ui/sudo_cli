@@ -30,7 +30,7 @@ questions and raw multiline prompts keep their own input behavior. On terminals 
 reporting enabled, hold the terminal's usual selection modifier (often Shift)
 to select text; support varies by terminal.
 
-`/new` resets the visible conversation and its scroll position. `/chat open ID`
+`/clear` resets the current visible conversation and scroll position without changing the chat ID, title or prompt counter. Its Yes/No question controls whether earlier AI context is forgotten or retained, including after reopening. `/new` starts a separate chat and resets its visible conversation and scroll position. `/chat open ID`
 or the saved chat picker replaces the display with the selected conversation.
 Saved data and exports remain controlled by the saved chat commands.
 

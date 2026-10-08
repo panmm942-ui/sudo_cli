@@ -37,6 +37,17 @@ test('saved chats use the canonical chat command in menus and completion',async(
   assert.deepEqual(completeCommand('/chat')[0],['/chat']);
 });
 
+test('background work is discoverable as 24.7 while the saved 247 command remains an alias',async()=>{
+  const {COMMANDS,commandMenu,completeCommand,parseCommand}=await import('../src/commands.mjs');
+  assert.deepEqual(completeCommand('/24')[0],['/24.7']);
+  assert.equal(COMMANDS.some(command=>command.name==='/247'),false);
+  for(const menu of [commandMenu(),commandMenu('background'),commandMenu('',{compact:true})]){
+    assert.match(menu,/\/24\.7\b/);assert.doesNotMatch(menu,/\/247\b/);
+  }
+  assert.deepEqual(parseCommand('/24.7 add "Check the build"'),{name:'/24.7',args:['add','Check the build'],rawArgs:'add "Check the build"'});
+  assert.equal(parseCommand('/247 status').name,'/24.7');
+});
+
 test('quoted file paths preserve Windows slashes, escaped spaces and user text', async () => {
   const { parseCommand } = await import('../src/commands.mjs');
   assert.deepEqual(parseCommand('/upload "C:\\My Project\\a.txt" "folder name"').args, ['C:\\My Project\\a.txt','folder name']);

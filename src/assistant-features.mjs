@@ -117,6 +117,21 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
     await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const record=await chatSession.open(id);await onChatChange({reason:'open',record});note('Saved chat restored. Its full visible history is queued for your next prompt.');
   }
   async function newChat(){const keep=!/^n(o)?$/i.test(await ask('  Keep the current saved chat? [Y/n] › '));await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const record=await chatSession.newChat({keep});await onChatChange({reason:'new',record});note('New chat started.');}
+  async function clearChat(){
+    let forget;
+    for(;;){
+      const answer=(await ask('  Clear this chat. Also forget previous messages? [y/N] › ')).trim();
+      if(/^y(es)?$/i.test(answer)){forget=true;break;}
+      if(!answer||/^n(o)?$/i.test(answer)){forget=false;break;}
+      note('Choose y to forget AI memory, or n to keep it. Both choices clear the visible messages.');
+    }
+    await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);
+    let record;
+    try{record=await chatSession.clear({forget});}
+    catch(error){if(error?.code==='CHAT_CLEAR_COMMITTED'&&error.record)await onChatChange({reason:'clear',record:error.record,forget});throw error;}
+    await onChatChange({reason:'clear',record,forget});
+    note(forget?'Chat cleared. AI memory forgotten.':'Chat cleared. AI memory kept for continuation.');
+  }
   async function persona(args){
     const connection=getConnection();if(!connection)throw new Error('Connect an AI first.');const previous=await personalization.get(connection);
     const action=args[0]||'status';
@@ -140,8 +155,8 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
   }
   async function getInbox(){if(!inbox){const {createTaskInbox}=await import('./task-inbox.mjs');inbox=await createTaskInbox({...stateOptions,secrets});}return inbox;}
   const currentSettings=()=>({...settings,mcp:new Map([...(settings.mcp||[])].filter(([name])=>name!=='sudocli_browser')),computerServers:new Set(settings.computerServers||[]),disabledComputerTools:new Map(settings.disabledComputerTools||[]),attachments:[],skills:[],pendingContext:undefined,voiceService:undefined,speechService:undefined,serviceController:undefined,mcpTokens:undefined});
-  async function stopForPolicyChange(){await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const {getAgentWorker,stopAgentWorker}=await import('./agent-control.mjs');const worker=await getAgentWorker(stateOptions);await stopAgentWorker(stateOptions);if(worker.running)note('Background worker stopped for the permission/tool-policy change. Start /247 again to apply the new policy.');}
-  async function freshAgentConfig(){if(!agentConfig)throw new Error('Configure /247 setup first.');const {validateAgentConfig}=await import('./agent-control.mjs');const rates=selected=>settings.pricing?.[selected.baseUrl+'\0'+selected.model],shared=await extraInstructions();return validateAgentConfig({...agentConfig,localConnection:{...agentConfig.localConnection,capabilities:capabilitiesFor(agentConfig.localConnection)},cloudConnection:{...agentConfig.cloudConnection,capabilities:capabilitiesFor(agentConfig.cloudConnection)},settings:currentSettings(),budget:settings.budget||{},pricing:rates(agentConfig.cloudConnection),localPricing:rates(agentConfig.localConnection),...(settings.gpu?{wake:settings.gpu.wake,sleep:settings.gpu.sleep,gpuStatus:settings.gpu.status}:{}),developerInstructions:[personalizationInstructions(await personalization.get(agentConfig.cloudConnection)),shared].filter(Boolean).join('\n\n'),localDeveloperInstructions:[personalizationInstructions(await personalization.get(agentConfig.localConnection)),shared].filter(Boolean).join('\n\n')});}
+  async function stopForPolicyChange(){await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const {getAgentWorker,stopAgentWorker}=await import('./agent-control.mjs');const worker=await getAgentWorker(stateOptions);await stopAgentWorker(stateOptions);if(worker.running)note('Background worker stopped for the permission/tool-policy change. Start /24.7 again to apply the new policy.');}
+  async function freshAgentConfig(){if(!agentConfig)throw new Error('Configure /24.7 setup first.');const {validateAgentConfig}=await import('./agent-control.mjs');const rates=selected=>settings.pricing?.[selected.baseUrl+'\0'+selected.model],shared=await extraInstructions();return validateAgentConfig({...agentConfig,localConnection:{...agentConfig.localConnection,capabilities:capabilitiesFor(agentConfig.localConnection)},cloudConnection:{...agentConfig.cloudConnection,capabilities:capabilitiesFor(agentConfig.cloudConnection)},settings:currentSettings(),budget:settings.budget||{},pricing:rates(agentConfig.cloudConnection),localPricing:rates(agentConfig.localConnection),...(settings.gpu?{wake:settings.gpu.wake,sleep:settings.gpu.sleep,gpuStatus:settings.gpu.status}:{}),developerInstructions:[personalizationInstructions(await personalization.get(agentConfig.cloudConnection)),shared].filter(Boolean).join('\n\n'),localDeveloperInstructions:[personalizationInstructions(await personalization.get(agentConfig.localConnection)),shared].filter(Boolean).join('\n\n')});}
   async function chooseLocal(){
     const all=(await profiles.list()).filter(isLocalEndpoint);
     if(!all.length)throw new Error('Save an AI running on this PC with /switch local first.');all.forEach((p,i)=>note(`${i+1}. ${p.name} · ${p.model}`));
@@ -150,8 +165,8 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
     if(!apiKey)apiKey=await loadCredential(selected);if(apiKey)rememberSecret(apiKey);return validateConnection({...selected,apiKey});
   }
   async function setupAgent(){
-    if(coordinator)throw new Error('Stop /247 before changing its setup.');
-    const {getAgentWorker}=await import('./agent-control.mjs');if((await getAgentWorker(stateOptions)).running)throw new Error('Stop /247 before changing its setup. A detached worker is already running for this project.');
+    if(coordinator)throw new Error('Stop /24.7 before changing its setup.');
+    const {getAgentWorker}=await import('./agent-control.mjs');if((await getAgentWorker(stateOptions)).running)throw new Error('Stop /24.7 before changing its setup. A detached worker is already running for this project.');
     const localConnection=await chooseLocal(),cloudConnection=getConnection();
     if(!cloudConnection)throw new Error('Connect the main AI first.');
     const standingGoal=(await ask('  Standing goal [optional; local AI checks every 60s] › '))||undefined;
@@ -160,7 +175,7 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
     if(wakeURL&&!sleepURL)throw new Error('Supply both provider wake and sleep URLs, or leave both empty.');
     let hookKey;if(wakeURL){hookKey=(await ask('  Provider hook key [hidden; Enter for none] › ',true))||undefined;if(hookKey)rememberSecret(hookKey);}
     agentConfig={localConnection,cloudConnection,settings:currentSettings(),standingGoal,watchPaths:folder?[resolve(cwd,folder)]:[],developerInstructions:personalizationInstructions(await personalization.get(cloudConnection)),localDeveloperInstructions:personalizationInstructions(await personalization.get(localConnection)),...(wakeURL?{wake:{url:wakeURL,apiKey:hookKey},sleep:{url:sleepURL,apiKey:hookKey}}:{})};
-    note('24/7 setup ready. /247 start runs here; /247 detach continues after this terminal closes. Idle makes no cloud requests. Provider billing stops only if your power hooks actually stop its GPU.');
+    note('24/7 setup ready. /24.7 start runs here; /24.7 detach continues after this terminal closes. Idle makes no cloud requests. Provider billing stops only if your power hooks actually stop its GPU.');
   }
   async function startAgent(){
     if(coordinator){note('24/7 mode is already running here.');return;}
@@ -170,34 +185,35 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
     const store=await getInbox(),scheduler=await createScheduler({inbox:store}),budget=await createBudgetLedger({...stateOptions,policy:selected.budget||{}}),gpu=createGpuController({wake:selected.wake,sleep:selected.sleep,status:selected.gpuStatus});
     const {createBackgroundWork}=await import('./background-work.mjs');const work=await createBackgroundWork({...stateOptions,secrets,settings:selected.settings,checks:settings.checks||[]});
     const taskModels=new Map();
-    const resultReporter=createBackgroundResultReporter({work,modelFor:id=>taskModels.get(id)||selected.localConnection.model,onResult:onBackgroundResult,onAttention:onBackgroundError,onReportError:()=>note('24/7 task status could not be shown. Inspect /247 list and /247 result TASK_ID.')});
+    const resultReporter=createBackgroundResultReporter({work,modelFor:id=>taskModels.get(id)||selected.localConnection.model,onResult:onBackgroundResult,onAttention:onBackgroundError,onReportError:()=>note('24/7 task status could not be shown. Inspect /24.7 list and /24.7 result TASK_ID.')});
     const run=async options=>{let denied=false;const deniedError=()=>{const error=new Error('An action was denied or needs permission. Review and explicitly retry this task.');error.code='APPROVAL_REQUIRED';return error;};let result;try{result=await runAgentTask({...options,onApproval:async request=>{let allowed=false;try{allowed=await onApproval?.(request)===true;}catch{}if(!allowed)denied=true;return allowed;}});}catch(error){if(denied&&!['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED'].includes(error?.code))throw deniedError();throw error;}if(denied)throw deniedError();return result;};
     coordinator=createAlwaysOn({inbox:store,scheduler,beginTask:async id=>{const limits=await budget.beginTask(id);try{await work.beginTask(id);}catch(error){await budget.endTask(id);throw error;}resultReporter.begin(id);return limits;},endTask:async id=>{try{await work.endTask(id);}finally{await budget.endTask(id);taskModels.delete(id);}},onTaskResult:resultReporter.result,standingGoal:selected.standingGoal,watchPaths:selected.watchPaths,
       assess:async(job,{signal})=>{const reply=await run({connection:selected.localConnection,cwd,settings:{...selected.settings,effort:undefined},prompt:job.prompt,developerInstructions:[selected.localDeveloperInstructions,LOCAL_DECISION_INSTRUCTIONS].filter(Boolean).join('\n\n'),signal,runtime:{requestHooks:budget.requestHooks({taskId:job.id,pricing:selected.localPricing})}});const decision=parseLocalDecision(reply.text);if(decision.action==='local')taskModels.set(job.id,selected.localConnection.model);return decision;},
       runCloud:async(job,{signal})=>{const reply=await run({connection:selected.cloudConnection,cwd,settings:selected.settings,prompt:job.prompt,developerInstructions:selected.developerInstructions,signal,runtime:{requestHooks:budget.requestHooks({taskId:job.id,pricing:selected.pricing})}});taskModels.set(job.id,selected.cloudConnection.model);return reply.text;},
       ...(selected.wake?{wake:options=>gpu.wake(options),sleep:options=>gpu.sleep(options)}:{}),
       onState:state=>onBackgroundState(state),onError:error=>{note(`24/7: ${error.message||error}`);void resultReporter.error(error,coordinator?.snapshot().activeJobId);}});
-    try{await coordinator.start();}catch(error){coordinator=undefined;throw error;}note('24/7 mode started. /247 add TASK submits work; /247 stop stops it.');
+    try{await coordinator.start();}catch(error){coordinator=undefined;throw error;}note('24/7 mode started. /24.7 add TASK submits work; /24.7 stop stops it.');
   }
   async function agent(args,rawArgs){
     const action=args[0]||'status';const store=await getInbox();
     if(action==='setup'){await setupAgent();return;}
     if(action==='start'){await startAgent();return;}
-    if(action==='detach'){if(coordinator){await coordinator.stop();coordinator=undefined;}if(!agentConfig)await setupAgent();const {startAgentWorker}=await import('./agent-control.mjs');const worker=await startAgentWorker({...stateOptions,config:await freshAgentConfig()});note(`24/7 background worker running · PID ${worker.pid}. Close this terminal safely; /247 stop ends it.`);return;}
+    if(action==='detach'){if(coordinator){await coordinator.stop();coordinator=undefined;}if(!agentConfig)await setupAgent();const {startAgentWorker}=await import('./agent-control.mjs');const worker=await startAgentWorker({...stateOptions,config:await freshAgentConfig()});note(`24/7 background worker running · PID ${worker.pid}. Close this terminal safely; /24.7 stop ends it.`);return;}
     if(action==='stop'){await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const {stopAgentWorker}=await import('./agent-control.mjs');await stopAgentWorker(stateOptions);note('24/7 mode stopped.');return;}
-    if(action==='add'){const prompt=(rawArgs||args.join(' ')).replace(/^add\s*/, '').trim();if(!prompt)throw new Error('Use /247 add TASK.');const job=coordinator?await coordinator.submit({prompt,source:'user'}):await store.submit({prompt,source:'user'});note(`Task queued: ${job.id}`);return;}
-    if(action==='retry'){if(!args[1])throw new Error('Use /247 retry TASK_ID.');await store.update(args[1],{status:'pending'});note('Task queued for an explicit retry.');return;}
+    if(action==='add'){const prompt=(rawArgs||args.join(' ')).replace(/^add\s*/, '').trim();if(!prompt)throw new Error('Use /24.7 add TASK.');const job=coordinator?await coordinator.submit({prompt,source:'user'}):await store.submit({prompt,source:'user'});note(`Task queued: ${job.id}`);return;}
+    if(action==='retry'){if(!args[1])throw new Error('Use /24.7 retry TASK_ID.');await store.update(args[1],{status:'pending'});note('Task queued for an explicit retry.');return;}
     if(action==='result'){const job=await store.get(args[1]);if(!job)throw new Error('Task was not found.');note(`${job.status}: ${job.result||job.reason||'No result yet.'}`);return;}
     if(action==='list'){for(const job of await store.list())note(`${job.id} · ${job.status} · ${job.prompt.slice(0,120)}`);return;}
     if(action==='status'){const {getAgentWorker}=await import('./agent-control.mjs');const worker=await getAgentWorker(stateOptions);note(`24/7: ${coordinator?'running in this terminal':worker?.running?'background worker running':'Off'} · ${JSON.stringify(coordinator?.snapshot()||worker?.status||{})}`);return;}
-    throw new Error('Use /247 setup,start,detach,stop,status,add TASK,list,result ID,or retry ID.');
+    throw new Error('Use /24.7 setup,start,detach,stop,status,add TASK,list,result ID,or retry ID.');
   }
   return {
     async handle({name,args=[],rawArgs=''}){
       if(name==='/chat'||name==='/chatt'||name==='/chats'){await chats(args);return true;}
       if(name==='/new'){await newChat();return true;}
+      if(name==='/clear'){await clearChat();return true;}
       if(name==='/personalize'||name==='/preferences'){await persona(args);return true;}
-      if(name==='/247'||name==='/agent'){await agent(args,rawArgs);return true;}
+      if(name==='/24.7'||name==='/247'||name==='/agent'){await agent(args,rawArgs);return true;}
       if(name==='/live'||(name==='/voice'&&['live','on','start'].includes(args[0]))){await live();return true;}
       if(name==='/voice'&&args[0]==='pause'){settings.voicePaused=true;await voice?.stop();note('Voice paused; the microphone is released. /voice resume starts listening.');return true;}
       if(name==='/voice'&&args[0]==='resume'){settings.voicePaused=false;if(voice)await voice.start();else await live();return true;}

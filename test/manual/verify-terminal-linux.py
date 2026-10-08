@@ -243,14 +243,14 @@ try:
             resumed=task(second,'verify restart restoration')
             assert 'first saved chat baseline' in json.dumps(resumed['messages'])
             assert 'V5 careful test persona' in json.dumps(resumed['messages'])
-            assert '24/7: Off' in second.command('/247 status')
-            marker=second.send('/247 setup\n')
+            assert '24/7: Off' in second.command('/24.7 status')
+            marker=second.send('/24.7 setup\n')
             for label,answer in [('Local coordinator AI','Guardian'),('Local AI key',KEY),('Standing goal',''),('Folder to watch',''),('GPU provider wake URL','')]:
                 marker=ask_answer(second,marker,label,answer)
             second.ready(marker)
-            second.command('/247 start')
+            second.command('/24.7 start')
             idle_count=len(requests);second.drain(1.3);assert len(requests)==idle_count,'Idle caused model traffic'
-            marker=second.send('/247 add foreground local task\n')
+            marker=second.send('/24.7 add foreground local task\n')
             second.read_until(lambda raw:len(requests)>idle_count)
             second.drain(.5)
             active=plain(bytes(second.transcript[marker:]));assert 'Status: Working' in active,'Background task dashboard did not mark working'
@@ -258,18 +258,18 @@ try:
             wait_file(lambda:any(job['status']=='completed' and job['prompt']=='foreground local task' for job in tasks(state)),second)
             assert requests[-1]['model']=='fixture-local'
             assert requests[-1].get('reasoning_effort') is None
-            assert '24/7: running in this terminal' in second.command('/247 status')
+            assert '24/7: running in this terminal' in second.command('/24.7 status')
             idle_marker=len(second.transcript);second.drain(1.3);idle_frames=antenna_frames(bytes(second.transcript[idle_marker:]));assert idle_frames and len(set(idle_frames))==1,'Idle background antenna did not freeze'
-            marker=second.send('/247 add foreground cloud job\n')
+            marker=second.send('/24.7 add foreground cloud job\n')
             wait_file(lambda:any(job['status']=='completed' and job['prompt']=='foreground cloud job' for job in tasks(state)),second)
             assert [request['model'] for request in requests[-2:]]==['fixture-local','fixture-primary']
-            marker=second.send('/247 add malformed-local-task\n')
+            marker=second.send('/24.7 add malformed-local-task\n')
             count=len(requests)
             wait_file(lambda:any(job['status']=='blocked' and job['prompt']=='malformed-local-task' for job in tasks(state)),second)
             assert len(requests)==count+1,'Malformed assessment called the cloud model'
             second.command('/permissions ask')
-            assert '24/7: Off' in second.command('/247 status')
-            second.command('/247 detach')
+            assert '24/7: Off' in second.command('/24.7 status')
+            second.command('/24.7 detach')
             detached_record=json.loads(next((state/'agents').glob('worker-*.json')).read_text())
             detached_pid=detached_record['pid']
             second.finish()
@@ -277,14 +277,14 @@ try:
 
             third=Terminal(workspace,state);terminals.append(third)
             marker=ask_answer(third,0,'API key',KEY);third.ready(marker)
-            assert '24/7: background worker running' in third.command('/247 status')
-            marker=third.send('/247 add detached cloud job\n')
+            assert '24/7: background worker running' in third.command('/24.7 status')
+            marker=third.send('/24.7 add detached cloud job\n')
             wait_file(lambda:any(job['status']=='completed' and job['prompt']=='detached cloud job' for job in tasks(state)),third)
             assert [request['model'] for request in requests[-2:]]==['fixture-local','fixture-primary']
             job=next(job for job in tasks(state) if job['prompt']=='detached cloud job')
-            assert 'completed:' in third.command('/247 result '+job['id'])
+            assert 'completed:' in third.command('/24.7 result '+job['id'])
             third.command('/web off')
-            assert '24/7: Off' in third.command('/247 status')
+            assert '24/7: Off' in third.command('/24.7 status')
             try:os.kill(detached_pid,0)
             except ProcessLookupError:pass
             else:raise AssertionError('Policy change did not stop detached worker')

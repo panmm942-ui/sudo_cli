@@ -1,6 +1,6 @@
 # Terminal and GUI
 
-SUDO CLI keeps one session, one native engine and one pending-input queue. Enter `/gui` to open its graphical view. Use **Return to terminal** to continue in the terminal; view changes do not repeat a prompt or reconnect the model. A previous GUI session cannot submit actions after it is revoked.
+SUDO CLI keeps one session, one native engine and one pending-input queue. `/clear` clears the current chat display in both views and asks whether to forget earlier AI context; No or Enter keeps that context for continuation after reopening. The chat ID, title and prompt counter stay unchanged. See [saved chats](chats.md). Enter `/gui` to open its graphical view. Use **Return to terminal** to continue in the terminal; view changes do not repeat a prompt or reconnect the model. A previous GUI session cannot submit actions after it is revoked.
 
 ## Terminal controls
 

@@ -35,7 +35,7 @@ export function buildGuiSnapshot({session={},history={messages:[]},events={entri
   const view={session:state,chat:{version:1,promptCount:Number.isSafeInteger(history.promptCount)?history.promptCount:all.filter(message=>message.role==='user').length,messages,truncated},events:{entries:eventEntries,dropped:(events.dropped||0)+(events.entries?.length||0)-eventEntries.length},
     currentPrompt:prompt&&!prompt.input?{id:clean(prompt.id,128),prompt:clean(prompt.prompt),hidden:!!prompt.hidden,input:false}:null,
     changes:{files:[],partial:!!changes.partial,reason:clean(changes.reason||''),updatedAt:typeof changes.updatedAt==='string'?clean(changes.updatedAt,32):null},
-    commands:commands.slice(0,512).filter(command=>/^\/[a-z0-9-]+$/i.test(command.name)).map(command=>({name:command.name,usage:clean(command.usage,1024),description:clean(command.description,1024)})),theme:{}};
+    commands:commands.slice(0,512).filter(command=>/^\/[a-z0-9-]+(?:\.[a-z0-9-]+)*$/i.test(command.name)).map(command=>({name:command.name,usage:clean(command.usage,1024),description:clean(command.description,1024)})),theme:{}};
   for(const name of ['bgcolor','txtcolor','effectiveTxtcolor','bodyForeground'])if(/^#[0-9a-f]{6}$/i.test(theme[name]))view.theme[name]=theme[name];
   let fileBudget=400000;
   for(const file of (changes.files||[]).slice(0,2000)){

@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildGuiSnapshot} from '../src/gui-state.mjs';
+import {COMMANDS} from '../src/commands.mjs';
+
+test('GUI command menu exposes canonical dotted background work with usable arguments',()=>{
+  const snapshot=buildGuiSnapshot({commands:COMMANDS});
+  const background=snapshot.commands.find(command=>command.name==='/24.7');
+  assert.ok(background);
+  assert.match(background.usage,/add TASK/);
+  assert.equal(snapshot.commands.some(command=>command.name==='/247'),false);
+});
 
 test('GUI snapshot excludes credentials, hardware identifiers and absolute project path',()=>{
   const snapshot=buildGuiSnapshot({session:{cwd:'C:/private/project',project:'Demo',version:'0.6.9',connectedAI:'demo',apiKey:'secret-one',connection:{apiKey:'secret-two'},performance:{groups:[{title:'GPU',pnpDeviceId:'private-hardware-id',fields:[{label:'VRAM',value:'8 GiB'}]}]}},history:{version:1,messages:[{id:'1',role:'user',content:'example secret-one',sequence:1}]},events:{entries:[{id:'e',timestamp:'2026-10-08T01:00:00Z',kind:'error',text:'failed secret-two'}]},prompt:{id:'p',prompt:'Key [hidden]',hidden:true,value:'secret-two'},changes:{files:[{path:'app.js',status:'modified',content:'secret-two'}]},commands:[],theme:{bgcolor:'#0b0f14'},secrets:()=>['secret-one','secret-two']});

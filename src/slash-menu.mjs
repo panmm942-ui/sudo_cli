@@ -39,7 +39,7 @@ const positive=(value,fallback,maximum)=>Number.isFinite(value)&&value>0?Math.ma
  */
 export function createSlashMenuInput({input,getContext=()=>({enabled:false}),getSize=()=>({columns:80,rows:12}),onRender=()=>{},onClose=()=>{},onError=()=>{},commands=COMMANDS}){
   if(!input?.pipe)throw new TypeError('Slash menu input must be a readable stream.');
-  const inventory=commands.slice(0,512).filter(command=>command&&/^\/[a-z0-9-]+$/i.test(command.name)).map(command=>Object.freeze({name:command.name,usage:clean(command.usage),description:clean(command.description)}));
+  const inventory=commands.slice(0,512).filter(command=>command&&/^\/[a-z0-9-]+(?:\.[a-z0-9-]+)*$/i.test(command.name)).map(command=>Object.freeze({name:command.name,usage:clean(command.usage),description:clean(command.description)}));
   const decoder=new StringDecoder('utf8');
   let active=false,query='',index=0,keyBuffer='',escapeTimer,swallowNextLf=false,detached=false;
   const report=error=>{try{onError(error);}catch{}};

@@ -31,7 +31,7 @@ Environment: SUDO_CLI_MODEL, SUDO_CLI_BASE_URL, SUDO_CLI_TRANSPORT,
 SUDO_CLI_API_KEY, SUDO_CLI_CODEX (optional engine executable).
 Keys stay in memory. Saved profiles exclude keys. Chats resume automatically per project.
 /personalize sets per-AI preferences; /voice live starts configured continuous voice.
-/247 starts the local-first agent; /247 detach survives terminal close.
+/24.7 starts the local-first agent; /24.7 detach survives terminal close.
 Model sessions require administrator/root. Help/version/doctor/setup do not elevate.
 `;
 

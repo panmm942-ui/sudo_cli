@@ -1,10 +1,12 @@
 # Detached 24/7 worker
 
-`/247 detach` runs 24/7 mode as a separate native Node process. Closing sudocli leaves that detached worker running; `/247 stop` stops it through its authenticated local control channel. The computer must remain on and awake. This mode does not register an operating-system service or automatically restart after a reboot.
+`/24.7 detach` runs 24/7 mode as a separate native Node process. Closing sudocli leaves that detached worker running; `/24.7 stop` stops it through its authenticated local control channel. The computer must remain on and awake. This mode does not register an operating-system service or automatically restart after a reboot.
 
 The worker requires administrator/root privileges independently of the terminal launch check. It never requests elevation or bypasses a standard Windows token. Run the terminal as Administrator on Windows, or launch sudocli with sudo on Linux/macOS.
 
-Use `/247 setup` to select the local guardian, working model and optional scope/services. `/247 start` starts the coordinator in the current terminal; `/247 detach` starts the independent worker. Submit work with `/247 add TASK`, view jobs with `/247 list`, and open a saved outcome with `/247 result ID`. `/247 retry ID` explicitly requeues a reviewed blocked or failed job. `/247 status` shows the current coordinator/worker; `/247 stop` stops it.
+Use `/24.7 setup` to select the local guardian, working model and optional scope/services. `/24.7 start` starts the coordinator in the current terminal; `/24.7 detach` starts the independent worker. Submit work with `/24.7 add TASK`, view jobs with `/24.7 list`, and open a saved outcome with `/24.7 result ID`. `/24.7 retry ID` explicitly requeues a reviewed blocked or failed job. `/24.7 status` shows the current coordinator/worker; `/24.7 stop` stops it.
+
+The old `/247` spelling remains a compatibility alias. Help and command completion show `/24.7`.
 
 ## Work and idle behavior
 

@@ -40,5 +40,5 @@ event. Idle checks, task setup and status commands stay silent. Coordination
 errors also signal attention; repeated errors are suppressed.
 
 A detached worker needs an available system audio player and output device.
-It cannot use a terminal bell. If playback is unavailable, `/247 status` shows
+It cannot use a terminal bell. If playback is unavailable, `/24.7 status` shows
 a short notification message. Audio failures never change the saved task result.

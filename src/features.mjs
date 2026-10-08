@@ -214,7 +214,6 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(name==='/handoff'){const exported=await history.exportHandoff({cwd,directory:args[0]?resolve(cwd,args[0]):undefined});note(`Whole-chat handoff: ${exported.markdownPath}`);note(`JSON: ${exported.jsonPath} · ${exported.messageCount} messages`);return true;}
     if(name==='/history'){if(args[0]==='clear'){history.clear({preservePromptCount:true});settings.pendingContext='';settings.pendingAgentContext='';note('In-memory export history cleared; already exported files remain.');}else for(const message of history.snapshot().messages)note(`${message.role}${message.model?' ('+message.model+')':''}: ${message.content}`);return true;}
     if(name==='/compact'){await runCompact();return true;}
-    if(name==='/clear'){await activate(getConnection(),false);settings.pendingContext='';settings.pendingAgentContext='';note('Fresh model context. Full-session history remains available to /handoff.');return true;}
     if(name==='/mcp'){await mcp(args);return true;}
     if(name==='/computer-use'){await computer(args);return true;}
     if(name==='/skills'){await skills(args);return true;}

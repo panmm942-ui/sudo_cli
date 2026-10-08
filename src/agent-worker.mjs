@@ -37,7 +37,7 @@ function statusFields(value) {
   for (const name of ['state', 'cloudState', 'cloudBilling']) if (typeof value?.[name] === 'string') result[name] = value[name].slice(0, 32);
   for (const name of ['activeJobId', 'startedAt', 'lastActivityAt', 'nextHeartbeatAt']) result[name] = typeof value?.[name] === 'string' ? value[name].slice(0, 100) : null;
   for (const name of ['completed', 'blocked', 'failed']) result[name] = Number.isSafeInteger(value?.[name]) && value[name] >= 0 ? value[name] : 0;
-  if (value?.lastError) result.lastError = 'The last background operation failed. Inspect /247 list for its saved result.';
+  if (value?.lastError) result.lastError = 'The last background operation failed. Inspect /24.7 list for its saved result.';
   return result;
 }
 
@@ -146,7 +146,7 @@ async function initialize(message) {
 }
 
 if (!process.send) {
-  process.stderr.write('Start this detached worker through sudocli /247 detach.\n');
+  process.stderr.write('Start this detached worker through sudocli /24.7 detach.\n');
   process.exitCode = 1;
 } else {
   let initialized = false;

@@ -255,6 +255,29 @@ try:
         state=gui.request();assert state['chat']['promptCount']==accepted and state['session']['permissions']=='ask'
         assert cli.spawn_count()==count and len(requests)==before+1
         assert any('AI work stopped.' in item['text'] for item in state['events']['entries'])
+        assert '/24.7' in [item['name'] for item in state['commands']]
+        chat_id=cli.saved()[0]['id']
+        for choice,marker in [('n','V0611_GUI_CLEAR_KEEP'),('y','V0611_GUI_CLEAR_FORGET')]:
+            before=len(requests);old_spawns=cli.spawn_count()
+            gui.action('submit',text='/clear')
+            cli.wait(lambda:gui.request()['currentPrompt'] is not None,'GUI clear question')
+            question=gui.request()['currentPrompt'];accepted=gui.request()['chat']['promptCount']
+            assert 'Also forget previous messages?' in question['prompt']
+            gui.action('answer',promptId=question['id'],text=choice)
+            cli.wait(lambda:gui.request()['currentPrompt'] is None and not gui.request()['chat']['messages'] and cli.saved()[0]['history']['messages']==[], 'GUI cleared visible history')
+            assert cli.saved()[0]['id']==chat_id and gui.request()['chat']['promptCount']==accepted
+            if choice=='y':
+                cli.wait(lambda:cli.spawn_count()==old_spawns+1,'fresh native context after GUI Yes')
+                assert 'contextHistory' not in cli.saved()[0]
+            else:
+                assert cli.spawn_count()==old_spawns and cli.saved()[0]['contextHistory']['messages']
+            gui.action('submit',text=marker)
+            cli.wait(lambda:len(requests)==before+1 and not gui.request()['session']['working'] and any(item['role']=='assistant' for item in gui.request()['chat']['messages']), 'native task after GUI clear')
+            request=json.dumps(requests[-1]['messages'])
+            assert ('V069_AFTER_HISTORY_CLEAR' in request)==(choice=='n')
+            assert cli.saved()[0]['id']==chat_id
+        count=cli.spawn_count()
+        print('Observed: GUI /clear Yes/No, same chat identity, numbered questions, native context retention/reset and /24.7 menu',flush=True)
         gui.action('submit',text='/switch save');cli.wait(lambda:gui.request()['currentPrompt'] is not None,'question before return')
         accepted=gui.request()['chat']['promptCount'];gui.action('return');cli.question('Save current AI as')
         last=cli.send('Terminal profile\n');cli.ready(last);assert cli.view.composer()['sequence']==accepted+1 and cli.spawn_count()==count
@@ -278,7 +301,7 @@ try:
         results={'passed':True,'entry':'private direct runUI' if args.direct_ui else 'signed bin','nativeRequests':len(requests),'paidRequests':0,
                  'cliExitCodes':[item.child.returncode for item in terminals],'physicalClipboardReads':0,'physicalAudioPlayback':False,
                  'checks':['early-startup-enter-retained-once','editable-connection-url','history-clear-numbering','busy-to-idle-literal-paste-ask','gui-shared-engine','events-chat-isolation',
-                           'shared-user-color-and-canonical-reset','notification-preferences-without-playback','current-question-id-once','gui-native-stop-same-engine','return-with-current-question','current-project-add-modify-delete-diff','saved-pending-submission-metadata','resume-numbering','new-chat-first-number']}
+                           'shared-user-color-and-canonical-reset','notification-preferences-without-playback','current-question-id-once','gui-native-stop-same-engine','gui-clear-yes-no-same-chat-native-context','gui-canonical-24.7-menu','return-with-current-question','current-project-add-modify-delete-diff','saved-pending-submission-metadata','resume-numbering','new-chat-first-number']}
 except BaseException as error:
     results={'passed':False,'errorType':type(error).__name__,'message':str(error),'nativeRequests':len(requests),'paidRequests':0}
     raise

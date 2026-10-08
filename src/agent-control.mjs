@@ -190,7 +190,7 @@ export async function stopAgentWorker(options = {}) {
     if (!alive(record.pid)) { await removeWorkerRecord(location, record.id); return { running: false }; }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  throw new Error('Detached worker accepted stop but is still shutting down. Check /247 status; its process was not forcibly killed.');
+  throw new Error('Detached worker accepted stop but is still shutting down. Check /24.7 status; its process was not forcibly killed.');
 }
 
 export async function startAgentWorker({ stateDir = defaultWorkStateDir(), cwd = process.cwd(), config } = {}) {

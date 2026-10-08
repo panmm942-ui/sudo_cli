@@ -18,9 +18,9 @@ export const COMMANDS = [
   {name:'/scroll',usage:'[up|down|top|bottom]',description:'Browse the full chat; PageUp/PageDown and mouse wheel also work'},
   {name:'/personalize',usage:'[status|setup|set FIELD VALUE|unset FIELD|on|off|clear]',description:'Saved persona and preferences for this AI only'},
   {name:'/preferences',usage:'[status|setup|set FIELD VALUE|unset FIELD|on|off|clear]',description:'Per-AI language, tone, length, format and instructions'},
-  {name:'/247',usage:'[setup|start|detach|stop|status|add TASK|list|result ID|retry ID]',description:'Always-on local coordinator and durable task inbox'},
+  {name:'/24.7',usage:'[setup|start|detach|stop|status|add TASK|list|result ID|retry ID]',description:'Always-on local coordinator and durable task inbox'},
   {name:'/compact',usage:'',description:'Run native context compaction; keep full export history'},
-  {name:'/clear',usage:'',description:'Fresh engine context; keep session export history'},
+  {name:'/clear',usage:'',description:'Clear this chat; choose whether AI forgets its messages'},
   {name:'/mcp',usage:'[list|tools|add NAME URL|remove NAME]',description:'Connect HTTP tool servers at runtime'},
   {name:'/computer-use',usage:'[status|on|off|setup NAME URL]',description:'Inspect/use your computer-tool MCP server'},
   {name:'/skills',usage:'[list|load NAME|clear]',description:'Discover skills and attach one to the next task'},
@@ -72,11 +72,11 @@ const groups={
   'Work':['/upload','/attachments','/checks','/verify','/changes','/undo','/workflow','/team','/agents','/review','/diff','/security','/stop','/steer'],
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
   'Voice':['/voice','/microphone','/live'],
-  'Background':['/247','/schedule','/startup','/budget','/gpu'],
+  'Background':['/24.7','/schedule','/startup','/budget','/gpu'],
   'Advanced':['/gui','/training','/update','/doctor','/status','/bgcolor','/textcolor','/notify','/reset','/loopguard'],
 };
 export function commandMenu(query='',{compact=false}={}) {
-  if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chat   Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
+  if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chat   Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /24.7    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
   const lower=query.toLowerCase();return Object.entries(groups).map(([group,names])=>{const items=COMMANDS.filter(command=>names.includes(command.name)&&(!lower||group.toLowerCase()===lower||(command.name+' '+command.description).toLowerCase().includes(lower)));return items.length?group+'\n\n'+items.map(command=>`${command.name}${command.usage ? ' '+command.usage : ''}\n    ${command.description}`).join('\n\n'):'';}).filter(Boolean).join('\n\n');
 }
 export function completeCommand(line) {
@@ -89,7 +89,7 @@ export function parseCommand(line) {
   if (line.trim() === '/') return {name:'/help',args:[],rawArgs:''};
   const separator = line.search(/\s/);
   const typedName = separator < 0 ? line.toLowerCase() : line.slice(0,separator).toLowerCase();
-  const name = typedName==='/txtcolor'?'/textcolor':typedName;
+  const name = typedName==='/txtcolor'?'/textcolor':typedName==='/247'?'/24.7':typedName;
   const rawArgs = separator < 0 ? '' : line.slice(separator).trim();
   const args = []; let token = '', quote = null, present = false;
   for (const character of rawArgs) {

@@ -407,6 +407,9 @@ try:
         baseline = len(requests)
         assert '/switch' in terminal.command('/help')
         assert 'No AI selected' in terminal.command('/status')
+        assert '24/7: Off' in terminal.command('/24.7 status')
+        assert '24/7: Off' in terminal.command('/247 status')
+        results.update(canonicalAlwaysOnCommand=True, legacyAlwaysOnAlias=True)
         terminal.command('/chat list')
         assert 'Project memory is empty' in terminal.command('/memory')
         terminal.multiline('/memory edit', 'V6 approved project rule: preserve human edits and report actual checks.')
@@ -612,15 +615,39 @@ try:
         assert 'AFTER_REVIEW_PROBE' in json.dumps(reviewed_continuation['messages'])
         assert 'V6_REVIEWED_SUMMARY' in json.dumps(reviewed_continuation['messages'])
         assert 'LONG_ARCHIVE_MARKER' not in json.dumps(reviewed_continuation['messages'])
-        restarted.command('/clear')
+        keep_marker = restarted.send('/clear\n')
+        keep_marker = restarted.answer(keep_marker, 'Also forget previous messages?', 'n')
+        restarted.ready(keep_marker)
+        cleared = next(record for record in chat_records(restarted.state) if record['id'] == first_id)
+        assert cleared['history']['messages'] == []
+        assert 'LONG_ARCHIVE_MARKER' in json.dumps(cleared['contextHistory'])
+        kept = restarted.task('AFTER_CLEAR_KEEP_CONTEXT')[0]
+        assert 'V6_REVIEWED_SUMMARY' in json.dumps(kept['messages'])
+        restarted.command('/context capacity 131072')
+        restarted.finish()
+        restarted = Terminal(root, explicit=True)
+        resume_marker = restarted.answer(0, 'API key', KEY)
+        restarted.ready(resume_marker)
+        resumed_clear = next(record for record in chat_records(restarted.state) if record['id'] == first_id)
+        assert 'FIRST_SAVED_CHAT_BASELINE' not in json.dumps(resumed_clear['history'])
+        remembered = restarted.task('AFTER_CLEARED_CHAT_RESUME')[0]
+        assert 'FIRST_SAVED_CHAT_BASELINE' in json.dumps(remembered['messages'])
+        assert 'AFTER_CLEAR_KEEP_CONTEXT' in json.dumps(remembered['messages'])
+        clear_marker = restarted.send('/clear\n')
+        clear_marker = restarted.answer(clear_marker, 'Also forget previous messages?', 'y')
+        restarted.ready(clear_marker)
         fresh = restarted.task('FRESH_AFTER_CLEAR')[0]
         assert 'V6_REVIEWED_SUMMARY' not in json.dumps(fresh['messages'])
         assert 'FIRST_SAVED_CHAT_BASELINE' not in json.dumps(fresh['messages'])
         archive = next(record for record in chat_records(restarted.state) if record['id'] == first_id)
-        assert 'LONG_ARCHIVE_MARKER' in json.dumps(archive['history'])
+        assert 'LONG_ARCHIVE_MARKER' not in json.dumps(archive['history'])
+        assert 'contextHistory' not in archive
+        assert archive['id'] == first_id
         results.update(contextBlocksBeforeRequest=True, reviewedReplayIsBoundedConversation=True,
                        reviewedReplayRetainsLaterMessagesAfterReconnect=True,
-                       clearStartsFreshNativeContextAndKeepsArchive=True)
+                       clearStartsFreshNativeContextAndClearsSameChat=True,
+                       clearNoKeepsNativeContext=True, clearNoRetainsMemoryAfterResume=True,
+                       clearKeepsSavedChatIdentity=True, clearRemovesVisibleUserAndAiMessages=True)
         progress('bounded reviewed context and clear')
 
         # Reset only this isolated application's ledger, then prove a one-request
@@ -659,7 +686,7 @@ try:
             listing = fallback.command('/chat list')
             assert 'V6 first saved chat' in listing
             fallback.command('/chat open '+first_id)
-            assert 'FIRST_SAVED_CHAT_BASELINE' in fallback.command('/history', event_prefix='user (fixture-primary): FIRST_SAVED_CHAT_BASELINE')
+            assert 'FRESH_AFTER_CLEAR' in fallback.command('/history', event_prefix='user (fixture-primary): FRESH_AFTER_CLEAR')
             assert_no_requests(baseline, 'invalid explicit connection offline fallback and saved chats')
             fallback.finish()
         results['invalidExplicitConnectionFallsBackToOfflineSavedChats'] = True
@@ -672,7 +699,7 @@ try:
         assert 'No AI selected' in inherited.command('/status')
         assert 'V6 first saved chat' in inherited.command('/chat list')
         inherited.command('/chat open '+first_id)
-        assert 'FIRST_SAVED_CHAT_BASELINE' in inherited.command('/history', event_prefix='user (fixture-primary): FIRST_SAVED_CHAT_BASELINE')
+        assert 'FRESH_AFTER_CLEAR' in inherited.command('/history', event_prefix='user (fixture-primary): FRESH_AFTER_CLEAR')
         assert_no_requests(baseline, 'inherited model environment leaves interactive startup offline')
         inherited.finish()
         results['inheritedModelEnvironmentLeavesInteractiveShellOffline'] = True

@@ -48,6 +48,16 @@ test('complete command chunks and slashes inside ordinary input pass through unc
   assert.deepEqual(term.submitted,['/local','Review /tmp/project']);
 });
 
+test('background work with a dotted name can be found and selected without submitting',t=>{
+  const term=terminal();t.after(term.close);
+  term.send('/');term.send('24.7');
+  assert.equal(term.stream.snapshot().total,1);
+  assert.equal(term.stream.snapshot().selected.name,'/24.7');
+  term.send('\r');
+  assert.equal(term.context.line,'/24.7 ');assert.deepEqual(term.submitted,[]);
+  term.send('status\r');assert.deepEqual(term.submitted,['/24.7 status']);
+});
+
 test('pagination and split ANSI keys reach every registered command',t=>{
   const term=terminal({size:{columns:80,rows:7}});t.after(term.close);term.send('/');
   const seen=new Set([term.stream.snapshot().selected.name]);

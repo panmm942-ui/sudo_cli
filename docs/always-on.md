@@ -2,7 +2,7 @@
 
 24/7 mode keeps a lightweight local coordinator alive. It polls a durable task inbox and invokes the configured local supervisor when an actual task arrives. The supervisor decides whether to complete the task locally, ask for more information, or wake the cloud worker. When the inbox is empty and no standing goal is configured, polling makes **zero model calls**.
 
-The computer must remain powered on and awake. A detached worker can survive closing the terminal; it cannot run while the operating system is shut down or suspended. Use the 24/7 stop command to stop the worker explicitly.
+The computer must remain powered on and awake. A detached worker can survive closing the terminal; it cannot run while the operating system is shut down or suspended. Use `/24.7 stop` to stop the worker explicitly. `/24.7` is the canonical command shown in help, the slash picker and completion; `/247` remains an unlisted compatibility alias.
 
 ## Decisions and task states
 

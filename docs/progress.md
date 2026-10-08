@@ -1,6 +1,8 @@
 # sudo cli progress
 
-Current build: **0.6.10**. Numbered prompts and a fixed composer, separate Chat and Events scrollbars, and a live Performance sidebar. `/gui` opens a protected local browser view of the same session; `/changes` inspects project changes in either view. Paste remains editable and literal, and saved submission metadata preserves prompt numbers across resumes. Screenshots use synthetic data.
+Current build: **0.6.11**. Numbered prompts and a fixed composer, separate Chat and Events scrollbars, and a live Performance sidebar. `/gui` opens a protected local browser view of the same session; `/changes` inspects project changes in either view. Paste remains editable and literal, and saved submission metadata preserves prompt numbers across resumes. Screenshots use synthetic data.
+
+Version 0.6.11 uses `/24.7` as the canonical always-on command, with `/247` retained as an unlisted compatibility alias. `/clear` clears visible messages in the same saved chat and asks whether to forget earlier AI context. Yes resets native context; No or Enter retains sanitized internal conversation for continuation after reconnect or reopening. Chat ID, title and prompt counter remain unchanged. Retained context is local plaintext and excluded from visible handoff/training exports. Approved project memory and existing export files are unaffected.
 
 Version 0.6.10 restores credits beneath the dashboard, adds a red horizontal divider, and starts CPU/RAM monitoring before the initial project scan. Notifications default to Off. Windows clipboard errors preserve the helper's lifetime for verified cleanup; Ctrl+V and Shift+Insert keep pasted setup values editable. Hidden keys have a local Show/Hide control and are excluded from terminal input history.
 
