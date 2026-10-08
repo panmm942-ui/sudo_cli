@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, readdir, rm, symlink, stat } from 'node:f
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
 
 async function directory(t) {
@@ -15,12 +15,23 @@ async function directory(t) {
 function recordName(cwd) {
   return `worker-${createHash('sha256').update(process.platform === 'win32' ? cwd.toLowerCase() : cwd).digest('hex')}.json`;
 }
-async function fixture(t, handler) {
+async function closeFixtureServer(server,cleanup){
+  try{await cleanup?.();}
+  finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+}
+async function fixture(t, handler, {cleanup}={}) {
   const server = createServer(handler);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  t.after(() => closeFixtureServer(server,cleanup));
   return server.address().port;
 }
+test('fixture server closes even when worker storage cleanup rejects',async t=>{
+  const server=createServer((_req,res)=>res.end('fixture'));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+  await assert.rejects(()=>closeFixtureServer(server,async()=>{throw new Error('Synthetic worker storage cleanup failure.');}),/Synthetic worker storage/);
+  assert.equal(server.listening,false);
+});
 async function waitFor(predicate, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 50)); }
@@ -130,10 +141,9 @@ test('native elevated detached worker remains idle, authenticates control, refus
   const { startAgentWorker, getAgentWorker, stopAgentWorker } = await import('../src/agent-control.mjs');
   const cwd = await mkdtemp(join(tmpdir(), 'codexcli-agent-idle-test-')), stateDir = join(cwd, 'state');
   let modelCalls = 0;
-  const port = await fixture(t, (req, res) => { modelCalls++; res.end('{}'); });
+  const port = await fixture(t, (req, res) => { modelCalls++; res.end('{}'); },{cleanup:async()=>{try{await stopAgentWorker({stateDir,cwd});}finally{await rm(cwd,{recursive:true,force:true});}}});
   const connection = { baseUrl: `http://127.0.0.1:${port}/v1`, model: 'fixture', transport: 'chat-completions', apiKey: 'model-secret-only-in-ipc' };
   const config = { localConnection: connection, cloudConnection: connection, settings: { permissions: 'ask', webAccess: false }, watchPaths: [] };
-  t.after(async () => { await stopAgentWorker({ stateDir, cwd }); await rm(cwd, { recursive: true, force: true }); });
   const started = await startAgentWorker({ stateDir, cwd, config });
   assert.equal(started.running, true);
   assert.notEqual(started.pid, process.pid);
@@ -155,7 +165,6 @@ test('detached worker survives its launching process and processes an explicit t
   const { getAgentWorker, stopAgentWorker } = await import('../src/agent-control.mjs');
   const { createTaskInbox } = await import('../src/task-inbox.mjs');
   const cwd = await mkdtemp(join(tmpdir(), 'codexcli-agent-detached-test-')), stateDir = join(cwd, 'state');
-  t.after(async () => { await stopAgentWorker({ stateDir, cwd }); await rm(cwd, { recursive: true, force: true }); });
   const requests = [];
   const port = await fixture(t, async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -163,7 +172,7 @@ test('detached worker survives its launching process and processes an explicit t
     const content = body.model === 'guardian-fixture' ? JSON.stringify({ action: 'cloud', prompt: 'Reply with the fixture completion text.', reason: 'This explicit task needs the working model.' }) : 'Fixture background task completed.';
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ id: 'fixture-chat', object: 'chat.completion', model: body.model, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } }));
-  });
+  },{cleanup:async()=>{try{await stopAgentWorker({stateDir,cwd});}finally{await rm(cwd,{recursive:true,force:true});}}});
   const baseUrl = `http://127.0.0.1:${port}/v1`;
   const config = { localConnection: { baseUrl, model: 'guardian-fixture', transport: 'chat-completions', apiKey: 'guardian-private-fixture' }, cloudConnection: { baseUrl, model: 'working-fixture', transport: 'chat-completions', apiKey: 'working-private-fixture' }, settings: { permissions: 'ask', webAccess: false }, pollMs: 100, localDeveloperInstructions: 'Guardian-specific preference: be concise.', developerInstructions: 'Working-model preference: show results.' };
   const moduleUrl = new URL('../src/agent-control.mjs', import.meta.url).href;
@@ -196,7 +205,6 @@ test('detached native approval requests are declined and block the job instead o
   const { startAgentWorker, stopAgentWorker } = await import('../src/agent-control.mjs');
   const { createTaskInbox } = await import('../src/task-inbox.mjs');
   const cwd = await mkdtemp(join(tmpdir(), 'codexcli-agent-approval-test-')), stateDir = join(cwd, 'state');
-  t.after(async () => { await stopAgentWorker({ stateDir, cwd }); await rm(cwd, { recursive: true, force: true }); });
   let toolRequested = false, failAfterDenial = false;
   const port = await fixture(t, async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk); const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -209,7 +217,7 @@ test('detached native approval requests are declined and block the job instead o
       message = { role: 'assistant', content: null, tool_calls: [{ id: 'background-approval-fixture', type: 'function', function: { name: 'exec_command', arguments: JSON.stringify({ cmd: "printf 'this must never run' > permission-proof.txt", workdir: cwd, login: false, sandbox_permissions: 'require_escalated', justification: 'Fixture explicitly requires human approval.', max_output_tokens: 1000 }) } }] };
     }
     res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ id: 'fixture-chat', object: 'chat.completion', model: body.model, choices: [{ index: 0, message, finish_reason: finish }] }));
-  });
+  },{cleanup:async()=>{try{await stopAgentWorker({stateDir,cwd});}finally{await rm(cwd,{recursive:true,force:true});}}});
   const baseUrl = `http://127.0.0.1:${port}/v1`;
   await startAgentWorker({ cwd, stateDir, config: { localConnection: { baseUrl, model: 'guardian-fixture', transport: 'chat-completions' }, cloudConnection: { baseUrl, model: 'working-fixture', transport: 'chat-completions' }, settings: { permissions: 'ask', webAccess: false }, pollMs: 100 } });
   const inbox = await createTaskInbox({ cwd, stateDir }), job = await inbox.submit({ prompt: 'Perform the approval fixture only.', source: 'user' });

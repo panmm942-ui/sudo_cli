@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,lstat,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,lstat,rm,chmod,chown} from 'node:fs/promises';
 import {join,resolve,relative,isAbsolute} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {createWorkspaceTools} from '../src/workspace-tools.mjs';
 import * as module from '../src/sandbox-checks.mjs';
 
@@ -22,6 +22,12 @@ test('command wrapper replaces the executed command and child environment instea
   assert.equal(result[0].status,'passed');assert.equal(result[0].stdout.trim(),'wrapped');
 });
 
+test('wrapped checks reject malformed child identities before execution',async t=>{
+  const {root,workspace}=await fixture(t),target=join(root,'must-not-execute');
+  for(const identity of [{uid:1},{gid:1},{uid:-1,gid:1},{uid:1,gid:'1'},{uid:0xffffffff,gid:1},{uid:NaN,gid:1}])await assert.rejects(()=>workspace.runChecks([{command:process.execPath,args:[]}],{commandWrapper:()=>({command:process.execPath,args:['-e','require("node:fs").writeFileSync(process.argv[1],"executed")',target],...identity})}),/uid\/gid pair/i);
+  await assert.rejects(lstat(target),{code:'ENOENT'});
+});
+
 test('unrestricted checks still remove unrelated credentials and clean the private runtime home after exit',async t=>{
   assert.equal(typeof module.acceptSandboxedWork,'function');
   const {root,cwd,workspace}=await fixture(t),outside=join(root,'explicit-unrestricted.txt');
@@ -38,6 +44,34 @@ test('invalid permission policy refuses a check before any host side effect',asy
   const {root,workspace}=await fixture(t),target=join(root,'should-not-exist');
   await assert.rejects(module.acceptSandboxedWork({workspace,settings:{permissions:'invalid',webAccess:false},checks:[{command:process.execPath,args:['-e','require("node:fs").writeFileSync(process.argv[1],"unsafe")',target]}]}),/permission/i);
   await assert.rejects(lstat(target),{code:'ENOENT'});
+});
+
+test('root sudo checks admit the original project owner without root groups or credentials',{skip:process.platform!=='linux'||process.getuid?.()!==0,timeout:30000},async t=>{
+  const account=(await readFile('/etc/passwd','utf8')).split('\n').map(line=>line.split(':')).find(parts=>Number(parts[2])>=1000&&Number(parts[2])<65534)||['nobody','x','65534','65534'];
+  const uid=Number(account[2]),gid=Number(account[3]);
+  const root=await mkdtemp(join(tmpdir(),'sudocli-sudo-project-'));await chmod(root,0o755);t.after(()=>rm(root,{recursive:true,force:true}));
+  const ownerHome=join(root,'owner'),cwd=join(ownerHome,'project'),other=join(root,'other-private');
+  await mkdir(ownerHome,{mode:0o750});await chown(ownerHome,uid,gid);await mkdir(cwd,{mode:0o755});await chown(cwd,uid,gid);
+  await mkdir(other,{mode:0o700});await writeFile(join(other,'secret'),'other private home');
+  await writeFile(join(cwd,'source.txt'),'owned project source');await chown(join(cwd,'source.txt'),uid,gid);
+  const workspace=await createWorkspaceTools({cwd,stateDir:join(root,'state')});
+  const names=['SUDO_UID','SUDO_GID','SUDO_USER','SUDO_CHECK_SYNTHETIC_SECRET'];const saved=Object.fromEntries(names.map(name=>[name,process.env[name]]));
+  Object.assign(process.env,{SUDO_UID:String(uid),SUDO_GID:String(gid),SUDO_USER:account[0],SUDO_CHECK_SYNTHETIC_SECRET:'synthetic-root-only'});
+  t.after(()=>{for(const name of names)if(saved[name]===undefined)delete process.env[name];else process.env[name]=saved[name];});
+  const outside=join(ownerHome,'outside.txt');
+  const script=`const fs=require('node:fs'),path=require('node:path');const result={uid:process.getuid(),gid:process.getgid(),groups:process.getgroups(),source:fs.readFileSync('source.txt','utf8'),rootSecret:!!process.env.SUDO_CHECK_SYNTHETIC_SECRET,home:process.env.HOME,scratch:process.env.TMPDIR,outside:false,privateHome:false};fs.writeFileSync(path.join(result.scratch,'compiler-temporary'),'permitted scratch');fs.writeFileSync('allowed.txt','scoped user write');try{fs.writeFileSync(process.argv[1],'escaped');result.outside=true}catch{}try{fs.readFileSync(process.argv[2]);result.privateHome=true}catch{}console.log(JSON.stringify(result));`;
+  const result=await module.acceptSandboxedWork({workspace,settings:{scope:'project',webAccess:false},checks:[{command:process.execPath,args:['-e',script,outside,join(other,'secret')]}],timeoutMs:15000});
+  assert.equal(result.checks[0].status,'passed',result.checks[0].stderr);const observed=JSON.parse(result.checks[0].stdout);
+  assert.equal(observed.uid,uid);assert.equal(observed.gid,gid);assert.ok(observed.groups.every(group=>group===gid));assert.equal(observed.rootSecret,false);
+  assert.equal(observed.source,'owned project source');assert.equal(observed.outside,false);assert.equal(observed.privateHome,false);assert.equal((await lstat(join(cwd,'allowed.txt'))).uid,uid);
+  assert.equal((await lstat(ownerHome)).mode&0o777,0o750);assert.equal((await lstat(ownerHome)).uid,uid);assert.notEqual(observed.home,observed.scratch);await assert.rejects(lstat(observed.scratch),{code:'ENOENT'});await assert.rejects(lstat(observed.home),{code:'ENOENT'});await assert.rejects(lstat(outside),{code:'ENOENT'});
+  const readOnly=await module.acceptSandboxedWork({workspace,settings:{scope:'read-only'},checks:[{command:process.execPath,args:['-e','const fs=require("node:fs");console.log(fs.readFileSync("source.txt","utf8"));try{fs.writeFileSync("denied.txt","escaped");process.exit(9)}catch{}']}],timeoutMs:15000});
+  assert.equal(readOnly.checks[0].status,'passed',readOnly.checks[0].stderr);assert.match(readOnly.checks[0].stdout,/owned project source/);await assert.rejects(lstat(join(cwd,'denied.txt')),{code:'ENOENT'});
+  delete process.env.SUDO_UID;delete process.env.SUDO_GID;delete process.env.SUDO_USER;
+  await assert.rejects(()=>module.acceptSandboxedWork({workspace,settings:{scope:'project'},checks:[{command:process.execPath,args:['-e','process.exit(0)']}]}),/sudo from.*normal account/i);
+  for(const invalid of [{SUDO_UID:'0',SUDO_GID:'0',SUDO_USER:'root'},{SUDO_UID:String(uid),SUDO_GID:String(gid+1),SUDO_USER:account[0]},{SUDO_UID:String(uid),SUDO_GID:String(gid),SUDO_USER:'wrong-account'},{SUDO_UID:'999999999999',SUDO_GID:String(gid),SUDO_USER:account[0]}]){Object.assign(process.env,invalid);await assert.rejects(()=>module.acceptSandboxedWork({workspace,settings:{scope:'project'},checks:[{command:process.execPath,args:['-e','process.exit(0)']}]}),/sudo from.*normal account/i);}
+  Object.assign(process.env,{SUDO_UID:String(uid),SUDO_GID:String(gid),SUDO_USER:account[0]});
+  const unrestricted=await module.acceptSandboxedWork({workspace,settings:{permissions:'allow-everything',scope:'full',webAccess:true},checks:[{command:process.execPath,args:['-e','console.log(process.getuid())']}]});assert.equal(unrestricted.checks[0].status,'passed');assert.equal(unrestricted.checks[0].stdout.trim(),'0');
 });
 
 test('native Linux project checks block host credentials network and outside writes while permitting project writes',{skip:process.platform!=='linux',timeout:20000},async t=>{

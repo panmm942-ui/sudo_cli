@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
 async function root(t) {
   // macOS commonly exposes its temporary root through a system symlink. Test

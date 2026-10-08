@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { requireElevated } from './privileges.mjs';
 import { workerLocation, validateAgentConfig, removeWorkerRecord } from './agent-control.mjs';
 import { createRedactor } from './redactor.mjs';
+import { createDetachedTaskReporter } from './detached-notifications.mjs';
 
 const guardianInstructions = `You are the local guardian for a user-enabled 24/7 coding assistant.
 Assess the explicit task or standing goal in the user input. Use available tools only within the configured permissions and web policy.
@@ -42,7 +43,7 @@ function statusFields(value) {
 
 async function initialize(message) {
   const id = message.id;
-  let coordinator, server, location, shuttingDown, registered = false;
+  let coordinator, resultReporter, server, location, shuttingDown, registered = false;
   let config, startedAt, registrationTimer;
   const events = [];
   const secrets = [message.token, message.config?.localConnection?.apiKey, message.config?.cloudConnection?.apiKey, message.config?.wake?.apiKey, message.config?.sleep?.apiKey, message.config?.gpuStatus?.apiKey].filter(value => typeof value === 'string' && value);
@@ -54,6 +55,7 @@ async function initialize(message) {
     shuttingDown = (async () => {
       clearTimeout(registrationTimer);
       try { await coordinator?.stop(); } catch { log('error', 'Background worker cleanup failed.'); }
+      await resultReporter?.close();
       if (registered && location) await removeWorkerRecord(location, id).catch(() => {});
       if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
       process.exit(0);
@@ -76,6 +78,7 @@ async function initialize(message) {
     const scheduler = await createScheduler({ inbox });
     const budget = await createBudgetLedger({ stateDir: location.stateDir, cwd: location.cwd, policy: config.budget ?? {} });
     const {createBackgroundWork}=await import('./background-work.mjs');const work=await createBackgroundWork({stateDir:location.stateDir,cwd:location.cwd,secrets:()=>secrets,settings:config.settings,checks:config.settings.checks||[]});
+    resultReporter=createDetachedTaskReporter({work,stateDir:location.stateDir,log});
     const gpu = createGpuController({ wake: config.wake, sleep: config.sleep, status: config.gpuStatus });
     async function backgroundTask(options) {
       let approvalNeeded = false, result;
@@ -90,10 +93,10 @@ async function initialize(message) {
     }
     coordinator = createAlwaysOn({
       inbox,
-      scheduler, beginTask: async id => {const limits=await budget.beginTask(id);try{await work.beginTask(id);}catch(error){await budget.endTask(id);throw error;}return limits;}, endTask: async id => {try{await work.endTask(id);}finally{await budget.endTask(id);}},onTaskResult:(job,patch,options)=>work.result(job,patch,options),
+      scheduler, beginTask: async id => {const limits=await budget.beginTask(id);try{await work.beginTask(id);}catch(error){await budget.endTask(id);throw error;}resultReporter.begin(id);return limits;}, endTask: async id => {try{await work.endTask(id);}finally{await budget.endTask(id);}},onTaskResult:resultReporter.result,
       ...Object.fromEntries(['pollMs', 'idleSleepMs', 'heartbeatMs', 'standingGoal', 'watchPaths'].filter(name => config[name] !== undefined).map(name => [name, config[name]])),
       onState() { /* Status is sampled on authenticated requests without writing prompts to logs. */ },
-      onError(error) { log('error', error?.message ?? 'A background task failed.'); },
+      onError(error) { log('error', error?.message ?? 'A background task failed.');void resultReporter.error(error,coordinator?.snapshot().activeJobId); },
       ...(config.wake ? { wake: options => gpu.wake(options) } : {}),
       ...(config.sleep ? { sleep: options => gpu.sleep(options) } : {}),
       assess: async (job, { signal }) => {

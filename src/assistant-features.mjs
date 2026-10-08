@@ -15,8 +15,60 @@ export function parseLocalDecision(text){
   return value;
 }
 
+export function backgroundNotificationEvent({status,reason='',code,interrupted=false}={}){
+  if(interrupted||status==='cancelled'||status==='interrupted')return 'interrupted';
+  if(status==='completed')return 'done';
+  if(code==='APPROVAL_REQUIRED')return 'approval';
+  if(status==='failed'||/duration budget|timed? out|timeout/i.test(reason))return 'error';
+  if(/\b(approval|permission)\b.{0,80}\b(required|needed|denied|missing)\b|\b(need(?:s)?|requires?|awaiting|waiting)\b.{0,80}\b(approval|permission)\b/i.test(reason))return 'approval';
+  if(/\b(cancelled|canceled|interrupted)\b|\bstopped (?:during|before)\b/i.test(reason))return 'interrupted';
+  return 'error';
+}
+
+/** Report actual terminal task outcomes once per attempt, including reason-only failures. */
+export function createBackgroundResultReporter({work,modelFor=()=>undefined,onResult=()=>{},onAttention=()=>{},onReportError=()=>{},now=Date.now}){
+  const attempts=new Map(),coordinationErrors=new Map();let lastCoordinationAt=-Infinity;
+  const begin=id=>{
+    attempts.delete(id);attempts.set(id,{notificationId:`background:${id}:${randomUUID()}`,reported:false,attentionReported:false});
+    while(attempts.size>128)attempts.delete(attempts.keys().next().value);
+  };
+  async function report(callback,outcome){
+    try{await callback(outcome);}catch(error){try{await onReportError(error);}catch{}}
+  }
+  return {
+    begin,
+    async error(error,activeJobId){
+      const attempt=attempts.get(activeJobId);
+      if(attempt){
+        if(attempt.attentionReported)return;
+        attempt.attentionReported=true;
+      }else{
+        const time=now(),key=String(error?.code||'').slice(0,64)+'\0'+String(error?.message||error||'').slice(0,256);
+        if(time-lastCoordinationAt<1000||coordinationErrors.has(key)&&time-coordinationErrors.get(key)<30000)return;
+        coordinationErrors.delete(key);coordinationErrors.set(key,time);lastCoordinationAt=time;
+        while(coordinationErrors.size>128)coordinationErrors.delete(coordinationErrors.keys().next().value);
+      }
+      await report(onAttention,{status:'failed',code:'COORDINATOR_ERROR',notificationId:attempt?attempt.notificationId+':error':`coordination:${randomUUID()}`});
+    },
+    async result(job,patch,options){
+      const result=await work.result(job,patch,options);
+      if(!['completed','blocked','failed','cancelled','interrupted'].includes(result.status))return result;
+      if(!attempts.has(job.id))begin(job.id);
+      const attempt=attempts.get(job.id);
+      if(!attempt.reported){
+        attempt.reported=true;
+        const signal=options?.signal;
+        const outcome={job,text:result.result,reason:result.reason,status:result.status,code:result.code||signal?.reason?.code,interrupted:signal?.aborted===true&&signal.reason?.name!=='TimeoutError',model:modelFor(job.id),notificationId:attempt.notificationId,notificationSuppressed:attempt.attentionReported&&result.status!=='completed'};
+        if(backgroundNotificationEvent(outcome)!=='done')attempt.attentionReported=true;
+        await report(onResult,outcome);
+      }
+      return result;
+    },
+  };
+}
+
 /** Runtime-only service credentials; durable storage is deliberately delegated. */
-export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection,reconnect,onChatChange,enqueue,interrupt,rememberSecret=()=>{},loadCredential=async()=>undefined,secrets=()=>[],extraInstructions=async()=>'',capabilitiesFor=selected=>selected.capabilities||{},onVoiceState=()=>{},onBackgroundState=()=>{},onBackgroundResult=()=>{},onApproval}){
+export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection,reconnect,onChatChange,enqueue,interrupt,rememberSecret=()=>{},loadCredential=async()=>undefined,secrets=()=>[],extraInstructions=async()=>'',capabilitiesFor=selected=>selected.capabilities||{},onVoiceState=()=>{},onBackgroundState=()=>{},onBackgroundResult=()=>{},onBackgroundError=()=>{},onApproval}){
   let voice,coordinator,inbox,agentConfig;
   const stateOptions=stateDir?{stateDir,cwd}:{cwd};
   const stopVoice=async()=>{const old=voice;voice=undefined;await old?.stop();onVoiceState(undefined);};
@@ -104,12 +156,13 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
     const store=await getInbox(),scheduler=await createScheduler({inbox:store}),budget=await createBudgetLedger({...stateOptions,policy:selected.budget||{}}),gpu=createGpuController({wake:selected.wake,sleep:selected.sleep,status:selected.gpuStatus});
     const {createBackgroundWork}=await import('./background-work.mjs');const work=await createBackgroundWork({...stateOptions,secrets,settings:selected.settings,checks:settings.checks||[]});
     const taskModels=new Map();
+    const resultReporter=createBackgroundResultReporter({work,modelFor:id=>taskModels.get(id)||selected.localConnection.model,onResult:onBackgroundResult,onAttention:onBackgroundError,onReportError:()=>note('24/7 task status could not be shown. Inspect /247 list and /247 result TASK_ID.')});
     const run=async options=>{let denied=false;const deniedError=()=>{const error=new Error('An action was denied or needs permission. Review and explicitly retry this task.');error.code='APPROVAL_REQUIRED';return error;};let result;try{result=await runAgentTask({...options,onApproval:async request=>{let allowed=false;try{allowed=await onApproval?.(request)===true;}catch{}if(!allowed)denied=true;return allowed;}});}catch(error){if(denied)throw deniedError();throw error;}if(denied)throw deniedError();return result;};
-    coordinator=createAlwaysOn({inbox:store,scheduler,beginTask:async id=>{const limits=await budget.beginTask(id);try{await work.beginTask(id);}catch(error){await budget.endTask(id);throw error;}return limits;},endTask:async id=>{try{await work.endTask(id);}finally{await budget.endTask(id);taskModels.delete(id);}},onTaskResult:async(job,patch,options)=>{const result=await work.result(job,patch,options);if(result.result)await onBackgroundResult({job,text:result.result,model:taskModels.get(job.id)||selected.localConnection.model,status:result.status});taskModels.delete(job.id);return result;},standingGoal:selected.standingGoal,watchPaths:selected.watchPaths,
+    coordinator=createAlwaysOn({inbox:store,scheduler,beginTask:async id=>{const limits=await budget.beginTask(id);try{await work.beginTask(id);}catch(error){await budget.endTask(id);throw error;}resultReporter.begin(id);return limits;},endTask:async id=>{try{await work.endTask(id);}finally{await budget.endTask(id);taskModels.delete(id);}},onTaskResult:resultReporter.result,standingGoal:selected.standingGoal,watchPaths:selected.watchPaths,
       assess:async(job,{signal})=>{const reply=await run({connection:selected.localConnection,cwd,settings:{...selected.settings,effort:undefined},prompt:job.prompt,developerInstructions:[selected.localDeveloperInstructions,LOCAL_DECISION_INSTRUCTIONS].filter(Boolean).join('\n\n'),signal,runtime:{requestHooks:budget.requestHooks({taskId:job.id,pricing:selected.localPricing})}});const decision=parseLocalDecision(reply.text);if(decision.action==='local')taskModels.set(job.id,selected.localConnection.model);return decision;},
       runCloud:async(job,{signal})=>{const reply=await run({connection:selected.cloudConnection,cwd,settings:selected.settings,prompt:job.prompt,developerInstructions:selected.developerInstructions,signal,runtime:{requestHooks:budget.requestHooks({taskId:job.id,pricing:selected.pricing})}});taskModels.set(job.id,selected.cloudConnection.model);return reply.text;},
       ...(selected.wake?{wake:options=>gpu.wake(options),sleep:options=>gpu.sleep(options)}:{}),
-      onState:state=>onBackgroundState(state),onError:error=>note(`24/7: ${error.message||error}`)});
+      onState:state=>onBackgroundState(state),onError:error=>{note(`24/7: ${error.message||error}`);void resultReporter.error(error,coordinator?.snapshot().activeJobId);}});
     try{await coordinator.start();}catch(error){coordinator=undefined;throw error;}note('24/7 mode started. /247 add TASK submits work; /247 stop stops it.');
   }
   async function agent(args,rawArgs){

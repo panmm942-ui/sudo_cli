@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { createNetworkStatus, createNetworkSampler } from '../src/network-status.mjs';
 
 const iface = (rx, tx, extra = {}) => ({ name: 'wlan0', wifi: true, connected: true, rxBytes: String(rx), txBytes: String(tx), ...extra });

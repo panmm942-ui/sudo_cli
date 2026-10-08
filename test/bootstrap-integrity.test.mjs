@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp, mkdir, copyFile, readFile, writeFile, rm, unlink} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';

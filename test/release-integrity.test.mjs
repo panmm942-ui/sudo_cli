@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPairSync, sign, createHash} from 'node:crypto';
 import {mkdtemp, mkdir, writeFile, readFile, rm, unlink, link, symlink, lstat, readdir} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {join, dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { createChatHistory } from '../src/chat-history.mjs';
 
 test('full conversation preserves message order, Unicode, code blocks and trailing whitespace', () => {

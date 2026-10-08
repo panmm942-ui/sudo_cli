@@ -1,8 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
+
+async function stillRunning(pid) {
+  if (process.platform === 'linux') {
+    try { const stat = await readFile(`/proc/${pid}/stat`, 'utf8'); return !['Z','X'].includes(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]); }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  }
+  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
+
+async function waitUntilStopped(pid, timeoutMs = 1000) {
+  const deadline = performance.now() + timeoutMs;
+  while (await stillRunning(pid)) {
+    if (performance.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  return true;
+}
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'codexcli-workspace-test-'));
@@ -128,7 +145,22 @@ test('timeout terminates a selected check subprocess tree including descendants 
   const script = 'const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","inherit","inherit"]});console.log(c.pid);setInterval(()=>{},1000)';
   const result = await workspace.runChecks([{ command: process.execPath, args: ['-e', script] }], { timeoutMs: 200 });
   assert.equal(result[0].status, 'timed-out');
-  const pid = Number(result[0].stdout.trim()); assert.ok(pid > 0); assert.throws(() => process.kill(pid, 0));
+  const pid = Number(result[0].stdout.trim()); assert.ok(pid > 0); assert.equal(await waitUntilStopped(pid), true);
+});
+
+for (const reason of ['timed-out','cancelled']) test(`${reason} checks stop a SIGTERM-ignoring owned descendant even after it closes captured output`, { skip: process.platform === 'win32', timeout: 5000 }, async t => {
+  const { workspace } = await fixture(t);
+  let pid;
+  t.after(async () => { if (pid > 0 && await stillRunning(pid)) try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } });
+  const descendant = 'process.on("SIGTERM",()=>{});process.send("ready");process.disconnect();setInterval(()=>{},1000)';
+  const script = `const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore","ignore","ignore","ipc"]});c.once("message",()=>console.log(c.pid));setInterval(()=>{},1000)`;
+  const controller = new AbortController();
+  const timer = reason === 'cancelled' ? setTimeout(() => controller.abort(), 1000) : undefined;
+  t.after(() => clearTimeout(timer));
+  const [result] = await workspace.runChecks([{ command: process.execPath, args: ['-e', script] }], { timeoutMs: reason === 'timed-out' ? 1000 : 4000, signal: controller.signal });
+  assert.equal(result.status, reason);
+  pid = Number(result.stdout.trim()); assert.ok(pid > 0, 'The owned descendant must report readiness before the timeout');
+  assert.equal(await stillRunning(pid), false, 'runChecks must finish terminating the owned process group before returning');
 });
 
 test('untrusted checkpoint record paths are rejected before changing project files', async t => {

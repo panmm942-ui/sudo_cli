@@ -1,4 +1,5 @@
 import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -8,7 +9,10 @@ import { setTimeout as wait } from 'node:timers/promises';
 const recordName = /^session-[A-Za-z0-9_-]{1,80}\.json$/;
 const duration = (value) => Number.isSafeInteger(value) && value >= 0;
 
-export function defaultWorkStateDir({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+export function defaultWorkStateDir({ platform = process.platform, env = process.env, home } = {}) {
+  // Canonicalize only the OS-derived default, including macOS /var/root.
+  // Explicit state roots and injected homes retain private-directory checks.
+  if(home===undefined)home=realpathSync(homedir());
   if (platform === 'win32') return win32.join(env.LOCALAPPDATA || win32.join(home, 'AppData', 'Local'), 'codexcli');
   if (platform === 'darwin') return posix.join(home, 'Library', 'Application Support', 'codexcli');
   const stateRoot = env.XDG_STATE_HOME && posix.isAbsolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME : posix.join(home, '.local', 'state');

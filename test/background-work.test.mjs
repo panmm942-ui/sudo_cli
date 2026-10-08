@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {createBackgroundWork} from '../src/background-work.mjs';
 test('background completion remains Needs review without checks and gets a durable checkpoint',async()=>{
   const cwd=await mkdtemp(join(tmpdir(),'sudocli-background-check-'));await writeFile(join(cwd,'source.txt'),'before');const work=await createBackgroundWork({cwd,stateDir:join(cwd,'state')});await work.beginTask('test-job');await writeFile(join(cwd,'source.txt'),'after');const result=await work.result({id:'test-job'},{status:'completed',result:'Model says done.'});assert.equal(result.status,'completed');assert.match(result.result,/Acceptance: Needs review/);assert.match(result.result,/Checkpoint:/);await work.endTask('test-job');assert.equal(await readFile(join(cwd,'source.txt'),'utf8'),'after');

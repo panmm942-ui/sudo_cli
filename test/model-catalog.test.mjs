@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, access } from 'node:fs/promises';
+import { readFile, access, lstat } from 'node:fs/promises';
+
+test('sudo custom catalog grants only its own disposable files to a bounded child identity',{skip:process.platform!=='linux'||process.getuid?.()!==0},async()=>{
+  const {prepareCustomModelCatalog}=await import('../src/model-catalog.mjs');const options={model:'private-fixture',providerArgs:['-c','model_provider="sudo_session"']};
+  for(const owner of [{uid:-1,gid:1},{uid:0,gid:0},{uid:65534,gid:'65534'},{uid:65534,gid:0xffffffff}])await assert.rejects(()=>prepareCustomModelCatalog({...options,owner}),/catalog owner/i);
+  const catalog=await prepareCustomModelCatalog({...options,owner:{uid:65534,gid:65534}});const info=await lstat(catalog.path);assert.equal(info.uid,65534);assert.equal(info.gid,65534);assert.equal(info.mode&0o777,0o600);await catalog.cleanup();await assert.rejects(access(catalog.path));
+});
 
 test('custom model catalog declares native editing under the exact model ID and is disposable', async () => {
   const { prepareCustomModelCatalog } = await import('../src/model-catalog.mjs');

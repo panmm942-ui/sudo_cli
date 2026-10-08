@@ -150,7 +150,7 @@ export function createAlwaysOn({
       if (signal.aborted) throw signal.reason;
       sleepAttempted = false; emit();
     } catch (error) {
-      cloudState = 'error'; cloudBilling = 'unknown'; report(error);
+      cloudState = 'error'; cloudBilling = 'unknown'; if (!signal.aborted) report(error);
       await finishJob(job, { status: 'blocked', reason: signal.aborted ? signal.reason?.name === 'TimeoutError' ? 'The task reached its duration budget before the cloud worker could start. Review and explicitly retry it after changing the limit if appropriate.' : 'Stopped before the cloud worker could start. Review and retry explicitly.' : `The cloud worker could not wake: ${clean(error?.message || 'wake failed')}` }); return;
     }
     await inbox.update(job.id, { status: 'running', ...(selected.reason ? { reason: selected.reason } : {}) });

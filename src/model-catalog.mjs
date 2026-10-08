@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, chown } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,7 +13,8 @@ const builtin = model => {
 };
 
 /** An owned temporary native catalog for an unknown custom endpoint model. */
-export async function prepareCustomModelCatalog({ model, providerArgs = [], supportedEfforts, capabilities = {} } = {}) {
+export async function prepareCustomModelCatalog({ model, providerArgs = [], supportedEfforts, capabilities = {}, owner } = {}) {
+  if(owner&&(process.platform!=='linux'||process.getuid?.()!==0||!Number.isSafeInteger(owner.uid)||owner.uid<=0||owner.uid>=0xffffffff||!Number.isSafeInteger(owner.gid)||owner.gid<0||owner.gid>=0xffffffff))throw new Error('Invalid native model catalog owner.');
   if (!Array.isArray(providerArgs) || providerArgs.some(value => typeof value !== 'string')) throw new Error('Native provider arguments must be strings.');
   if (providerArgs.some(value => /^\s*model_catalog_json\s*=/.test(value))
     || !providerArgs.some(value => /^\s*model_provider\s*=\s*"sudo_session"\s*$/.test(value))) return undefined;
@@ -35,9 +36,9 @@ export async function prepareCustomModelCatalog({ model, providerArgs = [], supp
     // configured without vision. Runtime capability checks remain authoritative.
     experimental_supported_tools: [], input_modalities: capabilities.vision === false ? ['text'] : ['text', 'image'], tool_mode: 'direct',
   };
-  const directory = await mkdtemp(join(tmpdir(), 'sudo-native-model-'));
+  const directory = await mkdtemp(join(owner?'/tmp':tmpdir(), 'sudo-native-model-'));
   const path = join(directory, 'catalog.json');
-  try { await writeFile(path, JSON.stringify({ models: [entry] }), { mode: 0o600 }); }
+  try { await writeFile(path, JSON.stringify({ models: [entry] }), { mode: 0o600 });if(owner){await chown(path,owner.uid,owner.gid);await chown(directory,owner.uid,owner.gid);} }
   catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
   return { path, async cleanup() { await rm(directory, { recursive: true, force: true }); } };
 }

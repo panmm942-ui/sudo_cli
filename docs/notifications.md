@@ -32,3 +32,13 @@ sound. Failed playback is reported as unavailable, not as played.
 Sounds run asynchronously, with a bounded queue, cooldown, duplicate-event
 protection and a timeout. Noninteractive commands remain silent. Enabling sounds
 never grants microphone access or permission to run AI tools.
+
+Explicit 24/7 tasks use the same approval, error, interruption and completion
+sounds, including detached workers after the terminal closes. A detached worker
+reads the saved On/Off preference for each event, so changes apply to its next
+event. Idle checks, task setup and status commands stay silent. Coordination
+errors also signal attention; repeated errors are suppressed.
+
+A detached worker needs an available system audio player and output device.
+It cannot use a terminal bell. If playback is unavailable, `/247 status` shows
+a short notification message. Audio failures never change the saved task result.

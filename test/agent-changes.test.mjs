@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, symlink, link, lstat, chmod, realpath } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { captureAgentWorkspace, diffAgentWorkspace, applyAgentChanges, createAgentResults } from '../src/agent-changes.mjs';

@@ -1,12 +1,18 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { readFile, access } from 'node:fs/promises';
+import { readFile, access, rm } from 'node:fs/promises';
+import {mkdtempSync} from 'node:fs';
+import {join} from 'node:path';
 import { createEngine } from '../src/engine.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/engine-server.mjs', import.meta.url));
+// Protocol mocks do not have a real disposable home. Keep their cwd owned by
+// this test runner so a sudo checkout owner cannot trigger production admission.
+const fixtureCwd=process.platform==='linux'&&process.getuid?.()===0?mkdtempSync(join('/tmp','sudo-engine-protocol-')):process.cwd();
+if(fixtureCwd!==process.cwd())after(()=>rm(fixtureCwd,{recursive:true,force:true}));
 const options = (scenario = 'normal', extra = {}) => ({
-  codexPath: [process.execPath, fixture], cwd: process.cwd(), model: 'fixture-model',
+  codexPath: [process.execPath, fixture], cwd: fixtureCwd, model: 'fixture-model',
   providerArgs: ['-c', 'model_provider="fixture"'],
   env: { ...process.env, ENGINE_SCENARIO: scenario, CODEX_HOME: 'fixture-home', SUDO_CLI_SESSION_KEY: 'fixture-only' },
   requestTimeoutMs: 2000, ...extra,
@@ -59,7 +65,7 @@ test('runs an isolated ephemeral thread and streams intact UTF-8 notifications',
   assert.equal(audit.thread.approvalPolicy, 'on-request');
   assert.equal(audit.thread.config['sandbox_workspace_write.network_access'], false);
   assert.equal(audit.thread.config.web_search, 'disabled');
-  assert.equal(audit.thread.cwd, process.cwd());
+  assert.equal(audit.thread.cwd, fixtureCwd);
   assert.equal(audit.thread.model, 'fixture-model');
   assert.deepEqual(audit.params.input, [{ type: 'text', text: 'Hello', text_elements: [] }]);
   assert.equal(audit.params.threadId, 'thread-1');
@@ -114,6 +120,10 @@ test('a workspace sandbox cannot silently ignore enabled command networking', as
   let engine;
   t.after(() => engine?.close());
   await assert.rejects(async () => { engine = await createEngine(options('ignored-network', { webAccess: true })); }, /requested network policy/);
+});
+
+test('a workspace sandbox cannot silently grant global temporary folders',async()=>{
+  let engine;try{await assert.rejects(()=>createEngine(options('wrong-temp')).then(value=>{engine=value;return value;}),/temporary folder policy/i);}finally{await engine?.close();}
 });
 
 test('explicit full access handles recognized approvals without showing permission prompts', async (t) => {
@@ -239,7 +249,7 @@ test('maps approvals to one-time protocol decisions and declines unsupported sen
   assert.deepEqual(responses.execCommandApproval, { decision: 'approved' });
   assert.deepEqual(responses.applyPatchApproval, { decision: { denied: { rejection: 'Declined by user.' } } });
   assert.deepEqual(responses['item/permissions/requestApproval'], {
-    permissions: { network: { enabled: true }, fileSystem: { read: [process.cwd()], write: [process.cwd()] } }, scope: 'turn',
+    permissions: { network: { enabled: true }, fileSystem: { read: [fixtureCwd], write: [fixtureCwd] } }, scope: 'turn',
   });
   assert.deepEqual(responses['item/tool/requestUserInput'], { answers: {} });
   assert.deepEqual(responses['mcpServer/elicitation/request'], { action: 'decline' });

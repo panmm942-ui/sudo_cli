@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, rm, readFile, readdir, mkdir, writeFile, chmod, chown, lstat } from 'node:fs/promises';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localCodex } from '../src/local-engine.mjs';
@@ -173,6 +173,25 @@ test('actual Codex engine executes a model tool call inside the selected workspa
   assert.match(proof, /sudo tool verified/);
   assert.match(await readFile(join(workspace,'env-proof.txt'),'utf8'),/True/);
   assert.ok(requests[1].messages.some(msg => msg.role === 'tool' && msg.tool_call_id === 'call_workspace_test'));
+});
+
+test('sudo native model tools use the admitted private project owner and disposable resources',{skip:process.platform!=='linux'||process.getuid?.()!==0,timeout:45000},async t=>{
+  let enginePath;try{enginePath=localCodex();}catch{t.skip('Install the pinned native Linux runtime.');return;}
+  const account=(await readFile('/etc/passwd','utf8')).split('\n').map(line=>line.split(':')).find(parts=>Number(parts[2])>=1000&&Number(parts[2])<65534)||['nobody','x','65534','65534'];const uid=Number(account[2]),gid=Number(account[3]);
+  const root=await mkdtemp(join(tmpdir(),'sudo-native-private-project-'));await chmod(root,0o755);
+  const ownerHome=join(root,'owner'),workspace=join(ownerHome,'project'),other=join(root,'other-private');await mkdir(ownerHome,{mode:0o750});await chown(ownerHome,uid,gid);await mkdir(workspace,{mode:0o755});await chown(workspace,uid,gid);await mkdir(other,{mode:0o700});await writeFile(join(other,'secret'),'private root marker');
+  const names=['SUDO_UID','SUDO_GID','SUDO_USER'],saved=Object.fromEntries(names.map(name=>[name,process.env[name]]));Object.assign(process.env,{SUDO_UID:String(uid),SUDO_GID:String(gid),SUDO_USER:account[0]});
+  const requests=[],outside=join(ownerHome,'outside.txt');
+  const script=`const fs=require('node:fs'),path=require('node:path');const report={uid:process.getuid(),gid:process.getgid(),groups:process.getgroups(),rawKey:!!process.env.OPENAI_API_KEY,bridgeKey:!!process.env.SUDO_CLI_SESSION_KEY,scratch:process.env.TMPDIR,outside:false,otherHome:false};fs.writeFileSync(path.join(report.scratch,'compiler-temporary'),'permitted');try{fs.writeFileSync(${JSON.stringify(outside)},'escaped');report.outside=true}catch{}try{fs.readFileSync(${JSON.stringify(join(other,'secret'))});report.otherHome=true}catch{}fs.writeFileSync('proof.json',JSON.stringify(report));console.log('PRIVATE_PROJECT_MODEL_PASS');`;
+  const quoted=script.replaceAll("'","'\"'\"'");
+  const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);requests.push({body,authorization:req.headers.authorization});const tool=body.messages.findLast(message=>message.role==='tool');const message=tool?{role:'assistant',content:'Private project verified.'}:{role:'assistant',content:null,tool_calls:[{id:'call_private_project',type:'function',function:{name:'exec_command',arguments:JSON.stringify({cmd:`/usr/bin/node -e '${quoted}'`,workdir:workspace,login:false,max_output_tokens:1000})}}]};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({id:`chat-private-${requests.length}`,object:'chat.completion',created:1,model:'private-sudo-fixture',choices:[{index:0,message,finish_reason:tool?'stop':'tool_calls'}]}));});
+  server.listen(0,'127.0.0.1');await once(server,'listening');const home=await createSessionHome();let engine,bridge;
+  t.after(async()=>{await engine?.close();await bridge?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await home.cleanup();await rm(root,{recursive:true,force:true});for(const name of names)if(saved[name]===undefined)delete process.env[name];else process.env[name]=saved[name];});
+  const connection={model:'private-sudo-fixture',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,transport:'chat-completions',apiKey:'synthetic-provider-key-root-only'};bridge=await startBridge(connection);
+  engine=await createEngine({codexPath:enginePath,cwd:workspace,model:connection.model,providerArgs:providerArgs(connection,{baseUrl:bridge.baseUrl,scope:'project',webAccess:false}),scope:'project',webAccess:false,env:{...process.env,CODEX_HOME:home.path,SUDO_CLI_SESSION_KEY:bridge.token,OPENAI_API_KEY:'synthetic-root-secret'},onApproval:async()=>false});
+  const completed=await engine.startTurn('Verify this private project.');assert.equal(completed.status,'completed');assert.equal(requests.length,2);assert.ok(requests.every(request=>request.authorization==='Bearer synthetic-provider-key-root-only'));
+  const report=JSON.parse(await readFile(join(workspace,'proof.json'),'utf8'));assert.equal(report.uid,uid);assert.equal(report.gid,gid);assert.ok(report.groups.every(group=>group===gid));assert.deepEqual({...report,uid:0,gid:0,groups:[],scratch:null},{uid:0,gid:0,groups:[],scratch:null,rawKey:false,bridgeKey:false,outside:false,otherHome:false});assert.equal((await lstat(home.path)).uid,uid);assert.equal((await lstat(ownerHome)).mode&0o777,0o750);assert.equal((await lstat(join(workspace,'proof.json'))).uid,uid);assert.notEqual(report.scratch,home.path);assert.equal((await lstat(report.scratch)).uid,uid);await engine.close();await assert.rejects(lstat(report.scratch),{code:'ENOENT'});
+  await assert.rejects(lstat(outside),{code:'ENOENT'});t.diagnostic('Two loopback model requests; zero paid requests. Root proxy retained provider key, native model/tool processes used admitted UID.');
 });
 
 test('native Responses monitoring passes through real engine output and retains numeric work totals across launches', { timeout: 45000 }, async (t) => {

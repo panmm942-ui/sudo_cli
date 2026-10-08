@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {createFeatureCommands} from '../src/features.mjs';
 import {createUpgradeCommands} from '../src/upgrades.mjs';
 import {createModelProfiles} from '../src/model-profiles.mjs';

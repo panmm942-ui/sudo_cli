@@ -26,6 +26,23 @@ const limit = (value, fallback, maximum, name) => {
   if (!Number.isSafeInteger(result) || result < 1 || result > maximum) throw new Error(`${name} must be a positive bounded integer.`);
   return result;
 };
+async function ownedGroupStillRunning(pid) {
+  try { process.kill(-pid, 0); }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  if (process.platform !== 'linux') return true;
+  // Linux can retain a killed descendant as a zombie until its new parent
+  // reaps it. Inspect only group membership/state; a zombie cannot run or
+  // hold the check's pipes and must not become a false cleanup failure.
+  for (const name of await readdir('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    let text;
+    try { text = await readFile(`/proc/${name}/stat`, 'utf8'); }
+    catch (error) { if (error.code === 'ENOENT' || error.code === 'ESRCH') continue; throw error; }
+    const fields = text.slice(text.lastIndexOf(')') + 2).split(' ');
+    if (Number(fields[2]) === pid && !['Z', 'X'].includes(fields[0])) return true;
+  }
+  return false;
+}
 function limits(options) {
   return { maxFiles: limit(options.maxFiles, 2000, 5000, 'Workspace file count'), maxFileBytes: limit(options.maxFileBytes, 1024 * 1024, 4 * 1024 * 1024, 'Workspace file size'),
     maxTotalBytes: limit(options.maxTotalBytes, 16 * 1024 * 1024, 64 * 1024 * 1024, 'Workspace total size'), maxEntries: limit(options.maxEntries, 20000, 50000, 'Workspace entry count') };
@@ -308,16 +325,31 @@ export async function createWorkspaceTools({ cwd = process.cwd(), stateDir = def
       const started = performance.now(); let stopReason = null, child, timer, killer, bytes = 0; const output = { stdout: [], stderr: [] };
       if (signal?.aborted) { results.push({ label: redactWorkspaceText(check.label, secrets), status: 'cancelled', exitCode: null, signal: null, elapsedMs: 0, stdout: '', stderr: '' }); break; }
       const execution = commandWrapper ? await commandWrapper({ ...check, cwd: root, env, signal }) : { ...check, env };
+      if((execution?.uid!==undefined||execution?.gid!==undefined)&&(process.platform!=='linux'||!Number.isSafeInteger(execution.uid)||execution.uid<0||execution.uid>=0xffffffff||!Number.isSafeInteger(execution.gid)||execution.gid<0||execution.gid>=0xffffffff))throw new Error('Wrapped check identity must be a valid Linux uid/gid pair.');
       if (!object(execution) || typeof execution.command !== 'string' || !execution.command || execution.command.length > 4096 || /[\u0000-\u001f\u007f]/.test(execution.command) || !Array.isArray(execution.args) || execution.args.length > 1024 || execution.args.some(arg => typeof arg !== 'string' || arg.length > 65536 || arg.includes('\0')) || execution.env !== undefined && (!object(execution.env) || Object.entries(execution.env).some(([key, value]) => /[\u0000=]/.test(key) || typeof value !== 'string' || value.includes('\0')))) throw new Error('Wrapped check execution is invalid.');
       const result = await new Promise(resolveResult => {
         let settled = false;
-        const finish = (code, processSignal, error = false) => {
+        const finish = async (code, processSignal, error = false) => {
           if (settled) return; settled = true; clearTimeout(timer); clearTimeout(killer); signal?.removeEventListener('abort', aborted);
+          let cleanupFailed = false;
+          if (stopReason && child?.pid && process.platform !== 'win32') {
+            // Parent close does not imply group termination: a descendant
+            // may ignore SIGTERM and close the captured output. Force only
+            // this detached check's owned group before returning its result.
+            terminate(true);
+            const deadline = performance.now() + 1000;
+            try {
+              while (await ownedGroupStillRunning(child.pid)) {
+                if (performance.now() >= deadline) { cleanupFailed = true; break; }
+                await new Promise(resolve => setTimeout(resolve, 10));
+              }
+            } catch { cleanupFailed = true; }
+          }
           const safeStdout = redactWorkspaceText(Buffer.concat(output.stdout).toString('utf8'), secrets), safeStderr = redactWorkspaceText(Buffer.concat(output.stderr).toString('utf8'), secrets);
           const stdout = boundedUtf8(safeStdout, maxOutputBytes), stderr = boundedUtf8(safeStderr, Math.max(0, maxOutputBytes - Buffer.byteLength(stdout)));
           if (!stopReason && Buffer.byteLength(safeStdout) + Buffer.byteLength(safeStderr) > maxOutputBytes) stopReason = 'output-limit';
-          resolveResult({ label: redactWorkspaceText(check.label, secrets), status: stopReason ?? (error ? 'error' : code === 0 ? 'passed' : 'failed'), exitCode: code ?? null, signal: processSignal ?? null,
-            elapsedMs: Math.round(performance.now() - started), stdout, stderr });
+          resolveResult({ label: redactWorkspaceText(check.label, secrets), status: cleanupFailed ? 'error' : stopReason ?? (error ? 'error' : code === 0 ? 'passed' : 'failed'), exitCode: code ?? null, signal: processSignal ?? null,
+            elapsedMs: Math.round(performance.now() - started), stdout, stderr, ...(cleanupFailed ? { terminationIncomplete: true } : {}) });
         };
         const terminate = force => {
           if (!child?.pid) return;
@@ -331,7 +363,7 @@ export async function createWorkspaceTools({ cwd = process.cwd(), stateDir = def
         const stop = reason => { if (stopReason) return; stopReason = reason; terminate(false); killer = setTimeout(() => terminate(true), 500); killer.unref(); };
         const aborted = () => stop('cancelled');
         try {
-          child = spawn(execution.command, execution.args, { cwd: root, windowsHide: true, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], ...(execution.env ? { env: execution.env } : {}) });
+          child = spawn(execution.command, execution.args, { cwd: root, windowsHide: true, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], ...(execution.env ? { env: execution.env } : {}),...(execution.uid===undefined?{}:{uid:execution.uid,gid:execution.gid}) });
           for (const stream of ['stdout', 'stderr']) child[stream].on('data', chunk => { const remaining = maxOutputBytes - bytes; bytes += chunk.length; if (remaining > 0) output[stream].push(chunk.subarray(0, remaining)); if (bytes > maxOutputBytes) stop('output-limit'); });
           child.once('error', () => finish(null, null, true)); child.once('close', (code, processSignal) => finish(code, processSignal));
           signal?.addEventListener('abort', aborted, { once: true }); timer = setTimeout(() => stop('timed-out'), timeoutMs); timer.unref(); if (signal?.aborted) aborted();

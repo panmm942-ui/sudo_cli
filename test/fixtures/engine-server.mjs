@@ -45,7 +45,8 @@ input.on('line', (line) => {
     threadParams = message.params;
     if (scenario === 'persistent-thread') return response(message.id, { thread: { id: 'thread-1', ephemeral: false } });
     if (scenario === 'bad-thread') return response(message.id, { thread: null });
-    let sandbox = message.params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } :message.params.sandbox==='read-only'?{type:'readOnly',networkAccess:false}: { type: 'workspaceWrite', networkAccess: message.params.config?.['sandbox_workspace_write.network_access'] === true };
+    let sandbox = message.params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } :message.params.sandbox==='read-only'?{type:'readOnly',networkAccess:false}: { type: 'workspaceWrite', networkAccess: message.params.config?.['sandbox_workspace_write.network_access'] === true,excludeTmpdirEnvVar:message.params.config?.['sandbox_workspace_write.exclude_tmpdir_env_var']===true,excludeSlashTmp:message.params.config?.['sandbox_workspace_write.exclude_slash_tmp']===true };
+    if(scenario==='wrong-temp')sandbox={...sandbox,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
     if (scenario === 'wrong-permissions') sandbox = { type: 'dangerFullAccess' };
     if (scenario === 'wrong-network') sandbox = { type: 'workspaceWrite', networkAccess: true };
     if (scenario === 'ignored-network') sandbox = { type: 'workspaceWrite', networkAccess: false };

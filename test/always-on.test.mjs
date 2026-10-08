@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { createTaskInbox } from '../src/task-inbox.mjs';
 import { createAlwaysOn } from '../src/always-on.mjs';
 
@@ -220,4 +220,22 @@ test('durable background completion waits for acceptance and records its failure
     release();await until(async()=>(await inbox.get(job.id)).status==='failed');
     assert.equal(agent.snapshot().completed,0);assert.match((await inbox.get(job.id)).reason,/acceptance check failed/);
   }finally{release();}
+});
+
+test('cancelled and timed out wake operations emit only their terminal attention sound',async t=>{
+  const {createBackgroundResultReporter,backgroundNotificationEvent}=await import('../src/assistant-features.mjs');
+  for(const mode of ['stop','timeout'])await t.test(mode,async t=>{
+    let agent,waking=false,cloudCalls=0;const tones=[],outcomes=[],errors=[];
+    const reporter=createBackgroundResultReporter({work:{result:async(_job,patch)=>patch},onAttention:outcome=>tones.push(backgroundNotificationEvent(outcome)),onResult:outcome=>{outcomes.push(outcome);if(!outcome.notificationSuppressed)tones.push(backgroundNotificationEvent(outcome));}});
+    const created=await fixture(t,{beginTask:id=>{reporter.begin(id);return mode==='timeout'?{timeoutMs:500}:{};},onTaskResult:reporter.result,
+      onError:error=>{errors.push(error);void reporter.error(error,agent.snapshot().activeJobId);},assess:async()=>({action:'cloud'}),
+      wake:async({signal})=>new Promise((resolve,reject)=>{waking=true;if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});}),
+      runCloud:async()=>{cloudCalls++;assert.fail('Cancelled wake must never dispatch cloud work.');}});
+    agent=created.agent;await agent.start();const job=await agent.submit('Explicit wake fixture');await until(()=>waking);
+    if(mode==='stop')await agent.stop();else await until(async()=>(await created.inbox.get(job.id)).status==='blocked');
+    const result=await created.inbox.get(job.id);
+    assert.equal(result.status,'blocked');assert.equal(cloudCalls,0);assert.deepEqual(errors,[]);
+    assert.deepEqual(tones,[mode==='stop'?'interrupted':'error']);assert.equal(outcomes.length,1);assert.equal(outcomes[0].notificationSuppressed,false);
+    assert.match(result.reason,mode==='stop'?/Stopped before/:/duration budget/);
+  });
 });

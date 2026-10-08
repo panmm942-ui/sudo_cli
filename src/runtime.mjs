@@ -1,5 +1,5 @@
 import { accessSync, constants, readdirSync, statSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, lstat, realpath, readdir, chown } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 import {permissionPolicy} from './permission-scope.mjs';
@@ -191,6 +191,8 @@ export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv 
     approval_policy: runtime.permissions === 'ask' ? 'on-request' : 'never',
     sandbox_mode: policy.sandbox,
     'sandbox_workspace_write.network_access': policy.networkAccess,
+    'sandbox_workspace_write.exclude_tmpdir_env_var': true,
+    'sandbox_workspace_write.exclude_slash_tmp': true,
     // Chat Completions has no native hosted-search equivalent. Network-enabled
     // commands and explicitly supplied MCP servers remain available when on.
     web_search: policy.networkAccess && normalized.transport === 'responses' && normalized.capabilities?.hostedSearch !== false ? 'live' : 'disabled',
@@ -204,14 +206,27 @@ export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv 
   return Object.entries(options).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]);
 }
 
+const disposableSessionHomes=new Map();
+/** Grant only this module's exact, empty temporary directory to an admitted child. */
+export async function grantSessionHomeOwner(path,identity){
+  if(!identity)return;
+  if(process.platform!=='linux'||process.getuid?.()!==0||!Number.isSafeInteger(identity.uid)||identity.uid<=0||identity.uid>=0xffffffff||!Number.isSafeInteger(identity.gid)||identity.gid<0||identity.gid>=0xffffffff)throw new Error('Invalid native session home owner.');
+  const registration=disposableSessionHomes.get(path);
+  if(!registration)throw new Error('Scoped sudo execution requires a CLI-created disposable session home.');
+  const info=await lstat(path);
+  if(!info.isDirectory()||info.isSymbolicLink()||await realpath(path)!==path||info.ino!==registration.ino||info.dev!==registration.dev||(info.mode&0o777)!==0o700||info.uid!==registration.uid||info.gid!==registration.gid||(await readdir(path)).length)throw new Error('Disposable native session home changed before ownership admission.');
+  await chown(path,identity.uid,identity.gid);registration.uid=identity.uid;registration.gid=identity.gid;
+}
 /** A new empty Codex home prevents reuse of saved auth or provider configuration. */
-export async function createSessionHome({ baseDir = tmpdir() } = {}) {
+export async function createSessionHome({ baseDir = process.platform==='linux'&&process.getuid?.()===0?'/tmp':tmpdir() } = {}) {
   const path = await mkdtemp(join(resolve(baseDir), 'sudo-cli-session-'));
+  const info=await lstat(path);disposableSessionHomes.set(path,{ino:info.ino,dev:info.dev,uid:info.uid,gid:info.gid});
   return {
     path,
     async cleanup() {
       // This exact absolute path is the owned mkdtemp child, never a user-supplied deletion target.
       await rm(path, { recursive: true, force: true });
+      disposableSessionHomes.delete(path);
     },
   };
 }

@@ -1,6 +1,8 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.7**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.8**
+
+This release preserves signed bytes during Windows Git checkout, handles default macOS home aliases, and supports the native Linux sandbox through private home paths. Timed-out workspace checks clean up their descendants. Background task sounds also work in detached mode and respect the saved notification preference.
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -165,10 +167,10 @@ Other options include `--permissions ask|allow-everything`, `--scope read-only|p
 
 The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
 
-Official 0.6.7 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
+Official 0.6.8 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
 
 ## Credits
 
 [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui)
 
-Version 0.6.7 adds `/notify on|off` with separate non-speaking tones for approvals, errors, completion and interruption. The antenna and worked-time meter follow real AI task lifetimes; typing, update checks, local verification and setup leave them idle. See [notification sounds](docs/notifications.md).
+Version 0.6.8 adds `/notify on|off` with separate non-speaking tones for approvals, errors, completion and interruption. The antenna and worked-time meter follow real AI task lifetimes; typing, update checks, local verification and setup leave them idle. See [notification sounds](docs/notifications.md).

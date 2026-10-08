@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {join} from 'node:path';
 import {checkGitHubRelease,installGitHubRelease,normalizeGitHubRepository,DEFAULT_GITHUB_REPOSITORY} from '../src/github-releases.mjs';
 import {updateStatus} from '../src/verified-update.mjs';

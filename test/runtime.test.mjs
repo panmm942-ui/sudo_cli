@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, mkdir, readdir, access, rm, chmod } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, writeFile, mkdir, readdir, access, rm, chmod, lstat, symlink } from 'node:fs/promises';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join, delimiter } from 'node:path';
 import * as runtime from '../src/runtime.mjs';
 
@@ -9,6 +9,13 @@ function feature(name) {
   assert.equal(typeof runtime[name], 'function', `${name} must be implemented`);
   return runtime[name];
 }
+test('sudo session ownership admission never changes an arbitrary or replaced HOME directory',{skip:process.platform!=='linux'||process.getuid?.()!==0},async t=>{
+  const base=await mkdtemp(join(tmpdir(),'sudo-disposable-home-test-'));t.after(()=>rm(base,{recursive:true,force:true}));const outside=join(base,'arbitrary-home');await mkdir(outside,{mode:0o700});const before=await lstat(outside),identity={uid:65534,gid:65534};
+  await assert.rejects(()=>runtime.grantSessionHomeOwner(outside,identity),/CLI-created disposable/);assert.equal((await lstat(outside)).uid,before.uid);
+  const home=await runtime.createSessionHome();t.after(()=>home.cleanup());await writeFile(join(home.path,'unadmitted-file'),'private');await assert.rejects(()=>runtime.grantSessionHomeOwner(home.path,identity),/changed before ownership/);assert.equal((await lstat(home.path)).uid,0);
+  await rm(join(home.path,'unadmitted-file'));await runtime.grantSessionHomeOwner(home.path,identity);assert.equal((await lstat(home.path)).uid,identity.uid);assert.equal((await lstat(home.path)).mode&0o777,0o700);await home.cleanup();await assert.rejects(lstat(home.path),{code:'ENOENT'});
+  const replaced=await runtime.createSessionHome();t.after(()=>replaced.cleanup());await rm(replaced.path,{recursive:true});await symlink(outside,replaced.path);await assert.rejects(()=>runtime.grantSessionHomeOwner(replaced.path,identity),/changed before ownership/);assert.equal((await lstat(outside)).uid,before.uid);
+});
 async function temporary(t) {
   const path = await mkdtemp(join(tmpdir(), 'sudo-runtime-test-'));
   t.after(() => rm(path, { recursive: true, force: true }));

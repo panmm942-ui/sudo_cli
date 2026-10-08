@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { VERSION } from './version.mjs';
-import { validateRuntimeOptions, validateReasoningEffort, validateSupportedEfforts } from './runtime.mjs';
-import {permissionPolicy,approvalWithinScope} from './permission-scope.mjs';
+import { validateRuntimeOptions, validateReasoningEffort, validateSupportedEfforts,grantSessionHomeOwner } from './runtime.mjs';
+import {permissionPolicy,approvalWithinScope,prepareSandboxRuntime,sandboxExecutionIdentity,sandboxChildEnvironment,createSandboxScratch} from './permission-scope.mjs';
 import { prepareCustomModelCatalog } from './model-catalog.mjs';
 
 const MAX_LINE_CHARS = 8 * 1024 * 1024;
@@ -71,14 +71,21 @@ export async function createEngine({
   const modelEfforts = validateSupportedEfforts(supportedEfforts);
   const policy=permissionPolicy({...choices,scope:scope|| (permissions==='allow-everything'?'full':'project'),writableRoots});
   const {approvalPolicy,sandbox}=policy;
-  const nativeCatalog = await prepareCustomModelCatalog({ model, providerArgs, supportedEfforts: modelEfforts, capabilities: declaredCapabilities });
+  const command = Array.isArray(codexPath) ? codexPath : [codexPath];
+  const identity=await sandboxExecutionIdentity({cwd,policy});
+  if(identity)await grantSessionHomeOwner(env.CODEX_HOME,identity);
+  env=sandboxChildEnvironment(env,identity,providerArgs);
+  const sandboxRuntime=policy.unrestricted?{path:command[0],cleanup:async()=>{}}:await prepareSandboxRuntime(command[0],{cwd,env,identity});
+  let nativeCatalog,scratch;
+  try{if(policy.sandbox==='workspace-write'){scratch=await createSandboxScratch({identity});env={...env,TMPDIR:scratch.path,TMP:scratch.path,TEMP:scratch.path};}nativeCatalog=await prepareCustomModelCatalog({ model, providerArgs, supportedEfforts: modelEfforts, capabilities: declaredCapabilities,owner:identity });}
+  catch(error){await Promise.all([sandboxRuntime.cleanup(),scratch?.cleanup()]);throw error;}
   if (nativeCatalog) providerArgs = [...providerArgs, '-c', `model_catalog_json=${JSON.stringify(nativeCatalog.path)}`];
   let runtimePolicy;
   let instructionSources = [];
-  const command = Array.isArray(codexPath) ? codexPath : [codexPath];
-  const child = spawn(command[0], [...command.slice(1), '--no-daemon', 'app-server', '--listen', 'stdio://', ...providerArgs], {
-    cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false,
-  });
+  let child;
+  try{child=spawn(sandboxRuntime.path, [...command.slice(1), '--no-daemon', 'app-server', '--listen', 'stdio://', ...providerArgs], {
+    cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false,...identity,
+  });}catch(error){await Promise.all([nativeCatalog?.cleanup(),sandboxRuntime.cleanup(),scratch?.cleanup()]);throw error;}
   const pending = new Map();
   let nextId = 1;
   let buffer = '';
@@ -244,7 +251,7 @@ export async function createEngine({
         await Promise.race([ended, new Promise((resolve) => { forceTimeout = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 250); })]);
         clearTimeout(forceTimeout);
       }
-      } finally { await nativeCatalog?.cleanup(); }
+      } finally { await Promise.all([nativeCatalog?.cleanup(),sandboxRuntime.cleanup(),scratch?.cleanup()]); }
     })();
     return closing;
   }
@@ -259,8 +266,8 @@ export async function createEngine({
       capabilities: { experimentalApi: true, explicitGatewayOauth: true },
     });
     send({ method: 'initialized', params: {} });
-    const config = { 'sandbox_workspace_write.network_access': policy.networkAccess };
-    if(policy.writableRoots.length)config['sandbox_workspace_write.writable_roots']=policy.writableRoots;
+    const config = { 'sandbox_workspace_write.network_access': policy.networkAccess,'sandbox_workspace_write.exclude_tmpdir_env_var':true,'sandbox_workspace_write.exclude_slash_tmp':true };
+    if(policy.writableRoots.length||scratch)config['sandbox_workspace_write.writable_roots']=[...policy.writableRoots,...(scratch?[scratch.path]:[])];
     // The host process must still reach the selected model API. This disables
     // hosted web capabilities and restricts sandboxed commands, not API traffic.
     if (!policy.networkAccess) config.web_search = 'disabled';
@@ -274,6 +281,7 @@ export async function createEngine({
     if (!policy.unrestricted && (typeof actual.networkAccess !== 'boolean'
       || (actual.type === 'workspaceWrite' && actual.networkAccess !== policy.networkAccess)
       || (actual.type === 'readOnly' && actual.networkAccess))) throw new Error('Codex engine did not apply the requested network policy.');
+    if(actual.type==='workspaceWrite'&&(actual.excludeTmpdirEnvVar!==true||actual.excludeSlashTmp!==true))throw new Error('Codex engine did not apply the requested temporary folder policy.');
     // Windows without sandbox setup can return a stricter read-only policy.
     // Expose that actual policy instead of silently claiming workspace access.
     runtimePolicy = { ...choices,scope:policy.scope,networkEnforced:!policy.unrestricted,approvalPolicy: result.approvalPolicy, sandbox: { ...actual } };

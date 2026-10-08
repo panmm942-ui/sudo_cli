@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, writeFile, rm, lstat, mkdir, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
 
 const connection = { baseUrl: 'https://EXAMPLE.com:443/v1/', model: 'coding-model', transport: 'chat-completions', apiKey: 'live-secret-key' };

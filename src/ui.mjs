@@ -26,7 +26,7 @@ import {requireElevated} from './privileges.mjs';
 import {createChatStore} from './chat-store.mjs';
 import {createChatSession} from './chat-session.mjs';
 import {createPersonalization,personalizationInstructions} from './personalization.mjs';
-import {createAssistantFeatures} from './assistant-features.mjs';
+import {createAssistantFeatures,backgroundNotificationEvent} from './assistant-features.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {createCredentialVault,credentialIdentity} from './credential-vault.mjs';
@@ -459,7 +459,8 @@ export async function runUI(opts) {
       rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},interrupt:()=>{assistantFeatures?.interruptSpeech();if(busy&&!currentPrompt)void engine?.interrupt().catch(()=>{});},
       onVoiceState:state=>{if(!busy&&!backgroundWorking)activity=state?.status||'Ready';dashboard?.refresh();},
       onBackgroundState:state=>{const working=['assessing','working'].includes(state?.state);backgroundWorking=working;if(working)aiActivity.begin('background','background');else aiActivity.end('background');dashboard?.refresh();},
-      onBackgroundResult:async({job,text,model,status})=>{history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});history.finishAssistant(`background:${randomUUID()}`,`Task status: ${status||'Needs review'}\n${text}`,{model});await checkpoint();note(`24/7 task ${job.id} ${status||'Needs review'}: ${text}`);notify(/failed|error/i.test(status||'')?'error':/cancel|interrupt/i.test(status||'')?'interrupted':'done',`background:${job.id}`);},
+      onBackgroundResult:async outcome=>{const {job,text,reason,model,status,notificationId}=outcome;history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});if(text)history.finishAssistant(`background:${randomUUID()}`,`Task status: ${status||'Needs review'}\n${text}`,{model});await checkpoint();note(`24/7 task ${job.id} ${status||'Needs review'}: ${text||reason||'Inspect /247 result for details.'}`);if(!outcome.notificationSuppressed)notify(backgroundNotificationEvent(outcome),notificationId);},
+      onBackgroundError:outcome=>notify('error',outcome.notificationId),
       onApproval:async({method,params})=>{if(!interactive||quitting)return false;if(currentPrompt?.input)prompts.cancel();aiActivity.pause('background');dashboard?.refresh();notify('approval',`background:${params.itemId||params.callId||randomUUID()}`);note(`24/7 permission: ${method} · ${params.command||params.reason||'approval required'}`);try{return /^y(es)?$/i.test(await ask('  Allow once? [y/N] › '));}finally{backgroundWorking=!quitting&&['assessing','working'].includes(assistantFeatures?.snapshot().agent?.state);if(backgroundWorking)aiActivity.resume('background');else aiActivity.end('background');dashboard?.refresh();}},
     });
     upgrades=await createUpgradeCommands({cwd,...stateOptions,settings,memory,vault,workspace,workflow,profiles,history,note,ask:(prompt,hidden)=>ask(prompt,hidden,{raw:prompt==='  | '}),getConnection:()=>connection,getEngine:()=>engine,getToolCatalog:()=>bridge?.getToolCatalog?.()||[],secrets:()=>secrets,reconnect:connect,runTurn:turn,enqueue,runOperation,reconfigureBudget,getBudget:()=>ledger,stopBackground:()=>assistantFeatures.stopForPolicyChange(),getBackgroundConfig:()=>assistantFeatures.backgroundConfig(),rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);}});

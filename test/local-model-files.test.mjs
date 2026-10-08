@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, open, rm, lstat, symlink } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { inspectLocalModel, importLocalModel } from '../src/local-model-files.mjs';
 
 async function fixture(t) {

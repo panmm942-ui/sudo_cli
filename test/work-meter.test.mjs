@@ -1,10 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, writeFile, open, rename, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, realpath, symlink, readdir, readFile, writeFile, open, rename, rm } from 'node:fs/promises';
+import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createWorkMeter, defaultWorkStateDir } from '../src/work-meter.mjs';
+import { isolatedEnvironment } from '../src/permission-scope.mjs';
+
+test('default OS home aliases resolve before private state creation while explicit aliases remain refused', {skip:process.platform==='win32'}, async t=>{
+  const root=await mkdtemp(join(tmpdir(),'sudo-cli-home-alias-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const home=join(root,'home'),alias=join(root,'home-alias');
+  await mkdir(home);await symlink(home,alias);
+  const code=String.raw`
+    const {defaultWorkStateDir}=await import(process.argv[1]);
+    const {privateDirectory}=await import(process.argv[2]);
+    const directory=defaultWorkStateDir({platform:'darwin'});
+    await privateDirectory(directory);
+    const explicit=defaultWorkStateDir({platform:'darwin',home:process.argv[3]});
+    let refused=false;try{await privateDirectory(explicit)}catch(error){refused=/symbolic links/.test(error.message)}
+    if(!refused)throw new Error('Explicit aliased home was accepted');
+    const xdg=defaultWorkStateDir({platform:'linux',env:{XDG_STATE_HOME:process.argv[3]}});
+    try{await privateDirectory(xdg);throw new Error('Explicit aliased XDG state was accepted')}catch(error){if(!/symbolic links/.test(error.message))throw error}
+    console.log(JSON.stringify({directory,explicitRefused:refused}));
+  `;
+  const result=spawnSync(process.execPath,['--input-type=module','-e',code,new URL('../src/work-meter.mjs',import.meta.url).href,new URL('../src/private-state.mjs',import.meta.url).href,alias],{env:isolatedEnvironment(process.env,{HOME:alias,XDG_STATE_HOME:''}),shell:false,windowsHide:true,encoding:'utf8',timeout:10000,maxBuffer:8192});
+  assert.equal(result.status,0,result.stderr);
+  const observed=JSON.parse(result.stdout);
+  assert.equal(observed.directory,join(await realpath(home),'Library','Application Support','codexcli'));
+  assert.equal(observed.explicitRefused,true);
+});
 
 const meters = new WeakMap();
 async function directory(t) {

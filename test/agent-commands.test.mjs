@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './fixtures/temp-root.mjs';
 import {createHash} from 'node:crypto';
 import {createAgentCommands} from '../src/agent-commands.mjs';
 import {createModelProfiles} from '../src/model-profiles.mjs';

@@ -53,12 +53,15 @@ jobs:
         run: node scripts/setup-runtime.mjs
       - name: Verify native engine startup without a model call
         run: node bin/sudocli.mjs doctor
+      - name: Prove pinned Linux sandbox enforcement and admit only trusted user namespaces if required
+        if: runner.os == 'Linux'
+        run: sudo -E "$(command -v node)" scripts/ci/linux-native-preflight.mjs
       - name: Test Windows admission, real engine and local fixtures
         if: runner.os == 'Windows'
-        run: node --test --test-concurrency=4
+        run: node --test --test-concurrency=4 --test-timeout=120000
       - name: Test Unix root admission, real engine and local fixtures
         if: runner.os != 'Windows'
-        run: sudo -E "$(command -v node)" --test --test-concurrency=4
+        run: sudo -E "$(command -v node)" --test --test-concurrency=4 --test-timeout=120000
       - name: Exercise broad native Linux terminal regression
         if: runner.os == 'Linux'
         run: sudo -E python3 -B test/manual/verify-v0.6-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.1-regression-proof"
@@ -74,3 +77,6 @@ jobs:
       - name: Exercise custom model tools, interruption, timeouts and repetition protection
         if: runner.os == 'Linux'
         run: sudo -E python3 -B test/manual/verify-v0.6.3-model-loop-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.3-model-proof"
+      - name: Remove the CI-specific Linux user namespace allowance
+        if: always() && runner.os == 'Linux'
+        run: sudo -E "$(command -v node)" scripts/ci/linux-native-preflight.mjs --cleanup
