@@ -137,3 +137,30 @@ test('isolated session home starts empty and cleanup removes only its owned dire
   await access(sentinel);
   await second.cleanup();
 });
+
+test('runtime permissions default to asking and web access defaults to off', () => {
+  assert.deepEqual(feature('validateRuntimeOptions')(), { permissions: 'ask', webAccess: false });
+  assert.deepEqual(feature('validateRuntimeOptions')({ permissions: 'allow-everything', webAccess: true }), { permissions: 'allow-everything', webAccess: true });
+  for (const options of [{ permissions: 'never' }, { permissions: '' }, { webAccess: 'on' }, { webAccess: 1 }, { webAccess: null }]) {
+    assert.throws(() => feature('validateRuntimeOptions')(options), /Permissions|Web Access/);
+  }
+});
+
+test('web and permission options reach native configuration without blocking the model endpoint', () => {
+  const connection = { transport: 'responses', model: 'm', baseUrl: 'https://model.example/v1' };
+  const off = feature('providerArgs')(connection);
+  assert.ok(off.includes('approval_policy="on-request"'));
+  assert.ok(off.includes('sandbox_mode="workspace-write"'));
+  assert.ok(off.includes('sandbox_workspace_write.network_access=false'));
+  assert.ok(off.includes('web_search="disabled"'));
+  assert.ok(off.includes('model_providers.sudo_session.base_url="https://model.example/v1"'));
+  const on = feature('providerArgs')(connection, { permissions: 'allow-everything', webAccess: true });
+  assert.ok(on.includes('approval_policy="never"'));
+  assert.ok(on.includes('sandbox_mode="danger-full-access"'));
+  assert.ok(on.includes('sandbox_workspace_write.network_access=true'));
+  assert.ok(on.includes('web_search="live"'));
+  const chat = feature('providerArgs')({ ...connection, transport: 'chat-completions' }, { webAccess: true });
+  assert.ok(chat.includes('sandbox_workspace_write.network_access=true'));
+  assert.ok(chat.includes('web_search="disabled"'), 'The Chat bridge cannot execute native hosted search tools');
+  assert.throws(() => feature('providerArgs')(connection, { permissions: 'secret-invalid-permission' }), error => /Permissions/.test(error.message) && !error.message.includes('secret-invalid-permission'));
+});

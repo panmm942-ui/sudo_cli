@@ -50,3 +50,13 @@ Files `bin/sudo-cli.mjs`, `src/ui.mjs`, `test/cli.test.mjs`, `sudo-cli.cmd`, `su
 - [x] Fresh review, regression fixes, full suite.
 - [x] Build ZIP; distinguish verified implementation from future live-model verification.
 
+
+## Version 0.3 extension
+
+- [x] Rename codexcli; register current-user sudocli command at setup.
+- [x] Measured Connection percentage/colors and real permission/Web choices.
+- [x] Active session Worked and atomic numeric-only lifetime In Total.
+- [x] Alternate-screen lifecycle, CRLF frames, resize/signal restoration.
+- [x] Windows/Linux native tests and two-launch Linux terminal check.
+- [x] Independent review and regression checks.
+- [ ] Native macOS/arm64 execution; unavailable in this environment.

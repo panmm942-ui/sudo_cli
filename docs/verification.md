@@ -1,23 +1,15 @@
-# Verification — sudo cli 0.2.0
+# Verification — codexcli 0.3.0 / sudocli
 
-Verified on Windows x64 and native Linux x64 in an existing WSL2 distribution, October 7, 2026, using Node.js 24.19.0 and Codex 0.160.1.
+October 7, 2026; Node.js 24.19.0; official Codex 0.160.1. Windows x64: **173 tests,169 passed,4 Unix-only skips,0 failures**. Native Linux x64 (existing WSL2 distro): **173 tests,170 passed,3 Windows-only skips,0 failures**. No tests were cancelled. The external model boundary uses deterministic localhost fixtures; no paid or live Kimi/MiMo/GLM API was used.
 
-Windows `node --test`: **120 passed**, 1 Unix-only test skipped, zero failed or cancelled, 121 total.
+The suite covers native JSON-RPC turns and permissions, real model HTTP requests, text/images/tool history, redaction, hidden wizard prompts, isolated homes, installer safety, per-user command setup, terminal rendering/context, latency/error measurement, partial stream failure, long completed events, interruption and active-work persistence. Real-engine integrations include a model chat, a workspace file write and a native Responses reply with a secret split across deltas. Two launches verify session reset and numeric-only lifetime records.
 
-Linux `node --test`: **118 passed**, 3 Windows-only tests skipped, zero failed or cancelled, 121 total. It uses the project-local installed native ELF engine, without the user's unrelated Codex shell wrapper. Its three real-engine integration checks pass. macOS and arm64 runtime mappings are tested; native execution on those systems is pending. `.github/workflows/test.yml` supplies Ubuntu/Windows/macOS native CI checks.
+Native Linux PTY verification passed with two clean exits and four local model requests. It checked every requested field, advancing clock/work time, colors, hidden key during redraw/resize, typed input across resize, Ctrl+C interruption, runtime Web and Permissions switches, fresh history after option changes, alternate-screen restore and scroll-region restore. Sessions worked4,938ms and2,401ms; lifetime7,339ms. The second launch started Worked at zero and loaded the prior total. Storage contained only numeric version/activeMs. Temporary HOME/XDG/state paths isolated the checks from user profiles.
 
-The suite covers the localhost HTTP bridge, native process protocol, settings validation, isolated-home cleanup, launch behavior, serialized and cancellable readline prompts, the connection wizard, and streamed output sanitization. It also runs three integrations through the real Codex engine:
+All four permission/Web combinations were probed with real Windows and Linux engines. Linux Ask returned workspaceWrite with networkAccess matching Off/On. Windows Ask returned a stricter readOnly/networkfalse fallback, exposed by the UI. Both returned never/dangerFullAccess for Allow Everything. Web Off is not a firewall for full access or approved escalation. Model API traffic remains available.
 
-1. The custom CLI sends a task through the Chat Completions bridge and displays the fixture's answer.
-2. Codex requests a terminal tool, a narrowly matched fixture command receives a one-time approval, and the command actually creates the asserted workspace file. The next model request contains the tool result.
-3. A native Responses endpoint sends a credential across multiple text deltas. The custom CLI displays the expected redacted answer.
+Actual Windows setup.cmd --command-only registered the current-user sudocli wrapper. Command discovery, doctor and version passed. Native Unix first setup and command execution passed in a temporary home. Tests cover idempotence, foreign commands, quoted paths/arguments, raw Windows PATH preservation and shell-profile content preservation. New terminals/app restart may be needed to inherit updated PATH.
 
-`sudo-cli.cmd doctor` reports Node 24.19.0 and `codex-cli 0.160.1`, without calling a model. Both Windows launchers return the branded version.
+Independent reviews found and fixed incomplete native Responses streams falsely grading healthy and long completed events falsely grading failed; both have regressions. Reviews of engine policies, work/health helpers and command setup found no remaining blocker.
 
-Terminal checks: large ASCII banner and all requested header fields; live clock; green Working and Online; red Not working; actual context occupancy; hidden credentials during clock updates and resize; partial typed input preserved across 132-to-78-to-132 column changes; `/connect` asks for new settings despite launch flags; invalid wizard input is reported and retried; idle Ctrl+C and `/quit` restore terminal scrolling and exit cleanly.
-
-The Windows and Linux installers were also executed against the official release. Pinned archive digests passed, native helpers were retained, doctor passed, and repeat installation reused the existing local Linux runtime. The 0.2 Windows portable archive uses the full native release package, including its bundled search and sandbox resources.
-
-Review corrections were independently identified and then covered by regressions. Generation fixtures run on localhost; no live Kimi/MiMo/GLM endpoint, paid API, third-party MCP service, or training system was used. Compatibility with a specific cloud model requires a subsequent live connection check.
-
-The original ChatGPT/Codex installation and settings were not edited. The bundled engine files are independent copies with hashes in `runtime/manifest.json`; the full upstream source snapshot and required notices accompany them.
+Native macOS/arm64 execution remains unverified. Their selection/installer/shell behavior is tested and a three-OS CI matrix is included. No cloud GPU/training host, external search service or computer-use server was provisioned. The unchanged official Rust engine and matching complete source/notices accompany the deliverables. Model settings/credentials stay session-only; user PATH registration and scalar work records are intentional persistent additions. The desktop app's settings/authentication/install are untouched.

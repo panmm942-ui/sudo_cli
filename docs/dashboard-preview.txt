@@ -1,10 +1,16 @@
- ____  _   _ ____   ___      ____ _     ___    Time: 2026-10-07 20:49:45 EEST
+EXAMPLE LAYOUT: demonstration values, no model is connected by default.
+
+ ____  _   _ ____   ___      ____ _     ___    Time: 2026-10-07 21:35:00 EEST
 / ___|| | | |  _ \ / _ \    / ___| |   |_ _|   Software System: Windows (x64)
-\___ \| | | | | | | | | |  | |   | |    | |    Working: Not working
- ___) | |_| | |_| | |_| |  | |___| |___ | |    Status: Offline
-|____/ \___/|____/ \___/    \____|_____|___|   Connected AI: No AI connected
-                                               Context: Unknown
-                                               Activity: Idle
-                                               Project: sudo-cli
-v0.2.0 | /help | Ctrl+C interrupts | Context: last reported
---------------------------------------------------------------------------------------------------------------
+\___ \| | | | | | | | | |  | |   | |    | |    Working: Working
+ ___) | |_| | |_| | |_| |  | |___| |___ | |    Status: Online
+|____/ \___/|____/ \___/    \____|_____|___|   Connected AI: example-model
+                                               Connection: 100% Good | 1.3s
+                                               Context: ~12.5% 25,000/200,000 tokens
+                                               Permissions: Ask
+                                               Web Access: Off
+                                               Worked: 01:02:03 | In Total: 05:10:23
+                                               Activity: Editing files
+                                               Project: my-project
+v0.3.0 | /help | Connection: latency/error estimate | Context: last reported
+-----------------------------------------------------------------------------------------------------------------------------------

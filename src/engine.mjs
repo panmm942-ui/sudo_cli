@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { VERSION } from './version.mjs';
+import { validateRuntimeOptions } from './runtime.mjs';
 
 const MAX_LINE_CHARS = 8 * 1024 * 1024;
 const isTurn = (turn) => typeof turn?.id === 'string' && turn.id.length > 0 && Array.isArray(turn.items)
@@ -9,8 +10,12 @@ const isTurn = (turn) => typeof turn?.id === 'string' && turn.id.length > 0 && A
 export async function createEngine({
   codexPath = 'codex', cwd = process.cwd(), model, providerArgs = [],
   env = process.env, onEvent = () => {}, onApproval = async () => false,
-  requestTimeoutMs = 30_000,
+  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false,
 } = {}) {
+  const choices = validateRuntimeOptions({ permissions, webAccess });
+  const approvalPolicy = choices.permissions === 'ask' ? 'on-request' : 'never';
+  const sandbox = choices.permissions === 'ask' ? 'workspace-write' : 'danger-full-access';
+  let runtimePolicy;
   const command = Array.isArray(codexPath) ? codexPath : [codexPath];
   const child = spawn(command[0], [...command.slice(1), '--no-daemon', 'app-server', '--listen', 'stdio://', ...providerArgs], {
     cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false,
@@ -66,8 +71,10 @@ export async function createEngine({
     const legacy = method === 'execCommandApproval' || method === 'applyPatchApproval';
     let result;
     if (modern || legacy || method === 'item/permissions/requestApproval') {
-      let approved = false;
-      try { approved = (await onApproval({ method, params })) === true; } catch { /* Failed UI means decline. */ }
+      let approved = choices.permissions === 'allow-everything';
+      if (!approved) {
+        try { approved = (await onApproval({ method, params })) === true; } catch { /* Failed UI means decline. */ }
+      }
       if (modern) result = { decision: approved ? 'accept' : 'decline' };
       else if (legacy) result = { decision: approved ? 'approved' : { denied: { rejection: 'Declined by user.' } } };
       else result = { permissions: approved ? params.permissions : {}, scope: 'turn' };
@@ -155,9 +162,23 @@ export async function createEngine({
       capabilities: { experimentalApi: true, explicitGatewayOauth: true },
     });
     send({ method: 'initialized', params: {} });
-    const result = await request('thread/start', { cwd, model, ephemeral: true, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write' });
+    const config = { 'sandbox_workspace_write.network_access': choices.webAccess };
+    // The host process must still reach the selected model API. This disables
+    // hosted web capabilities and restricts sandboxed commands, not API traffic.
+    if (!choices.webAccess) config.web_search = 'disabled';
+    const result = await request('thread/start', { cwd, model, ephemeral: true, approvalPolicy, approvalsReviewer: 'user', sandbox, config });
     if (typeof result?.thread?.id !== 'string' || !result.thread.id) throw new Error('Codex app-server returned an invalid thread response.');
     if (result.thread.ephemeral !== true) throw new Error('Codex app-server must support ephemeral threads. Update Codex and retry.');
+    const actual = result.sandbox;
+    const validSandbox = choices.permissions === 'allow-everything' ? actual?.type === 'dangerFullAccess'
+      : ['workspaceWrite', 'readOnly'].includes(actual?.type);
+    if (result.approvalPolicy !== approvalPolicy || !validSandbox) throw new Error('Codex engine did not apply the requested permission policy.');
+    if (choices.permissions === 'ask' && (typeof actual.networkAccess !== 'boolean'
+      || (actual.type === 'workspaceWrite' && actual.networkAccess !== choices.webAccess)
+      || (actual.type === 'readOnly' && actual.networkAccess))) throw new Error('Codex engine did not apply the requested network policy.');
+    // Windows without sandbox setup can return a stricter read-only policy.
+    // Expose that actual policy instead of silently claiming workspace access.
+    runtimePolicy = { ...choices, approvalPolicy: result.approvalPolicy, sandbox: { ...actual } };
     threadId = result.thread.id;
   } catch (error) { await close(); throw error; }
 
@@ -188,5 +209,5 @@ export async function createEngine({
     await record.started;
     if (active === record) await request('turn/interrupt', { threadId, turnId: record.id });
   }
-  return { threadId, startTurn, interrupt, close };
+  return { threadId, runtimePolicy, startTurn, interrupt, close };
 }

@@ -5,6 +5,27 @@ import { stripVTControlCharacters } from 'node:util';
 
 const example = { cwd: '/projects/demo', working: false, status: 'Offline', connectionState: 'pending', configuredModel: 'test-model', connectedAI: null, context: { used: null, limit: 200000, percent: null } };
 
+test('connection thresholds, permissions, web switch and worked totals are visible', async () => {
+  const { renderDashboard } = await import('../src/dashboard.mjs');
+  for (const [percent, code, label] of [[100, '32', 'Good'], [71, '32', 'Good'], [70, '38;5;208', 'Fair'], [51, '38;5;208', 'Fair'], [50, '31', 'Bad'], [0, '31', 'Bad']]) {
+    const text = renderDashboard({ state: { ...example, permissions: 'allow-everything', webAccess: true, health: { percent, latencyMs: 900 }, worked: { sessionMs: 3723000, totalMs: 18623000 } }, columns: 132, rows: 32, color: true }).lines.join('\n');
+    assert.ok(text.includes(`\x1b[${code}m${percent}% ${label}`));
+    assert.match(stripVTControlCharacters(text), /Permissions: Allow Everything/);
+    assert.match(stripVTControlCharacters(text), /Web Access: On/);
+    assert.match(stripVTControlCharacters(text), /Worked: 01:02:03 .*In Total: 05:10:23/);
+  }
+});
+
+test('temporary screen preserves scrollback and restores cursor on stop', async () => {
+  const { createDashboard } = await import('../src/dashboard.mjs');
+  const out = Object.assign(new EventEmitter(), { isTTY: true, columns: 110, rows: 30, text: '', write(s) { this.text += s; } });
+  const dashboard = createDashboard({ output: out, snapshot: () => example, env: { TERM: 'xterm' }, tickMs: 0 });
+  dashboard.start(); dashboard.stop(); dashboard.stop();
+  assert.ok(out.text.startsWith('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H'));
+  assert.ok(out.text.endsWith('\x1b[0m\x1b[?25h\x1b[?1049l'));
+  assert.equal(out.text.split('\x1b[?1049l').length - 1, 1);
+});
+
 test('dashboard shows the requested fields next to a large ASCII logo', async () => {
   const { renderDashboard } = await import('../src/dashboard.mjs');
   const view = renderDashboard({ state: example, columns: 110, rows: 30, color: false, now: new Date('2026-10-07T08:09:10Z'), timeZone: 'Europe/Athens', platform: 'win32', arch: 'x64' });
@@ -62,7 +83,7 @@ test('tiny terminals use a non-sticky fallback rather than an invalid scroll reg
   const dashboard = createDashboard({ output: out, snapshot: () => example, env: { TERM: 'xterm' }, tickMs: 0 });
   dashboard.start(); dashboard.refresh(); dashboard.stop();
   assert.doesNotMatch(out.text, /\x1b\[\d+;\d+r/);
-  assert.match(out.text, /Connected AI:/);
+  assert.match(out.text, /Enlarge terminal/);
 });
 
 test('live clock redraw preserves cursor, never repeats model input, and restores terminal on stop', async () => {

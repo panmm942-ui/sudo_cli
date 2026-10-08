@@ -43,7 +43,12 @@ input.on('line', (line) => {
     threadParams = message.params;
     if (scenario === 'persistent-thread') return response(message.id, { thread: { id: 'thread-1', ephemeral: false } });
     if (scenario === 'bad-thread') return response(message.id, { thread: null });
-    response(message.id, { thread: { id: 'thread-1', turns: [], ephemeral: true }, model: message.params.model, modelProvider: 'fixture', cwd: message.params.cwd, approvalPolicy: 'on-request', sandbox: { type: 'workspaceWrite' } });
+    let sandbox = message.params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } : { type: 'workspaceWrite', networkAccess: message.params.config?.['sandbox_workspace_write.network_access'] === true };
+    if (scenario === 'wrong-permissions') sandbox = { type: 'dangerFullAccess' };
+    if (scenario === 'wrong-network') sandbox = { type: 'workspaceWrite', networkAccess: true };
+    if (scenario === 'ignored-network') sandbox = { type: 'workspaceWrite', networkAccess: false };
+    if (scenario === 'read-only-fallback') sandbox = { type: 'readOnly', networkAccess: false };
+    response(message.id, { thread: { id: 'thread-1', turns: [], ephemeral: true }, model: message.params.model, modelProvider: 'fixture', cwd: message.params.cwd, approvalPolicy: message.params.approvalPolicy, sandbox });
   } else if (message.method === 'turn/start') {
     turnsStarted++;
     const audit = { argv: process.argv.slice(2), home: process.env.CODEX_HOME, keyPresent: process.env.SUDO_CLI_SESSION_KEY === 'fixture-only', thread: threadParams, params: message.params };

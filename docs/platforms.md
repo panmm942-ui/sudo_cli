@@ -1,70 +1,71 @@
-# Windows, Linux and macOS
+# codexcli on Windows, Linux and macOS
 
-sudo cli is a terminal application. Its JavaScript frontend runs on Node.js 22 or newer, with the native open-source Codex engine for the operating system and architecture running Node. The model endpoint is chosen during the session and remains in memory.
+The project is **codexcli**. The terminal command is **sudocli**. Run the first setup script once, then open a new terminal and run `sudocli` from any working directory. The command does not elevate privileges.
 
-| Operating system | Architectures | Native Codex package |
+| System | Architectures | Native Codex runtime |
 | --- | --- | --- |
 | Windows | x64, arm64 | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` |
 | Linux | x64, arm64 | `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` |
 | macOS | Intel x64, Apple silicon arm64 | `x86_64-apple-darwin`, `aarch64-apple-darwin` |
 
-The engine remains pinned to Codex **0.160.1**. These targets match the [upstream Codex launcher](https://github.com/openai/codex/blob/rust-v0.160.1/codex-cli/bin/codex.js) and the [official release packages](https://github.com/openai/codex/releases/tag/rust-v0.160.1). Upstream documents macOS 12+, Ubuntu 20.04+/Debian 10+, and Windows support in its [installation guide](https://github.com/openai/codex/blob/rust-v0.160.1/docs/install.md); this frontend also retains the native Windows runtime already tested in sudo cli. Filesystem sandbox and shell behavior depend on the underlying operating system.
+The engine is pinned to Codex **0.160.1**, matching the [upstream platform mapping](https://github.com/openai/codex/blob/rust-v0.160.1/codex-cli/bin/codex.js) and [official release](https://github.com/openai/codex/releases/tag/rust-v0.160.1). The frontend requires Node.js 22 or newer. The Windows x64 portable archive includes Node.js; source packages use Node.js already installed on the system.
 
-## Start on Windows
+## First setup on Windows
 
-The Windows x64 portable archive includes Node.js and Codex. Extract the archive, open a terminal in its `sudo-cli` directory and run:
-
-```powershell
-.\sudo cli
-```
-
-You can also run `.\sudo-cli.cmd`. The source archive requires Node.js 22+ on PATH and a native engine. To download a dedicated local engine, run:
+Extract the Windows archive into a permanent directory. Open PowerShell or Command Prompt in its `codexcli` folder and run:
 
 ```powershell
-node scripts/setup-runtime.mjs
-.\sudo-cli.cmd doctor
-.\sudo-cli.cmd
+.\setup.cmd
 ```
 
-The installer detects the architecture of Node.js, including native arm64 on Windows. The old Windows x64 bundle is not selected by native arm64 Node.
+Setup prefers bundled Node.js, checks for the compatible engine and downloads a verified local runtime only if needed. It creates the managed current-user command at `%LOCALAPPDATA%\codexcli\bin\sudocli.cmd` and adds that directory to the current user's PATH. Administrator access is not required; the system PATH and app installation are left untouched.
 
-## Start on Linux or macOS
+Open a new terminal, navigate to your working project and run:
 
-Extract the source archive and open a terminal in its `sudo-cli` directory. With Node.js 22+ available on PATH, run:
-
-```sh
-node scripts/setup-runtime.mjs
-sh ./sudo-cli doctor
-sh ./sudo cli
+```powershell
+sudocli
 ```
 
-The shell launchers work even when an archive extractor does not preserve executable bits. To use them directly:
+To use an existing runtime without allowing a download, run `.\setup.cmd --command-only`. You can also run `.\sudocli.cmd` directly from the extracted directory before registration.
+
+## First setup on Linux or macOS
+
+Extract the source archive into a permanent directory, with Node.js 22+ available, then run:
 
 ```sh
-chmod +x sudo sudo-cli
-./sudo cli
+sh ./setup
 ```
 
-`./sudo` is a project-local alias. It does not install over the operating system's `sudo` command, elevate privileges or require administrator access. Launching through `node bin/sudo-cli.mjs` is also supported.
-
-## Local runtime installation
-
-`node scripts/setup-runtime.mjs` downloads the pinned official package and installs it under `runtime/<platform>-<architecture>/`, preserving the package's native helpers and resources. The script verifies both the archive size and SHA-256 digest before extraction. It accepts only HTTPS redirects to official GitHub asset hosts and extracts regular files and directories into a temporary project-local directory. A failed download is discarded; existing runtimes are never merged or overwritten.
-
-The installer writes executable files and provenance, not model settings. It does not install global packages or edit shell profiles, saved Codex configuration, authentication or the ChatGPT app. Model connection settings still come from the running session.
-
-Useful installer commands:
+Setup checks or downloads the correct native runtime, creates an executable wrapper at `~/.local/bin/sudocli` and adds one managed PATH block to the current shell's startup file. Open a new terminal and run:
 
 ```sh
-node scripts/setup-runtime.mjs --help
+sudocli
+```
+
+The startup file is `.zshrc` for zsh, `.bashrc` for Linux bash, `.bash_profile` for macOS bash, `fish/config.fish` under the user configuration directory for fish, or `.profile` for other POSIX shells. Existing startup content is preserved. Setup updates only its own bounded block and command wrapper on subsequent runs; foreign commands and symbolic-link destinations are refused.
+
+`sh ./setup --command-only` registers the command without downloading a runtime. `sh ./sudocli` runs the project directly before registration. Shell launchers work even if the archive extractor does not preserve executable bits. You can use `chmod +x setup sudocli` to launch them as `./setup` and `./sudocli`.
+
+## What setup saves
+
+Setup saves the command wrapper, its PATH registration and any required executable runtime. The wrapper contains only paths to Node.js and this project's entry point. It saves no model identifier, endpoint, API key or conversation. The model is connected while `sudocli` is running.
+
+Keep the extracted project directory: the command points to it. If you move the directory, rerun setup from the new location. Registration is idempotent and refuses to overwrite an unrelated `sudocli` command.
+
+For runtime-only maintenance, `node scripts/setup-runtime.mjs` retains the project-local installer. It verifies the pinned official archive's size and SHA-256 digest before extracting into `runtime/<platform>-<architecture>/`. HTTPS redirects are limited to approved GitHub asset hosts, incomplete downloads are discarded, existing runtime directories are not merged, and concurrent installations are refused.
+
+Useful checks:
+
+```sh
+node scripts/setup.mjs --help
 node scripts/setup-runtime.mjs --print-target
-node scripts/setup-runtime.mjs --check
+sudocli doctor
 ```
 
-Runtime discovery gives an explicit `SUDO_CLI_CODEX` override priority, then a matching project-local runtime, then the original compatible portable bundle, then Codex on PATH. If PATH points to a wrapper that injects its own model settings, select the actual native executable with `SUDO_CLI_CODEX` or use the project-local installer. The override is read from the current process environment; no configuration file is edited.
+An explicit `SUDO_CLI_CODEX` environment variable can select another compatible native engine. Runtime discovery otherwise prefers a matching project-local package, the compatible original Windows bundle, then Codex on PATH. The dedicated local package avoids personal PATH wrappers that inject their own model flags.
 
-On Linux, the upstream workspace sandbox may need working user namespaces and the bundled Bubblewrap helper. WSL is detected as Linux and uses the Linux native package. On macOS, filesystem permissions and security prompts still follow macOS policy; changing operating-system protection settings is outside this installer.
+## Validation and operating-system behavior
 
-## Verification limits
+Windows x64 and Linux x64 under an existing WSL2 distribution have native runtime and command tests. Setup's registration tests use temporary homes and an injected Windows PATH store to avoid changing real user settings. Actual command registration is a separate first setup action. macOS and arm64 package mappings are present, but native execution still needs validation on those hosts.
 
-Platform selection, archive safety, literal argument passing, cleanup and executable discovery have automated tests. Windows is tested on the current host. Linux verification uses an existing x64 WSL2 distribution and is recorded in the build's validation notes. macOS binaries are available from the pinned upstream release, but native macOS execution and arm64 execution require validation on those hosts. A supported package mapping is not evidence that every operating-system sandbox policy or model endpoint behaves identically.
+Underlying shell permissions and filesystem sandboxes remain platform-dependent. Linux uses the bundled Bubblewrap helper and may need working user namespaces; WSL uses the Linux package. macOS permissions follow the user's operating-system policy. The [upstream installation guide](https://github.com/openai/codex/blob/rust-v0.160.1/docs/install.md) documents supported system versions.

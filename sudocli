@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+codexcli_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$codexcli_directory/runtime/node" ]; then
+  exec "$codexcli_directory/runtime/node" "$codexcli_directory/bin/sudocli.mjs" "$@"
+fi
+if ! command -v node >/dev/null 2>&1; then
+  printf '%s\n' 'sudocli requires Node.js 22 or newer on PATH.' >&2
+  exit 1
+fi
+exec node "$codexcli_directory/bin/sudocli.mjs" "$@"

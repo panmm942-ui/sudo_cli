@@ -1,9 +1,0 @@
-#!/bin/sh
-set -eu
-if [ "${1-}" != 'cli' ]; then
-  printf '%s\n' 'Usage: ./sudo cli [options]' >&2
-  exit 1
-fi
-shift
-sudo_cli_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec sh "$sudo_cli_directory/sudo-cli" "$@"

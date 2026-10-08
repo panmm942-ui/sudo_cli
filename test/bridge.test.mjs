@@ -404,3 +404,13 @@ test('unsafe bridge configuration is rejected before starting a listener', async
     { model: '' }, { apiKey: '' }, { apiKey: null }, { apiKey: 'bad\r\nkey' }, { timeoutMs: 0 },
   ]) await assert.rejects(startBridge({ baseUrl: 'https://example.com/v1', model: 'fixture-model', apiKey: SECRET, ...options }));
 });
+
+test('health metrics use upstream response latency without disclosing request or key', async t => {
+  const metrics = [];
+  const { post } = await setup(t, () => messageResult(), { onMetrics: value => metrics.push(value) });
+  const response = await post({ input: 'private prompt' }); await response.text();
+  assert.deepEqual(metrics.map(value => value.phase), ['started', 'succeeded']);
+  assert.ok(metrics[1].latencyMs >= 0);
+  assert.equal(metrics[0].id, metrics[1].id);
+  assert.doesNotMatch(JSON.stringify(metrics), /private prompt|sk-fake/);
+});

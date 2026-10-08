@@ -33,6 +33,8 @@ test('runs an isolated ephemeral thread and streams intact UTF-8 notifications',
   assert.equal(audit.thread.ephemeral, true);
   assert.equal(audit.thread.sandbox, 'workspace-write');
   assert.equal(audit.thread.approvalPolicy, 'on-request');
+  assert.equal(audit.thread.config['sandbox_workspace_write.network_access'], false);
+  assert.equal(audit.thread.config.web_search, 'disabled');
   assert.equal(audit.thread.cwd, process.cwd());
   assert.equal(audit.thread.model, 'fixture-model');
   assert.deepEqual(audit.params.input, [{ type: 'text', text: 'Hello', text_elements: [] }]);
@@ -40,6 +42,68 @@ test('runs an isolated ephemeral thread and streams intact UTF-8 notifications',
   assert.equal(audit.params.model, 'changed-model');
   assert.equal(events.find(({ method }) => method === 'item/agentMessage/delta').params.delta, 'Hello 🌍');
   assert.equal(events.filter(({ method }) => method === 'turn/completed').length, 2);
+});
+
+test('explicit full access reaches the native thread while web off still disables hosted search', async (t) => {
+  const engine = await createEngine(options('normal', { permissions: 'allow-everything', webAccess: false }));
+  t.after(() => engine.close());
+  const audit = JSON.parse((await engine.startTurn('Audit full access')).items[0].text);
+  assert.equal(audit.thread.approvalPolicy, 'never');
+  assert.equal(audit.thread.sandbox, 'danger-full-access');
+  assert.equal(audit.thread.config.web_search, 'disabled');
+  assert.equal(audit.thread.config['sandbox_workspace_write.network_access'], false);
+  assert.equal(engine.runtimePolicy.sandbox.type, 'dangerFullAccess');
+});
+
+test('web on enables sandboxed command networking without changing ask permissions', async (t) => {
+  const engine = await createEngine(options('normal', { webAccess: true }));
+  t.after(() => engine.close());
+  const audit = JSON.parse((await engine.startTurn('Audit networking')).items[0].text);
+  assert.equal(audit.thread.approvalPolicy, 'on-request');
+  assert.equal(audit.thread.sandbox, 'workspace-write');
+  assert.equal(audit.thread.config['sandbox_workspace_write.network_access'], true);
+  assert.equal(engine.runtimePolicy.sandbox.networkAccess, true);
+});
+
+test('a stricter read-only platform fallback is exposed rather than described as full workspace access', async (t) => {
+  const engine = await createEngine(options('read-only-fallback', { webAccess: true }));
+  t.after(() => engine.close());
+  assert.deepEqual(engine.runtimePolicy.sandbox, { type: 'readOnly', networkAccess: false });
+  assert.equal(engine.runtimePolicy.approvalPolicy, 'on-request');
+});
+
+test('invalid runtime permissions fail before spawning an engine without exposing option values', async () => {
+  for (const patch of [{ permissions: 'secret-permission' }, { webAccess: 'on' }]) {
+    await assert.rejects(createEngine({ codexPath: 'missing-engine', ...patch }), error => /Permissions|Web Access/.test(error.message) && !error.message.includes('secret-permission'));
+  }
+});
+
+test('an engine cannot silently replace ask mode with full access or enable networking while web is off', async (t) => {
+  for (const scenario of ['wrong-permissions', 'wrong-network']) {
+    let engine;
+    t.after(() => engine?.close());
+    await assert.rejects(async () => { engine = await createEngine(options(scenario)); }, scenario === 'wrong-permissions' ? /requested permission policy/ : /requested network policy/);
+  }
+});
+
+test('a workspace sandbox cannot silently ignore enabled command networking', async (t) => {
+  let engine;
+  t.after(() => engine?.close());
+  await assert.rejects(async () => { engine = await createEngine(options('ignored-network', { webAccess: true })); }, /requested network policy/);
+});
+
+test('explicit full access handles recognized approvals without showing permission prompts', async (t) => {
+  let prompted = false;
+  const engine = await createEngine(options('approvals', { permissions: 'allow-everything', onApproval: async () => { prompted = true; return false; } }));
+  t.after(() => engine.close());
+  const responses = JSON.parse((await within(engine.startTurn('full access approvals'))).items[0].text);
+  assert.equal(prompted, false);
+  assert.deepEqual(responses['item/commandExecution/requestApproval'], { decision: 'accept' });
+  assert.deepEqual(responses['item/fileChange/requestApproval'], { decision: 'accept' });
+  assert.deepEqual(responses.execCommandApproval, { decision: 'approved' });
+  assert.deepEqual(responses.applyPatchApproval, { decision: 'approved' });
+  assert.equal(responses['item/permissions/requestApproval'].permissions.network.enabled, true);
+  assert.equal(responses['account/chatgptAuthTokens/refresh'].error.code, -32601);
 });
 
 test('does not lose completion sent before the turn/start response', async (t) => {

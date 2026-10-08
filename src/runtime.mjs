@@ -125,9 +125,19 @@ export function validateConnection(connection) {
   return normalized;
 }
 
+/** Permission and web choices are session-scoped and never inferred from strings. */
+export function validateRuntimeOptions(options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Permissions and Web Access must be runtime options.');
+  const { permissions = 'ask', webAccess = false } = options;
+  if (!['ask', 'allow-everything'].includes(permissions)) throw new Error('Permissions must be ask or allow-everything.');
+  if (typeof webAccess !== 'boolean') throw new Error('Web Access must be on or off as a boolean.');
+  return { permissions, webAccess };
+}
+
 /** TOML basic strings use the same escapes as JSON for these validated values. */
-export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv = 'SUDO_CLI_SESSION_KEY' } = {}) {
+export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv = 'SUDO_CLI_SESSION_KEY', permissions = 'ask', webAccess = false } = {}) {
   const normalized = validateConnection(connection);
+  const runtime = validateRuntimeOptions({ permissions, webAccess });
   const options = {
     model: normalized.model,
     model_provider: 'sudo_session',
@@ -137,7 +147,12 @@ export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv 
     'model_providers.sudo_session.wire_api': 'responses',
     'model_providers.sudo_session.requires_openai_auth': false,
     'model_providers.sudo_session.supports_websockets': false,
-    web_search: 'disabled',
+    approval_policy: runtime.permissions === 'ask' ? 'on-request' : 'never',
+    sandbox_mode: runtime.permissions === 'ask' ? 'workspace-write' : 'danger-full-access',
+    'sandbox_workspace_write.network_access': runtime.webAccess,
+    // Chat Completions has no native hosted-search equivalent. Network-enabled
+    // commands and explicitly supplied MCP servers remain available when on.
+    web_search: runtime.webAccess && normalized.transport === 'responses' ? 'live' : 'disabled',
     model_supports_reasoning_summaries: false,
   };
   if (normalized.contextWindow !== undefined) options.model_context_window = normalized.contextWindow;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { localCodex } from '../src/local-engine.mjs';
 import { startBridge } from '../src/bridge.mjs';
 import { createEngine } from '../src/engine.mjs';
 import { providerArgs, createSessionHome } from '../src/runtime.mjs';
+import { createWorkMeter } from '../src/work-meter.mjs';
 
 test('actual Codex app-server runs a sudo cli task through the compatibility bridge', { timeout: 45000 }, async (t) => {
   let enginePath;
@@ -29,7 +30,7 @@ test('actual Codex app-server runs a sudo cli task through the compatibility bri
   let child;
   t.after(async () => { child?.kill(); server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(workspace, { recursive: true, force: true }); });
   child = spawn(process.execPath, [fileURLToPath(new URL('../bin/sudo-cli.mjs', import.meta.url)), '--once', 'Reply with the integration confirmation.', '--model', 'fixture-model', '--base-url', `http://127.0.0.1:${server.address().port}/v1`, '--cwd', workspace], {
-    env: { ...process.env, SUDO_CLI_CODEX: enginePath, SUDO_CLI_API_KEY: 'test-key-not-real', NO_COLOR: '1' }, shell: false, windowsHide: true,
+    env: { ...process.env, SUDO_CLI_CODEX: enginePath, SUDO_CLI_API_KEY: 'test-key-not-real', SUDO_CLI_STATE_DIR: join(workspace, 'state'), NO_COLOR: '1' }, shell: false, windowsHide: true,
   });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => stdout += chunk);
@@ -94,16 +95,20 @@ test('actual Codex engine executes a model tool call inside the selected workspa
   assert.ok(requests[1].messages.some(msg => msg.role === 'tool' && msg.tool_call_id === 'call_workspace_test'));
 });
 
-test('native Responses stream passes through the real engine with split credentials redacted', { timeout: 45000 }, async (t) => {
+test('native Responses monitoring passes through real engine output and retains numeric work totals across launches', { timeout: 45000 }, async (t) => {
   let enginePath;
   try { enginePath = localCodex(); } catch { t.skip('Install Codex engine to run its real integration'); return; }
   const workspace = await mkdtemp(join(tmpdir(), 'sudo-cli-responses-e2e-'));
+  const stateDir = join(workspace, 'state');
   const key = 'fixture-stream-key-do-not-print';
   const requests = [];
+  const records = async () => Promise.all((await readdir(stateDir)).filter(name => name.endsWith('.json')).map(async name => ({ name, value: JSON.parse(await readFile(join(stateDir, name), 'utf8')) })));
+  let stateAtSecondRequest;
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     requests.push({ path: req.url, body: JSON.parse(raw), auth: req.headers.authorization });
+    if (requests.length === 2) stateAtSecondRequest = await records();
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const content = `Native stream ${key} verified.`;
     const item = { type: 'message', id: 'msg_native', role: 'assistant', content: [{ type: 'output_text', text: content, annotations: [] }] };
@@ -121,17 +126,40 @@ test('native Responses stream passes through the real engine with split credenti
   await once(server, 'listening');
   let child;
   t.after(async () => { child?.kill(); server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(workspace, { recursive: true, force: true }); });
-  child = spawn(process.execPath, [fileURLToPath(new URL('../bin/sudo-cli.mjs', import.meta.url)), '--once', 'Test the native stream.', '--model', 'fixture-model', '--transport', 'responses', '--base-url', `http://127.0.0.1:${server.address().port}/v1`, '--cwd', workspace], {
-    env: { ...process.env, SUDO_CLI_CODEX: enginePath, SUDO_CLI_API_KEY: key, NO_COLOR: '1' }, shell: false, windowsHide: true,
-  });
-  let stdout = '', stderr = '';
-  child.stdout.on('data', chunk => stdout += chunk);
-  child.stderr.on('data', chunk => stderr += chunk);
-  const [code] = await once(child, 'exit');
-  assert.equal(code, 0, stderr);
-  assert.match(stdout, /Native stream \[redacted\] verified\./);
-  assert.doesNotMatch(stdout + stderr, /fixture-stream-key-do-not-print/);
+  const run = async () => {
+    child = spawn(process.execPath, [fileURLToPath(new URL('../bin/sudo-cli.mjs', import.meta.url)), '--once', 'Test the native stream.', '--model', 'fixture-model', '--transport', 'responses', '--base-url', `http://127.0.0.1:${server.address().port}/v1`, '--cwd', workspace], {
+      env: { ...process.env, SUDO_CLI_CODEX: enginePath, SUDO_CLI_API_KEY: key, SUDO_CLI_STATE_DIR: stateDir, NO_COLOR: '1' }, shell: false, windowsHide: true,
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => stdout += chunk);
+    child.stderr.on('data', chunk => stderr += chunk);
+    const [code] = await once(child, 'exit');
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /Native stream \[redacted\] verified\./);
+    assert.doesNotMatch(stdout + stderr, /fixture-stream-key-do-not-print/);
+  };
+  await run();
   assert.equal(requests.length, 1);
   assert.equal(requests[0].path, '/v1/responses');
   assert.equal(requests[0].auth, `Bearer ${key}`);
+  const first = await records();
+  assert.equal(first.length, 1);
+  assert.ok(first[0].value.activeMs > 0, 'The first launch must checkpoint real active work');
+  await run();
+  assert.equal(requests.length, 2);
+  assert.equal(stateAtSecondRequest.length, 2);
+  assert.equal(stateAtSecondRequest.find(record => record.name !== first[0].name).value.activeMs, 0, 'The new session must start from zero while the first duration remains stored');
+  const final = await records();
+  assert.equal(final.length, 2);
+  assert.deepEqual(final.find(record => record.name === first[0].name).value, first[0].value, 'A new launch must not overwrite previous active time');
+  for (const { value } of final) {
+    assert.deepEqual(Object.keys(value).sort(), ['activeMs', 'version']);
+    assert.ok(Object.values(value).every(number => typeof number === 'number'));
+    assert.ok(value.activeMs > 0);
+  }
+  const totals = await createWorkMeter({ stateDir, checkpointMs: 0 });
+  try {
+    assert.equal(totals.snapshot().sessionMs, 0);
+    assert.equal(totals.snapshot().totalMs, final[0].value.activeMs + final[1].value.activeMs);
+  } finally { await totals.close(); }
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const cli = fileURLToPath(new URL('../bin/sudo-cli.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('../bin/sudocli.mjs', import.meta.url));
 const run = (args, env = {}) => spawnSync(process.execPath, [cli, ...args], {
   encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', ...env }, timeout: 10000,
 });
@@ -19,7 +19,7 @@ test('branded help works without connecting a model or modifying app settings', 
 test('version works with no runtime installed', () => {
   const result = run(['--version'], { SUDO_CLI_CODEX: 'missing-runtime' });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /0\.2\.0/);
+  assert.match(result.stdout, /0\.3\.0/);
 });
 
 test('missing settings in noninteractive mode are actionable and do not initiate a model request', () => {
@@ -51,4 +51,19 @@ test('doctor reports missing engine without connecting or exposing environment s
   assert.equal(result.status, 1);
   assert.match(result.stdout + result.stderr, /engine|Codex/i);
   assert.doesNotMatch(result.stdout + result.stderr, /never-print-this/);
+});
+
+test('piped launch prints the ASCII art and exits without initializing an engine', () => {
+  const result = run([], { SUDO_CLI_CODEX: 'missing-runtime' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /____/);
+  assert.doesNotMatch(result.stdout, /\x1b|API key|\?/);
+});
+
+test('permissions and web flags reject invalid values with actionable errors', () => {
+  for (const [flag, value] of [['--permissions', 'always'], ['--web', 'maybe']]) {
+    const result = run([flag, value]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Use --permissions|Use --web/);
+  }
 });

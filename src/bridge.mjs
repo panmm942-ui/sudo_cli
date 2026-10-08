@@ -316,7 +316,7 @@ async function readUpstream(response) {
 }
 
 /** Start a private, authenticated Responses-to-Chat-Completions adapter. */
-export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000 } = {}) {
+export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000, onMetrics = () => {} } = {}) {
   const url = endpoint(baseUrl);
   if (!validModel(model)) throw new Error('A nonempty model identifier without control characters is required.');
   if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || /[\r\n]/.test(apiKey))) throw new Error('If provided, the API key must be a nonempty string without line breaks.');
@@ -337,6 +337,8 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000 }
     req.once('aborted', abort);
     res.once('close', abort);
     let timedOut = false;
+    let requestId, started;
+    const metric = (phase) => { if (requestId) { try { onMetrics({ phase, id: requestId, latencyMs: performance.now() - started, source: 'buffered-chat-response' }); } catch { /* Metrics cannot interrupt the transport. */ } } };
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     timer.unref();
     try {
@@ -344,6 +346,7 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000 }
       const body = await readRequest(req);
       const { request, custom, toolNames } = modelRequest(body, model, reasoning);
       if (controller.signal.aborted) throw new Error('Aborted');
+      requestId = randomUUID(); started = performance.now(); metric('started');
       const upstream = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...(apiKey === undefined ? {} : { authorization: `Bearer ${apiKey}` }) }, body: JSON.stringify(request), signal: controller.signal, redirect: 'error' });
       if (!upstream.ok) {
         await upstream.body?.cancel();
@@ -352,10 +355,12 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000 }
         throw new BridgeError(status, `Model endpoint returned HTTP ${upstream.status}.`, 'upstream_error', retryAfter && /^\d{1,8}$/.test(retryAfter) ? { 'retry-after': retryAfter } : {});
       }
       const response = completedResponse(await readUpstream(upstream), request.model, custom, toolNames, reasoning);
+      metric('succeeded');
       if (res.destroyed) return;
       if (body.stream === true) sendSse(res, response);
       else sendJson(res, 200, response);
     } catch (error) {
+      metric(controller.signal.aborted && !timedOut ? 'cancelled' : 'failed');
       const failure = timedOut ? new BridgeError(504, 'Model request timed out.', 'upstream_timeout') : error instanceof BridgeError ? error : new BridgeError(502, 'Unable to reach the model endpoint.', 'upstream_error');
       sendJson(res, failure.status, { error: { message: failure.message, type: failure.code, code: failure.code } }, failure.headers);
     } finally {

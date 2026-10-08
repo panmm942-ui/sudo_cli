@@ -18,6 +18,6 @@ jobs:
       - name: Install the pinned project-local native engine
         run: node scripts/setup-runtime.mjs
       - name: Verify engine startup
-        run: node bin/sudo-cli.mjs doctor
+        run: node bin/sudocli.mjs doctor
       - name: Test real engine and local model fixtures
         run: node --test

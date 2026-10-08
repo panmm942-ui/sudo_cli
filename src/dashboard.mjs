@@ -9,6 +9,12 @@ const LOGO = [
   ' ___) | |_| | |_| | |_| |  | |___| |___ | | ',
   '|____/ \\___/|____/ \\___/    \\____|_____|___|',
 ];
+export const ART = LOGO.join('\r\n');
+
+export function workedTime(milliseconds = 0) {
+  const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+  return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map(value => String(value).padStart(2, '0')).join(':');
+}
 const clean = value => stripVTControlCharacters(String(value ?? '')).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '').replace(/[\r\n\t]/g, ' ');
 const cellWidth = character => {
   const code = character.codePointAt(0);
@@ -44,36 +50,46 @@ function contextText(context, columns) {
 }
 
 export function renderDashboard({ state, columns = 100, rows = 24, color = false, now = new Date(), timeZone, platform = process.platform, arch = process.arch, activity = 'Idle' }) {
-  columns = Math.max(20, Math.floor(columns || 80)); rows = Math.max(1, Math.floor(rows || 24));
+  columns = Math.max(1, Math.floor(columns || 80) - 1); rows = Math.max(1, Math.floor(rows || 24));
   const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
   const logoWidth = Math.max(...LOGO.map(line => line.length));
   const beside = columns >= logoWidth + 36;
   const available = beside ? columns - logoWidth - 3 : columns;
   const field = (label, value, code = 37) => paint(90, `${label}: `) + paint(code, fit(value, Math.max(0, available - label.length - 2)));
   const pending = state.connectionState === 'pending' ? ' (not checked)' : '';
+  const quality = state.health?.percent;
+  const qualityColor = quality == null ? 90 : quality > 70 ? 32 : quality > 50 ? '38;5;208' : 31;
+  const qualityLabel = quality == null ? 'Not measured' : `${quality}% ${quality > 70 ? 'Good' : quality > 50 ? 'Fair' : 'Bad'}`;
+  const latency = state.health?.latencyMs;
+  const qualityText = qualityLabel + (latency == null ? '' : ` | ${(latency / 1000).toFixed(1)}s`) + (state.health?.pending ? ' waiting' : '');
   const fields = [
     field('Time', clock(now, timeZone)),
     field('Software System', describeSystem({ platform, arch })),
     field('Working', state.working ? 'Working' : 'Not working', state.working ? 32 : 31),
     field('Status', state.status + pending, state.status === 'Online' ? 32 : 31),
     field('Connected AI', state.connectedAI || 'No AI connected'),
+    field('Connection', qualityText, qualityColor),
     field('Context', contextText(state.context, available - 9)),
+    field('Permissions', state.permissions === 'allow-everything' ? 'Allow Everything' : 'Ask', state.permissions === 'allow-everything' ? '38;5;208' : 37),
+    field('Web Access', state.webAccess ? 'On' : 'Off', state.webAccess ? 32 : 90),
+    field('Worked', `${workedTime(state.worked?.sessionMs)} | In Total: ${workedTime(state.worked?.totalMs)}`),
     field('Activity', activity),
     field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
   ];
   let lines;
   if (beside) lines = fields.map((right, index) => paint(36, (LOGO[index] || '').padEnd(logoWidth)) + '   ' + right);
-  else if (rows >= 21) lines = [...LOGO.map(line => paint(36, fit(line, columns))), '', ...fields];
+  else if (columns >= logoWidth && rows >= LOGO.length + fields.length + 7) lines = [...LOGO.map(line => paint(36, fit(line, columns))), '', ...fields];
   else lines = [paint(36, 'SUDO CLI'), ...fields];
-  lines.push(paint(90, fit(`v${VERSION} | /help | Ctrl+C interrupts | Context: last reported`, columns)), paint(90, '-'.repeat(columns)));
-  return { lines, height: lines.length, sticky: rows - lines.length >= 4 };
+  lines.push(paint(90, fit(`v${VERSION} | /help | Connection: latency/error estimate | Context: last reported`, columns)), paint(90, '-'.repeat(columns)));
+  if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [paint(36, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
+  return { lines, height: lines.length, sticky: true };
 }
 
 /** A terminal-only header. It never reads or redraws secret input. */
 export function createDashboard({ output = process.stdout, snapshot, now = () => new Date(), timeZone, platform, arch, activity = () => 'Idle', color = output.isTTY && !process.env.NO_COLOR, env = process.env, tickMs = 1000, onResize = () => {} }) {
-  let started = false, sticky = false, height = 0, last = '', timer, body = '';
+  let started = false, sticky = false, alternate = false, height = 0, last = '', timer, body = '';
   const view = () => renderDashboard({ state: snapshot(), columns: output.columns || 80, rows: output.rows || 24, color: color && !!output.isTTY && env.TERM !== 'dumb', now: now(), timeZone, platform, arch, activity: activity() });
-  const draw = (lines) => lines.map((line, index) => `\x1b[${index + 1};1H\x1b[2K${line}`).join('');
+  const draw = (lines) => '\x1b[H' + lines.map(line => line + '\x1b[K').join('\r\n');
   function resize() {
     if (!started) return;
     const previousSticky = sticky;
@@ -92,21 +108,21 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
       const visible = tail.slice(-Math.max(1, (output.rows || 24) - height - 3)).join('\n');
       if (visible) output.write(visible + '\n');
       onResize();
-    } else { output.write((previousSticky ? '\x1b[r' : '') + last + '\n'); onResize(); }
+    } else { output.write((alternate ? '\x1b[r\x1b[2J\x1b[H' : previousSticky ? '\x1b[r' : '') + last + '\r\n'); onResize(); }
   }
   function refresh() {
     if (!started) return;
     const current = view(), next = current.lines.join('\n');
     if (!sticky) {
       // Legacy/tiny terminals get state changes without per-second output spam.
-      const withoutTime = lines => lines.split('\n').filter(line => !stripVTControlCharacters(line).startsWith('Time:')).join('\n');
+      const withoutTime = lines => lines.split('\n').filter(line => !/^(Time|Worked|Connection):/.test(stripVTControlCharacters(line))).join('\n');
       if (withoutTime(next) !== withoutTime(last)) { last = next; output.write('\n' + next + '\n'); }
       return;
     }
     if (current.height !== height) return resize();
     if (next === last) return;
     last = next;
-    output.write(`\x1b7${draw(current.lines)}\x1b8`);
+    output.write(`\x1b7\x1b[?25l${draw(current.lines)}\x1b8\x1b[?25h`);
   }
   return {
     start() {
@@ -114,17 +130,28 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
       started = true;
       const current = view(); height = current.height; last = current.lines.join('\n');
       sticky = !!output.isTTY && env.TERM !== 'dumb' && current.sticky;
-      if (sticky) output.write(`\x1b[2J\x1b[H${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r\x1b[${height + 1};1H`);
+      alternate = !!output.isTTY && env.TERM !== 'dumb';
+      if (alternate) output.write('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H');
+      if (sticky) output.write(`${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r\x1b[${height + 1};1H`);
       else output.write(last + '\n');
+      if (alternate) output.write('\x1b[?25h');
       output.on?.('resize', resize);
-      if (output.isTTY && env.TERM !== 'dumb' && tickMs > 0) { timer = setInterval(refresh, tickMs); timer.unref?.(); }
+      if (output.isTTY && env.TERM !== 'dumb' && tickMs > 0) {
+        const tick = () => {
+          if (!started) return;
+          const before = performance.now(); refresh();
+          timer = setTimeout(tick, Math.max(0, tickMs - (performance.now() - before))); timer.unref?.();
+        };
+        timer = setTimeout(tick, tickMs); timer.unref?.();
+      }
     },
     refresh,
     write(text) { const value = String(text); body = (body + value).slice(-65536); output.write(value); },
     stop() {
       if (!started) return;
-      started = false; clearInterval(timer); output.removeListener?.('resize', resize);
-      if (sticky) output.write(`\x1b[r\x1b[0m\x1b[${output.rows || 24};1H\n`);
+      started = false; clearTimeout(timer); output.removeListener?.('resize', resize);
+      if (alternate) output.write('\x1b[r\x1b[0m\x1b[?25h\x1b[?1049l');
+      alternate = false;
     },
   };
 }
