@@ -12,6 +12,7 @@ No paid endpoint, microphone, speaker, real GPU hook, OS startup service or
 desktop Codex configuration is used. Retained evidence is sanitized.
 """
 import argparse
+import errno
 import fcntl
 import http.server
 import json
@@ -44,7 +45,7 @@ PROJECT = Path(__file__).resolve().parents[2]
 NODE = arguments.node
 ENGINE = subprocess.check_output([NODE, '--input-type=module', '-e',
     'import {localCodex} from "./src/local-engine.mjs"; process.stdout.write(localCodex());'],
-    cwd=PROJECT, text=True).strip()
+    cwd=PROJECT, text=True, timeout=15).strip()
 ENGINE = ENGINE if Path(ENGINE).is_absolute() else shutil.which(ENGINE)
 if not ENGINE or not Path(ENGINE).is_file():
     raise SystemExit('Install the matching native Linux Codex runtime first.')
@@ -238,10 +239,56 @@ class Terminal:
                 break
         raise AssertionError(f'{expectation} not observed; exit={self.child.poll()}')
 
-    def send(self, text):
-        self.drain(.08)
+    def send(self, text, *, timeout=10):
+        end = time.monotonic()+timeout
+        self.drain(min(.08, max(0, end-time.monotonic())))
         marker = len(self.transcript)
-        os.write(self.master, text.encode())
+        pending = memoryview(text.encode())
+        offset = 0
+        original_flags = fcntl.fcntl(self.master, fcntl.F_GETFL)
+
+        def closed(error=None):
+            status = self.child.poll()
+            if status is not None:
+                raise AssertionError(f'PTY child exited while sending input; exit={status}') from error
+            raise EOFError('PTY closed while sending input.') from error
+
+        fcntl.fcntl(self.master, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+        try:
+            while offset < len(pending):
+                if self.child.poll() is not None:
+                    closed()
+                remaining = end-time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('PTY input timed out before all bytes were written.')
+                readable, writable, _ = select.select([self.master], [self.master], [], min(.05, remaining))
+                if readable:
+                    try:
+                        data = os.read(self.master, 65536)
+                    except (BlockingIOError, InterruptedError):
+                        pass
+                    except OSError as error:
+                        if error.errno in (errno.EIO, errno.EPIPE):
+                            closed(error)
+                        raise
+                    else:
+                        if not data:
+                            closed()
+                        self.transcript.extend(data)
+                if writable:
+                    try:
+                        written = os.write(self.master, pending[offset:])
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except OSError as error:
+                        if error.errno in (errno.EIO, errno.EPIPE):
+                            closed(error)
+                        raise
+                    if written <= 0:
+                        closed()
+                    offset += written
+        finally:
+            fcntl.fcntl(self.master, fcntl.F_SETFL, original_flags)
         return marker
 
     def ready(self, marker=0):
@@ -298,14 +345,23 @@ class Terminal:
         assert KEY.encode() not in self.transcript, 'key leaked in terminal output'
 
     def close(self):
-        if self.child.poll() is None:
-            self.child.terminate()
-            try:
-                self.child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.child.kill()
-                self.child.wait()
-        os.close(self.master)
+        error = None
+        try:
+            if self.child.poll() is None:
+                self.child.terminate()
+                try:
+                    self.child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.child.kill()
+                    self.child.wait(timeout=5)
+        except BaseException as failure:
+            error = failure
+        try:
+            os.close(self.master)
+        except BaseException as failure:
+            error = error or failure
+        if error is not None:
+            raise error
 
 
 def chat_pointer(state):
@@ -631,8 +687,8 @@ try:
         assert not fixture_errors, fixture_errors
 
     results.update(nativeLinuxRoot=True,
-                   nodeVersion=subprocess.check_output([NODE, '--version'], text=True).strip(),
-                   nativeEngineVersion=subprocess.check_output([ENGINE, '--version'], text=True).strip(),
+                   nodeVersion=subprocess.check_output([NODE, '--version'], text=True, timeout=15).strip(),
+                   nativeEngineVersion=subprocess.check_output([ENGINE, '--version'], text=True, timeout=15).strip(),
                    modelRequests=len(requests), nativeStreamedRequests=sum(bool(request.get('stream')) for request in requests),
                    exitCodes=[terminal.child.returncode for terminal in terminals],
                    credentialsNotStoredOrPrinted=True, isolatedHomeXdgStateProject=True,
@@ -649,7 +705,20 @@ except BaseException as error:
         'error': repr(error), 'fixtureErrors': fixture_errors})+'\n')
     raise
 finally:
+    primary_error = sys.exc_info()[1]
+    cleanup_error = None
     for terminal in terminals:
-        terminal.close()
-    server.shutdown()
-    server.server_close()
+        try:
+            terminal.close()
+        except BaseException as failure:
+            cleanup_error = cleanup_error or failure
+    for cleanup in [server.shutdown, server.server_close]:
+        try:
+            cleanup()
+        except BaseException as failure:
+            cleanup_error = cleanup_error or failure
+    if cleanup_error is not None:
+        if primary_error is None:
+            raise cleanup_error
+        if hasattr(primary_error, 'add_note'):
+            primary_error.add_note('Native acceptance cleanup also reported a bounded failure.')
