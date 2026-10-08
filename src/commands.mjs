@@ -3,7 +3,8 @@ export const COMMANDS = [
   {name:'/status',usage:'',description:'Session, model, WiFi, context and timers'},
   {name:'/switch',usage:'[NAME|add|local|save NAME|remove NAME]',description:'Saved cloud/local AIs; transfer full chat on switch'},
   {name:'/model',usage:'[ID|list]',description:'Current model or endpoint model list'},
-  {name:'/connect',usage:'',description:'New endpoint, model and hidden key'},
+  {name:'/connect',usage:'[local]',description:'Choose cloud or local AI; cloud keys are optional for local servers'},
+  {name:'/local',usage:'[add|SAVED_NAME]',description:'Use an AI already running on this PC; no cloud API key needed'},
   {name:'/effort',usage:'[default|LEVEL|supported LEVELS]',description:'Reasoning request and declared model capabilities'},
   {name:'/permissions',usage:'[ask|allow-everything|scope read-only|project|full|tools|folders]',description:'Runtime permissions, scope, selected tools and write folders'},
   {name:'/web',usage:'[on|off]',description:'Runtime web tools / sandbox networking'},
@@ -13,8 +14,8 @@ export const COMMANDS = [
   {name:'/history',usage:'[clear]',description:'Visible chat history kept in this session'},
   {name:'/chatt',usage:'[list|open ID|new|save|rename TITLE|delete ID]',description:'Saved project chats; last chat resumes automatically'},
   {name:'/new',usage:'',description:'New chat; choose whether to keep the current saved chat'},
-  {name:'/personalize',usage:'[status|setup|on|off|clear]',description:'Optional persona and preferences for the connected AI'},
-  {name:'/preferences',usage:'[status|setup|on|off|clear]',description:'Alias for per-AI personalization'},
+  {name:'/personalize',usage:'[status|setup|set FIELD VALUE|unset FIELD|on|off|clear]',description:'Saved persona and preferences for this AI only'},
+  {name:'/preferences',usage:'[status|setup|set FIELD VALUE|unset FIELD|on|off|clear]',description:'Per-AI language, tone, length, format and instructions'},
   {name:'/247',usage:'[setup|start|detach|stop|status|add TASK|list|result ID|retry ID]',description:'Always-on local coordinator and durable task inbox'},
   {name:'/compact',usage:'',description:'Run native context compaction; keep full export history'},
   {name:'/clear',usage:'',description:'Fresh engine context; keep session export history'},
@@ -42,6 +43,7 @@ export const COMMANDS = [
   {name:'/undo',usage:'[CHECKPOINT_ID]',description:'Restore recorded AI edits while preserving later user edits'},
   {name:'/workflow',usage:'[plan|edit|test|review]',description:'Guided coding workflow'},
   {name:'/team',usage:'TASK',description:'Bounded independent planner and reviewer in isolated snapshots'},
+  {name:'/agents',usage:'[list|add|edit|run|team|pipeline|status|stop|results|result|follow|diff|apply]',description:'Saved specialists, parallel teams, isolated coding and reviewed proposals'},
   {name:'/security',usage:'[scan|lab PATH|review PATH]',description:'Defensive local scans and an explicitly approved isolated source lab'},
   {name:'/budget',usage:'[setup|status|reset-day|off]',description:'Task and daily money, token, request and duration limits'},
   {name:'/gpu',usage:'[setup|status|wake|sleep]',description:'GPU hooks with actual provider state verification'},
@@ -59,15 +61,15 @@ export const COMMANDS = [
 ];
 const groups={
   'Chat':['/help','/chatt','/new','/history','/handoff','/prompt','/search-chat','/compact','/clear','/readability','/details','/quit'],
-  'AI':['/switch','/model','/connect','/test-connection','/capabilities','/context','/effort','/personalize','/preferences','/memory','/route','/credentials'],
-  'Work':['/upload','/attachments','/checks','/verify','/changes','/undo','/workflow','/team','/review','/diff','/security','/stop','/steer'],
+  'AI':['/switch','/model','/connect','/local','/test-connection','/capabilities','/context','/effort','/personalize','/preferences','/memory','/route','/credentials'],
+  'Work':['/upload','/attachments','/checks','/verify','/changes','/undo','/workflow','/team','/agents','/review','/diff','/security','/stop','/steer'],
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
   'Voice':['/voice','/microphone','/live'],
   'Background':['/247','/schedule','/startup','/budget','/gpu'],
   'Advanced':['/training','/update','/doctor','/status'],
 };
 export function commandMenu(query='',{compact=false}={}) {
-  if(compact&&!query)return ['Common commands:','/switch  Choose AI     /chatt  Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
+  if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chatt  Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
   const lower=query.toLowerCase();return Object.entries(groups).map(([group,names])=>{const items=COMMANDS.filter(command=>names.includes(command.name)&&(!lower||group.toLowerCase()===lower||(command.name+' '+command.description).toLowerCase().includes(lower)));return items.length?group+'\n\n'+items.map(command=>`${command.name}${command.usage ? ' '+command.usage : ''}\n    ${command.description}`).join('\n\n'):'';}).filter(Boolean).join('\n\n');
 }
 export function completeCommand(line) {

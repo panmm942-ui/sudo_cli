@@ -181,11 +181,14 @@ test('coordinator ticks durable schedules without idle model requests', async t 
   const { createScheduler } = await import('../src/scheduler.mjs');
   const scheduler = await createScheduler({ inbox });
   const scheduled = createAlwaysOn({ inbox, scheduler, pollMs: 10, idleSleepMs: 40, assess: async () => { assessments++; return { action: 'local', result: 'Scheduled task completed' }; }, runCloud: async () => assert.fail('Cloud should remain idle') });
-  t.after(() => scheduled.stop());
-  await scheduler.add({ id: 'scheduled-proof', prompt: 'Explicit local work', at: Date.now() + 40 });
-  await scheduled.start();
-  await until(async () => (await inbox.list())[0]?.status === 'completed');
-  await delay(50); assert.equal(assessments, 1);
+  // Stop this additional worker before the fixture removes its inbox. Registered
+  // after-hooks run in order, so a later stop hook races earlier directory cleanup.
+  try {
+    await scheduler.add({ id: 'scheduled-proof', prompt: 'Explicit local work', at: Date.now() + 40 });
+    await scheduled.start();
+    await until(async () => (await inbox.list())[0]?.status === 'completed');
+    await delay(50); assert.equal(assessments, 1);
+  } finally { await scheduled.stop(); }
 });
 
 test('stop between durable running status and dispatch prevents an already cancelled cloud call', async t => {

@@ -180,7 +180,7 @@ BASE_URL = f'http://127.0.0.1:{server.server_port}/v1'
 
 
 class Terminal:
-    def __init__(self, root, *, explicit=False, env_overrides=None):
+    def __init__(self, root, *, explicit=False, cli_arguments=None, env_overrides=None):
         self.transcript = bytearray()
         self.root = root
         self.workspace = root/'project'
@@ -200,6 +200,7 @@ class Terminal:
         if explicit:
             command += ['--model', 'fixture-primary', '--base-url', BASE_URL,
                         '--transport', 'chat-completions', '--context-window', '131072']
+        command += cli_arguments or []
         self.child = subprocess.Popen(command, cwd=self.workspace, env=env,
             stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
@@ -325,7 +326,7 @@ try:
         terminal = Terminal(root)
         fixture_workspace = terminal.workspace
         terminal.ready()
-        assert 'Ready without an AI' in plain(terminal.transcript)
+        assert 'Local AI on this PC: /local' in plain(terminal.transcript)
         baseline = len(requests)
         assert '/switch' in terminal.command('/help')
         assert 'No AI selected' in terminal.command('/status')
@@ -558,13 +559,15 @@ try:
         results.update(dailyBudgetBlocksBeforeRequest=True, usageAndConfiguredCostRecorded=True)
         progress('request budget admission and usage')
         restarted.finish()
-        # A stale supplied model is validated before connection. Interactive
-        # startup must catch that failure and retain the saved-chat shell.
+        # Explicit stale startup flags are validated before connection.
+        # Interactive startup catches that failure and retains saved chats.
+        # Inherited model environment alone intentionally leaves the shell
+        # offline, rather than forcing an unwanted API-key setup prompt.
         baseline = len(requests)
         for model, base_url in [('invalid-model\nid', BASE_URL), ('fixture-primary', 'not-a-url')]:
-            fallback = Terminal(root, env_overrides={'SUDO_CLI_MODEL': model,
-                                                    'SUDO_CLI_BASE_URL': base_url,
-                                                    'SUDO_CLI_TRANSPORT': 'chat-completions'})
+            fallback = Terminal(root, cli_arguments=['--model', model,
+                                                     '--base-url', base_url,
+                                                     '--transport', 'chat-completions'])
             fallback.ready()
             assert 'Connection setup failed:' in plain(fallback.transcript)
             assert 'Continuing offline; /chatt remains available.' in plain(fallback.transcript)
@@ -573,10 +576,23 @@ try:
             assert 'V6 first saved chat' in listing
             fallback.command('/chatt open '+first_id)
             assert 'FIRST_SAVED_CHAT_BASELINE' in fallback.command('/history')
-            assert_no_requests(baseline, 'invalid automatic connection offline fallback and saved chats')
+            assert_no_requests(baseline, 'invalid explicit connection offline fallback and saved chats')
             fallback.finish()
-        results['invalidAutoConnectFallsBackToOfflineSavedChats'] = True
-        progress('invalid initial connection retains offline saved chats')
+        results['invalidExplicitConnectionFallsBackToOfflineSavedChats'] = True
+        inherited = Terminal(root, env_overrides={'SUDO_CLI_MODEL': 'invalid-model\nid',
+                                                 'SUDO_CLI_BASE_URL': 'not-a-url',
+                                                 'SUDO_CLI_TRANSPORT': 'chat-completions'})
+        inherited.ready()
+        assert 'Local AI on this PC: /local' in plain(inherited.transcript)
+        assert 'API key' not in plain(inherited.transcript)
+        assert 'No AI selected' in inherited.command('/status')
+        assert 'V6 first saved chat' in inherited.command('/chatt list')
+        inherited.command('/chatt open '+first_id)
+        assert 'FIRST_SAVED_CHAT_BASELINE' in inherited.command('/history')
+        assert_no_requests(baseline, 'inherited model environment leaves interactive startup offline')
+        inherited.finish()
+        results['inheritedModelEnvironmentLeavesInteractiveShellOffline'] = True
+        progress('explicit invalid connection fallback and inherited environment stay offline with saved chats')
         for path in restarted.state.rglob('*.json'):
             assert KEY not in path.read_text(), 'key persisted in '+str(path)
         assert not fixture_errors, fixture_errors

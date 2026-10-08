@@ -17,7 +17,9 @@ keep this directory, or rerun setup after moving it.
 --command-only  Use an existing compatible engine; do not download a runtime.
 --help          Show this help without changing anything.
 
-Setup stores no model or key. Optional AI profiles can be saved later with /switch;
+Setup stores no model or key. In sudocli, choose a cloud AI or a local AI already
+running on this PC (Ollama, LM Studio or another compatible server). Most local
+servers need no API key. Optional AI profiles can be saved later with /switch;
 profiles exclude API keys, which stay in memory or a chosen environment variable.
 `;
 const args = process.argv.slice(2);
@@ -59,7 +61,7 @@ try {
     console.log(`Command: ${result.commandPath}`);
     if (result.profilePath) console.log(`PATH startup file: ${result.profilePath}`);
     console.log('Open a new terminal and run: sudocli');
-    console.log('Model and API settings will be requested while sudocli is running.');
+    console.log('In sudocli, choose Cloud/API or Local AI on this PC. Use /local to connect an installed local model.');
   }
 } catch (error) {
   console.error(`codexcli setup: ${error?.message?.replace(/[\u0000-\u001f\u007f]/g, ' ') || 'Setup failed.'}`);

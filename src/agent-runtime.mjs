@@ -46,7 +46,7 @@ function runtimeSettings(settings, connection) {
 }
 
 /** One isolated native Codex task; no persistent auth/config or raw-chat tool emulation. */
-export async function runAgentTask({ connection: inputConnection, cwd = process.cwd(), settings = {}, prompt, developerInstructions, signal, onEvent = () => {}, onApproval, runtime = {} } = {}) {
+export async function runAgentTask({ connection: inputConnection, cwd = process.cwd(), settings = {}, prompt, developerInstructions, signal, onEvent = () => {}, onApproval, onControl, runtime = {} } = {}) {
   checkAbort(signal);
   const connection = validateConnection(inputConnection);
   const choices = runtimeSettings(settings, connection);
@@ -64,7 +64,7 @@ export async function runAgentTask({ connection: inputConnection, cwd = process.
   if (typeof cwd !== 'string' || !cwd || /[\u0000-\u001f\u007f]/.test(cwd)) throw new Error('Agent project directory is invalid.');
   cwd = resolve(cwd);
   if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Error('Agent project directory does not exist.');
-  if (!object(runtime) || typeof onEvent !== 'function' || (onApproval !== undefined && typeof onApproval !== 'function')) throw new Error('Agent runtime callbacks are invalid.');
+  if (!object(runtime) || typeof onEvent !== 'function' || (onApproval !== undefined && typeof onApproval !== 'function') || (onControl !== undefined && typeof onControl !== 'function')) throw new Error('Agent runtime callbacks are invalid.');
   if (runtime.requestTimeoutMs !== undefined && (!Number.isSafeInteger(runtime.requestTimeoutMs) || runtime.requestTimeoutMs < 1 || runtime.requestTimeoutMs > 2147483647)) throw new Error('Agent native request timeout must be a positive bounded integer.');
   const modelTimeoutMs = runtime.modelTimeoutMs ?? 120000;
   if (!Number.isSafeInteger(modelTimeoutMs) || modelTimeoutMs < 1 || modelTimeoutMs > 2147483647) throw new Error('Agent model timeout must be a positive bounded integer.');
@@ -132,6 +132,7 @@ export async function runAgentTask({ connection: inputConnection, cwd = process.
       permissions: choices.permissions, webAccess: choices.webAccess, scope: choices.scope, writableRoots: choices.writableRoots, supportedEfforts: connection.supportedEfforts, onEvent: event,
       onApproval: async request => { if (signal?.aborted || !onApproval) return false; try { return await Promise.race([Promise.resolve(onApproval(request)), aborted]) === true; } catch { return false; } },
     });
+    onControl?.({steer:message=>engine.steer(message)});
     checkAbort(signal);
     const turn = await Promise.race([engine.startTurn(input, { model: connection.model, effort: choices.effort, supportedEfforts: connection.supportedEfforts }), aborted]);
     checkAbort(signal);
@@ -146,6 +147,7 @@ export async function runAgentTask({ connection: inputConnection, cwd = process.
     else if (permissionError) error = permissionError;
     const visible = new Error(safe(error?.message || 'Agent task failed.')); if (typeof error?.code === 'string' && /^(BUDGET_EXCEEDED|BUDGET_STORAGE_INVALID|APPROVAL_REQUIRED)$/.test(error.code)) visible.code = error.code; throw visible;
   } finally {
+    try { onControl?.(undefined); } catch { /* Control display cannot prevent cleanup. */ }
     signal?.removeEventListener('abort', abort);
     await engine?.close().catch(() => {});
     await bridge?.close().catch(() => {});

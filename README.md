@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.0**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.1**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -34,7 +34,7 @@ Local launchers are `.\sudocli.cmd` on Windows and `sudo sh ./sudocli` on Unix. 
 
 ## Start offline, then connect
 
-The default launch opens a usable shell with no model traffic. `/chatt` opens saved project chats, `/help` browses commands, and `/memory` shows your approved project rules. `/connect` guides cloud/custom or already-running Ollama/LM Studio setup. Enter the exact model ID, compatible API URL, API format, context capacity if known, and hidden key. A local unauthenticated service can use an empty key.
+The default launch opens a usable shell with no model traffic. `/local` offers Ollama, LM Studio or another compatible server already running on your computer. It lists available models when the server supports discovery and asks for a key only if you opt into local authentication. `/connect` offers both cloud and local setup. `/chatt` opens saved project chats, `/help` browses commands, and `/memory` shows your approved project rules.
 
 `/switch` selects saved/local AI profiles. `/switch save NAME` saves nonsecret connection metadata; `/model ID` changes the model. Selecting an AI shows its configured name immediately, while a real answer confirms response health. `/test-connection` probes the model catalog without generation; `/capabilities` separates observed, declared and unknown support. Tool, vision, reasoning, audio and training support depend on the endpoint/model.
 
@@ -66,13 +66,15 @@ Choose the check command for your project. **Verified** means the selected check
 
 `/workflow plan|edit|test|review` selects coding guidance; plan/review use read-only scope. `/review` and `/team TASK` use fresh native sessions with bounded disposable source snapshots. Team reports are advisory and cannot accept or verify work. `/security scan`, `/security lab PATH` and `/security review PATH` provide defensive local source heuristics and isolated review; they do not contact targets or prove a project secure. See [workspace workflows](docs/workspace-workflows.md).
 
+`/agents` adds saved specialists with their own instructions and saved AI choices. `/agents team planner,reviewer TASK` runs independent copies in parallel. `/agents pipeline TASK` plans, proposes code, then asks the tester and reviewer to inspect that coding copy. `/agents status`, `stop NAME`, `steer NAME MESSAGE`, saved results and follow-up tasks are available. Review `/agents diff ID coder` before explicitly applying with `/agents apply ID coder`; later human edits become conflicts. `/verify` runs your selected checks after applying. Source agents keep Web and Computer Use Off and cannot approve actions outside their copies. [Local AI and agents guide](docs/local-ai-and-agents.md).
+
 ## Chats, context and readable input
 
 Visible user/assistant messages, partial replies and queued text prompts autosave per project. `/new` starts another saved chat; `/chatt open ID` restores one. Replies retain their AI attribution. Reopening restores the last chat without requiring an AI connection first.
 
 The complete visible transcript stays archived. Before replaying it to a new native session, the CLI requires a declared context capacity and checks an explicitly labelled token estimate. Oversized replay stops before provider traffic. `/context review` lets you write a reviewed summary and choose message numbers; the summary is conversation input. `/clear` starts fresh engine context and retains the archive. `/handoff` exports the full visible chat to Markdown/JSON; hidden reasoning, internal tool state and original attachment bytes do not transfer.
 
-`/memory edit` saves only rules, decisions and preferences you approve. `/personalize setup` saves optional preferences separately for each endpoint/model/protocol. These are instructions, not model training or permission grants.
+`/memory edit` saves only rules, decisions and preferences you approve. `/personalize setup` saves optional preferences separately for each endpoint/model/protocol. `/personalize set persona TEXT` or `/preferences set language Greek` changes one field while preserving the rest. Other fields are tone, length, format and instructions; `unset FIELD` removes one. These are instructions, not model training or permission grants.
 
 Clear reading is on by default; `/readability off` disables it and `/details` requests more explanation. `/prompt` accepts multiple lines until `/end`. Supported terminals use bracketed paste to keep pasted slash text literal. `/help work`, `/help voice` and `/help SEARCH` narrow the menu; `/search-chat TEXT` searches visible chat. Tab completes command names.
 
@@ -120,7 +122,9 @@ The dashboard shows local time/timezone, OS/architecture, working state, configu
 
 The [22-area evidence table](docs/v0.6-feature-evidence.md) records mechanisms, tests and practical limits. [Native terminal acceptance](docs/v0.6-terminal-evidence.md) passed against actual Linux x64 Codex with 22 loopback streamed requests, four clean CLI exits and no paid models, including multiline input and literal bracketed paste. Local Windows/Linux tests are separate from the defined six-target Windows/Linux/macOS x64/ARM64 CI; remote macOS/ARM jobs have not been run here.
 
-Final complete suites passed: Windows 487 tests with 23 platform skips; root Linux 501 tests with 9 platform skips; zero failures on both. See [release verification](docs/verification-v0.6.md).
+The previous 0.6.0 complete suites passed: Windows 487 tests with 23 platform skips; root Linux 501 tests with 9 platform skips; zero failures on both. See [previous verification](docs/verification-v0.6.md). Current local setup, personalization and agents are described in [the quick guide](docs/local-ai-and-agents.md).
+
+Version 0.6.1 complete suites passed: Windows 537 tests with 24 platform skips; root Linux 552 tests with 9 platform skips; zero failures or cancellations. Its new native terminal acceptance passed with 25 streamed requests and the retained broad regression passed with 22. See [current verification](docs/verification-v0.6.1.md).
 
 ## Launch options, source and licenses
 
@@ -129,7 +133,7 @@ sudocli --model provider-model-id --base-url https://api.example.com/v1 --transp
 sudocli --once "Explain this project" --model provider-model-id --base-url https://api.example.com/v1
 ```
 
-Other options include `--permissions ask|allow-everything`, `--scope read-only|project|full`, `--web on|off`, `--effort LEVEL`, repeatable `--mcp NAME=URL`, `--help` and `--version`. There is no command-line key-value flag. `SUDO_CLI_MODEL`, `SUDO_CLI_BASE_URL`, `SUDO_CLI_TRANSPORT` and `SUDO_CLI_API_KEY` supply session defaults; `--api-key-env` names a key variable. `SUDO_CLI_CODEX` selects a compatible engine; `SUDO_CLI_STATE_DIR` selects independent persistent state. Noninteractive Ask approvals are declined.
+Other options include `--permissions ask|allow-everything`, `--scope read-only|project|full`, `--web on|off`, `--effort LEVEL`, repeatable `--mcp NAME=URL`, `--help` and `--version`. There is no command-line key-value flag. An interactive launch stays offline until you choose `/local`, `/connect` or `/switch`, unless you explicitly supply `--model`. `SUDO_CLI_MODEL`, `SUDO_CLI_BASE_URL`, `SUDO_CLI_TRANSPORT` and `SUDO_CLI_API_KEY` supply defaults for explicit model or noninteractive launches; `--api-key-env` names a key variable. Local wizard choices do not borrow cloud keys. `SUDO_CLI_CODEX` selects a compatible engine; `SUDO_CLI_STATE_DIR` selects independent persistent state. Noninteractive Ask approvals are declined.
 
 The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
 

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createChatHistory } from '../src/chat-history.mjs';
 import { createModelProfiles } from '../src/model-profiles.mjs';
 import { createFeatureCommands } from '../src/features.mjs';
+import {configureConnection} from '../src/wizard.mjs';
 
 async function router(t, answers = []) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'codexcli-command-services-')));
@@ -28,7 +29,10 @@ async function router(t, answers = []) {
     getConnection: () => connection,
     getEngine: () => ({}),
     reconnect: async (selected, options) => { connection = selected; reconnects.push({ selected, options }); },
-    configure: async () => { throw new Error('Cloud setup is outside this fixture.'); },
+    configure: async (refresh,{forceLocal}={}) => {
+      assert.equal(forceLocal,true,'Cloud setup is outside this fixture.');
+      return configureConnection({refresh,forceLocal,interactive:true,env:{},report:value=>notes.push(value),ask:async(question,hidden=false)=>{asks.push({question,hidden});assert.ok(answers.length,`Unexpected prompt: ${question}`);return answers.shift();}});
+    },
     runTurn: async text => { turns.push(text); history.addUser(text, { model: connection.model }); },
     runCompact: async () => {}, getSnapshot: () => ({}),
     rememberSecret: value => knownSecrets.add(value), stop: () => {},
@@ -164,11 +168,12 @@ test('training export uses complete sanitized history and remains entirely local
 });
 
 test('local model wizard saves key-free capabilities and reconnects the selected running endpoint', { timeout: 5000 }, async t => {
-  const f = await router(t, ['1', 'http://localhost:11434/v1', 'installed-local-model', 'private-local-fixture', 'Local coding', 'low,high']);
+  const baseUrl=await endpoint(t,(_request,response)=>response.end(JSON.stringify({data:[{id:'installed-local-model'}]})));
+  const f = await router(t, ['1', baseUrl, 'yes','private-local-fixture','1','','Local coding', 'low,high']);
   await f.features.handle({ name: '/switch', args: ['local'] });
-  assert.ok(f.notes.some(note => note.includes('Ollama') && note.includes('11434')));
+  assert.ok(f.notes.some(note => note.includes('Ollama')));
   assert.equal(f.reconnects.length, 1);
-  assert.equal(f.reconnects[0].selected.baseUrl, 'http://localhost:11434/v1');
+  assert.equal(f.reconnects[0].selected.baseUrl, baseUrl);
   assert.equal(f.reconnects[0].selected.apiKey, 'private-local-fixture');
   assert.deepEqual(f.reconnects[0].selected.supportedEfforts, ['low', 'high']);
   const saved = await f.profiles.get('Local coding');
@@ -182,11 +187,12 @@ test('local model wizard saves key-free capabilities and reconnects the selected
   await f.features.handle({ name: '/switch', args: ['Local coding'] });
   assert.equal(f.reconnects.length, 2);
   assert.equal(f.reconnects[1].selected.apiKey, 'private-local-fixture'); // Session-only cached key, no second key prompt.
-  assert.equal(f.asks.length, 6);
+  assert.equal(f.asks.length, 8);
 });
 
 test('invalid model effort metadata never saves hidden keys or reconnects a partial profile', { timeout: 5000 }, async t => {
-  const f = await router(t, ['2', '', 'installed-model', 'private-invalid-fixture', 'Invalid capabilities', 'high,not a level']);
+  const baseUrl=await endpoint(t,(_request,response)=>response.end(JSON.stringify({data:[{id:'installed-model'}]})));
+  const f = await router(t, ['2',baseUrl,'yes','private-invalid-fixture','1','','Invalid capabilities','high,not a level']);
   await assert.rejects(f.features.handle({ name: '/switch', args: ['local'] }), /effort|capabilities|identifier/i);
   assert.deepEqual(await f.profiles.list(), []);
   assert.deepEqual(await readdir(f.profiles.directory), []);

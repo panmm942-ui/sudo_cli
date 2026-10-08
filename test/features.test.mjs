@@ -6,17 +6,38 @@ import { join } from 'node:path';
 import { createChatHistory } from '../src/chat-history.mjs';
 import { createModelProfiles } from '../src/model-profiles.mjs';
 
-async function fixture(t, {engine = {}, answers = []} = {}) {
+async function fixture(t, {engine = {}, answers = [], loadCredential=async()=>undefined} = {}) {
   const cwd = await mkdtemp(join(tmpdir(),'sudocli-features-')); t.after(()=>rm(cwd,{recursive:true,force:true}));
   const profiles = await createModelProfiles({stateDir:join(cwd,'state')});
   const history = createChatHistory({secrets:()=>['private-key']});
   const settings = {permissions:'ask',webAccess:false,mcp:new Map(),attachments:[],skills:[],effort:undefined};
   let connection = {model:'fixture',baseUrl:'http://localhost:8000/v1',transport:'chat-completions',apiKey:'private-key'};
-  const messages = []; const calls = [];
+  const messages = []; const calls = [],questions=[],configurationCalls=[];
   const { createFeatureCommands } = await import('../src/features.mjs');
-  const features = createFeatureCommands({cwd,settings,profiles,history,note:message=>messages.push(message),ask:async()=>answers.shift()||'',getConnection:()=>connection,getEngine:()=>engine,reconnect:async(selected,options)=>{connection=selected;calls.push(options);},configure:async()=>connection,runTurn:async()=>{},runCompact:async()=>{},getSnapshot:()=>({}),rememberSecret:()=>{},stop:()=>{}});
-  return {cwd,profiles,history,settings,features,messages,calls};
+  const features = createFeatureCommands({cwd,settings,profiles,history,note:message=>messages.push(message),ask:async(prompt,hidden)=>{questions.push({prompt,hidden});return answers.shift()||'';},getConnection:()=>connection,getEngine:()=>engine,reconnect:async(selected,options)=>{connection=selected;calls.push(options);},configure:async(...args)=>{configurationCalls.push(args);return connection;},loadCredential,runTurn:async()=>{},runCompact:async()=>{},getSnapshot:()=>({}),rememberSecret:()=>{},stop:()=>{}});
+  return {cwd,profiles,history,settings,features,messages,calls,questions,configurationCalls,getConnection:()=>connection};
 }
+
+test('/local uses the local-only runtime wizard and saves the selected model without a duplicated key prompt',async t=>{
+  const f=await fixture(t,{answers:['My local AI','']});
+  assert.equal(await f.features.handle({name:'/local',args:[]}),true);
+  assert.deepEqual(f.configurationCalls,[[true,{forceLocal:true}]]);
+  assert.equal((await f.profiles.get('My local AI')).model,'fixture');
+  assert.equal(f.questions.some(question=>question.hidden),false);
+});
+test('selecting a saved keyless local AI does not ask for a cloud API key',async t=>{
+  const f=await fixture(t);await f.profiles.save({name:'Installed model',model:'already-installed',baseUrl:'http://127.0.0.1:8081/v1',transport:'chat-completions'});
+  await f.features.handle({name:'/local',args:['Installed model']});
+  assert.equal(f.getConnection().model,'already-installed');assert.equal(f.getConnection().apiKey,undefined);assert.equal(f.questions.length,0);
+});
+test('saved cloud AI loads its protected credential before asking for a key',async t=>{
+  const f=await fixture(t,{loadCredential:async()=> 'vault-fixture-key'});await f.profiles.save({name:'Saved cloud',model:'cloud-model',baseUrl:'https://model.example/v1',transport:'chat-completions'});
+  await f.features.handle({name:'/switch',args:['Saved cloud']});assert.equal(f.getConnection().apiKey,'vault-fixture-key');assert.equal(f.questions.length,0);
+});
+test('/local refuses a saved remote endpoint before connecting',async t=>{
+  const f=await fixture(t);await f.profiles.save({name:'Remote',model:'cloud-model',baseUrl:'https://model.example/v1',transport:'chat-completions'});
+  await assert.rejects(f.features.handle({name:'/local',args:['Remote']}),/local|computer/i);assert.equal(f.calls.length,0);
+});
 
 test('command routing saves nonsecret model metadata and exports the whole chat', async t => {
   const f=await fixture(t);

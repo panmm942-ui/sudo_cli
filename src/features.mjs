@@ -5,19 +5,20 @@ import { tmpdir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { commandMenu, parseMcpEntry } from './commands.mjs';
 import { collectAttachments } from './attachments.mjs';
-import { localEndpointPresets } from './model-profiles.mjs';
 import { validateConnection, validateReasoningEffort, REASONING_EFFORTS } from './runtime.mjs';
 import { workedTime, trafficRate } from './dashboard.mjs';
 import { computerToolFilters, isComputerTool } from './computer-policy.mjs';
+import {isLocalEndpoint} from './wizard.mjs';
 const execute = promisify(execFile);
 
 /** The interactive command layer; model keys and optional services stay in RAM. */
-export function createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection,getEngine,reconnect,configure,runTurn,runCompact,getSnapshot,rememberSecret,stop}) {
+export function createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection,getEngine,reconnect,configure,loadCredential=async()=>undefined,runTurn,runCompact,getSnapshot,rememberSecret,stop}) {
   settings.attachments ??= []; settings.skills ??= []; settings.mcp ??= new Map();
   settings.computerServers ??= new Set(); settings.disabledComputerTools ??= new Map();
   const keys = new Map();
   const serviceModule = () => import('./external-services.mjs');
-  const cacheKey = connection => `${connection.baseUrl}\0${connection.model}`;
+  const cacheKey = connection => `${connection.baseUrl}\0${connection.model}\0${connection.transport}`;
+  const localEndpoint=isLocalEndpoint;
   function remember(connection) { if (connection.apiKey) { keys.set(cacheKey(connection),connection.apiKey); rememberSecret(connection.apiKey); } }
   async function activate(selected, carry = true) {
     if(!selected)return;
@@ -34,25 +35,15 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     const service=validateService({baseUrl,model,apiKey});if(apiKey)rememberSecret(apiKey);return service;
   }
   async function addModel(local = false) {
-    let selected;
-    if(local) {
-      localEndpointPresets.forEach((entry,index)=>note(`${index+1}. ${entry.label} · ${entry.baseUrl}`));
-      const choice=(await ask('  Local server [1 Ollama / 2 LM Studio / 3 custom] › ')) || '1';
-      if(!['1','2','3'].includes(choice))throw new Error('Choose local server 1,2 or3.');
-      const preset=localEndpointPresets[Number(choice)-1];
-      const baseUrl=(await ask(`  API base URL [${preset.baseUrl}] › `)) || preset.baseUrl;
-      const model=await ask('  Local model ID [already installed/served] › ');
-      const apiKey=(await ask('  API key [hidden; Enter for none] › ',true)) || undefined;
-      selected=validateConnection({baseUrl,model,apiKey,transport:preset.transport});
-      note('The local model server must already be running; this connects to it without uploading its weights.');
-    } else selected=await configure(true);
-    const name=await ask('  Save AI as [name] › ');
+    const selected=await configure(true,...(local?[{forceLocal:true}]:[]));
+    if(local&&!localEndpoint(selected))throw new Error('Local AI must run on this computer.');
+    const name=(await ask(`  Save AI as [Enter: ${selected.model.slice(0,100)}] › `))||selected.model.slice(0,100);
     const supportedText=await ask('  Supported effort levels [comma-separated if known; Enter for unknown] › ');
     if(supportedText)selected.supportedEfforts=supportedText.split(',').map(value=>value.trim()).filter(Boolean);
     await profiles.save({...selected,name});remember(selected);await activate(selected);
     note(`Saved AI: ${name}. API keys are not stored.`);
   }
-  async function chooseProfile(name) {
+  async function chooseProfile(name,{localOnly=false}={}) {
     const all=await profiles.list();
     if(!name) {
       all.forEach((profile,index)=>note(`${index+1}. ${profile.name} · ${profile.model} · ${new URL(profile.baseUrl).host}`));
@@ -63,8 +54,10 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     }
     if(name==='add'||name==='local')return addModel(name==='local');
     const profile=await profiles.get(name);if(!profile)throw new Error('Saved AI not found. Use /switch add or /switch local.');
+    if(localOnly&&!localEndpoint(profile))throw new Error('This saved AI is remote. /local selects an AI on this computer.');
     let apiKey=profile.apiKeyEnv ? process.env[profile.apiKeyEnv] : keys.get(cacheKey(profile));
-    if(!apiKey)apiKey=(await ask('  API key [hidden; Enter for none] › ',true)) || undefined;
+    if(!apiKey)apiKey=await loadCredential(profile);
+    if(!apiKey&&!localEndpoint(profile))apiKey=(await ask('  Cloud API key [hidden; Enter for none] › ',true)) || undefined;
     await activate({...profile,apiKey});note(`Connected configuration: ${profile.name}. API health is confirmed by its next response.`);
   }
   async function endpointModels() {
@@ -77,14 +70,15 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     data.data.slice(0,200).forEach(item=>{if(typeof item.id==='string')note(item.id);});
     if(!data.data.length)note('The endpoint reports no models.');
   }
-  function prepareTurn(text, {consume = true} = {}) {
+  function prepareTurn(text, {consume = true,agentReplayIncluded=false} = {}) {
     const queued=settings.attachments;
     const input=[];
     if(settings.pendingContext)input.push({type:'text',text:settings.pendingContext,text_elements:[]});
+    if(settings.pendingAgentContext&&!agentReplayIncluded)input.push({type:'text',text:settings.pendingAgentContext,text_elements:[]});
     input.push({type:'text',text,text_elements:[]});
     for(const batch of queued)input.push(...batch.inputItems);
     input.push(...settings.skills);
-    if(consume){settings.pendingContext='';settings.attachments=[];settings.skills=[];}
+    if(consume){settings.pendingContext='';settings.pendingAgentContext='';settings.attachments=[];settings.skills=[];}
     return input;
   }
   async function skills(args) {
@@ -196,7 +190,8 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(name==='/model'){
       if(args[0]==='list')await endpointModels();else if(args.length)await activate({...getConnection(),model:args.join(' '),supportedEfforts:undefined,capabilities:undefined,contextWindow:undefined});else note(`Model: ${getConnection().model}; /model list queries this endpoint.`);return true;
     }
-    if(name==='/connect'){await activate(await configure(true));return true;}
+    if(name==='/local'){if(args.length&&args[0]!=='add')await chooseProfile(args.join(' '),{localOnly:true});else await addModel(true);return true;}
+    if(name==='/connect'){await activate(await configure(true,...(args[0]==='local'?[{forceLocal:true}]:[])));return true;}
     if(name==='/effort'){
       if(args[0]==='supported'){const levels=args.slice(1).join(',').split(',').map(value=>value.trim()).filter(Boolean);const selected=validateConnection({...getConnection(),supportedEfforts:levels});await activate(selected);note(`Declared supported effort: ${levels.join(', ')||'none'}. /switch save NAME persists this metadata.`);}
       else if(args.length){const chosen=args[0];settings.effort=validateReasoningEffort(chosen==='default'?undefined:chosen,{supportedEfforts:getConnection().supportedEfforts});if(chosen==='default')await activate(getConnection());note(`Effort: ${settings.effort||'Provider default'}.`);}
@@ -216,9 +211,9 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     }
     if(name==='/attachments'){if(args[0]==='clear'){settings.attachments=[];note('Queued attachments cleared.');}else{for(const batch of settings.attachments)for(const file of batch.files)note(`${file.path} · ${file.bytes} bytes`);if(!settings.attachments.length)note('No queued attachments. /upload FILE_OR_FOLDER queues context for your next prompt.');}return true;}
     if(name==='/handoff'){const exported=await history.exportHandoff({cwd,directory:args[0]?resolve(cwd,args[0]):undefined});note(`Whole-chat handoff: ${exported.markdownPath}`);note(`JSON: ${exported.jsonPath} · ${exported.messageCount} messages`);return true;}
-    if(name==='/history'){if(args[0]==='clear'){history.clear();settings.pendingContext='';note('In-memory export history cleared; already exported files remain.');}else for(const message of history.snapshot().messages)note(`${message.role}${message.model?' ('+message.model+')':''}: ${message.content}`);return true;}
+    if(name==='/history'){if(args[0]==='clear'){history.clear();settings.pendingContext='';settings.pendingAgentContext='';note('In-memory export history cleared; already exported files remain.');}else for(const message of history.snapshot().messages)note(`${message.role}${message.model?' ('+message.model+')':''}: ${message.content}`);return true;}
     if(name==='/compact'){await runCompact();return true;}
-    if(name==='/clear'){await activate(getConnection(),false);settings.pendingContext='';note('Fresh model context. Full-session history remains available to /handoff.');return true;}
+    if(name==='/clear'){await activate(getConnection(),false);settings.pendingContext='';settings.pendingAgentContext='';note('Fresh model context. Full-session history remains available to /handoff.');return true;}
     if(name==='/mcp'){await mcp(args);return true;}
     if(name==='/computer-use'){await computer(args);return true;}
     if(name==='/skills'){await skills(args);return true;}

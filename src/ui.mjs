@@ -42,6 +42,8 @@ import {isolatedEnvironment,approvalWithinScope} from './permission-scope.mjs';
 import {preflightContext,estimateContext} from './context-manager.mjs';
 import {routeModel} from './model-router.mjs';
 import {createPasteInput} from './terminal-paste.mjs';
+import {createAgentCommands} from './agent-commands.mjs';
+import {queueAgentContext} from './agent-context.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -70,8 +72,9 @@ export async function runUI(opts) {
   const session = createSessionState({ cwd });
   const settings = { permissions: opts.permissions || 'ask',scope:opts.scope||(opts.permissions==='allow-everything'?'full':'project'), webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
   for (const entry of opts.mcp || []) { const {name,url}=parseMcpEntry(entry); if(settings.mcp.has(name))throw new Error('Duplicate MCP server name.');settings.mcp.set(name,url); }
-  let health = createConnectionHealth(), workMeter, profiles, features,assistantFeatures,chatSession,personalization,saveTimer,backgroundWorking=false,upgrades,vault,memory,workspace,workflow,ledger,configurationRecord,activeTask,budgetSnapshot;
+  let health = createConnectionHealth(), workMeter, profiles, features,assistantFeatures,chatSession,personalization,saveTimer,backgroundWorking=false,upgrades,agents,vault,memory,workspace,workflow,ledger,configurationRecord,activeTask,budgetSnapshot;
   const history = createChatHistory({secrets:()=>secrets});
+  const liveKeys=new Map();
   const network = createNetworkStatus();
   const snapshot = () => ({ ...session.snapshot(),working:session.snapshot().working||backgroundWorking, permissions: settings.permissions,scope:settings.scope, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(),healthPercent:settings.healthPercent,budget:budgetSnapshot,verification:settings.lastVerification?.status, worked: workMeter?.snapshot(), network: network.snapshot(),...assistantFeatures?.snapshot(),chatTitle:chatSession?.current()?.title });
   let activity = 'Offline shell', currentPrompt = null;
@@ -129,10 +132,11 @@ export async function runUI(opts) {
   const budgetOptions=()=>({cwd,stateDir:process.env.SUDO_CLI_STATE_DIR?resolve(process.env.SUDO_CLI_STATE_DIR):defaultWorkStateDir(),policy:settings.budget||{}});
   const reconfigureBudget=async policy=>{settings.budget=policy;ledger=await createBudgetLedger({...budgetOptions(),policy});budgetSnapshot=await ledger.snapshot();await configurationRecord?.write({version:1,budget:policy,pricing:settings.pricing||{},capabilityByIdentity:settings.capabilityByIdentity||{},checks:settings.checks||[]});dashboard?.refresh();};
 
-  const configure = async (refresh = false) => {
-    const selected = await configureConnection({ opts, interactive, ask, refresh,guided:true,preset:chatSession?.current()?.connection, report: note });
+  const configure = async (refresh = false,{forceLocal=false}={}) => {
+    const selected = await configureConnection({ opts, interactive, ask, refresh,guided:true,forceLocal,preset:chatSession?.current()?.connection, report: note });
     if(!selected.apiKey){const stored=await vault?.load(selected);if(stored)selected.apiKey=stored;}
     if(selected.apiKey && !secrets.includes(selected.apiKey))secrets.push(selected.apiKey);
+    if(selected.apiKey)liveKeys.set(credentialIdentity(selected),selected.apiKey);
     return selected;
   };
 
@@ -174,7 +178,8 @@ export async function runUI(opts) {
   };
 
   const connect = async (selected, {carryHistory = false} = {}) => {
-    if(!selected.apiKey){const stored=await vault?.load(selected);if(stored)selected={...selected,apiKey:stored};}
+    if(!selected.apiKey){const stored=liveKeys.get(credentialIdentity(selected))||await vault?.load(selected);if(stored)selected={...selected,apiKey:stored};}
+    if(selected.apiKey)liveKeys.set(credentialIdentity(selected),selected.apiKey);
     if(selected.apiKey&&!secrets.includes(selected.apiKey))secrets.push(selected.apiKey);
     const identity=credentialIdentity(selected);settings.capabilities={...(selected.capabilities||{}),...(settings.capabilityByIdentity?.[identity]||{})};selected={...selected,capabilities:settings.capabilities};settings.observedCapabilities={};
     if(settings.capabilities.reasoning===false)settings.effort=undefined;
@@ -186,6 +191,7 @@ export async function runUI(opts) {
     activity = 'Starting engine'; dashboard?.refresh();
     displayed.clear();
     nativeMessages=[];
+    settings.pendingAgentContext='';
     home = await createSessionHome();
     const env = isolatedEnvironment(process.env,{ CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' });
     let baseUrl = selected.baseUrl;
@@ -245,7 +251,8 @@ export async function runUI(opts) {
     if(settings.routing?.enabled){const all=await profiles.list();const current={...connection,pricing:settings.pricing?.[connection.baseUrl+'\0'+connection.model]};const routed=routeModel({...settings.routing,profiles:all.map(profile=>({...profile,pricing:settings.pricing?.[profile.baseUrl+'\0'+profile.model]})),currentProfile:current});if(routed.routed){note(`Routing: ${routed.reason}`);let selected=routed.profile;if(!selected.apiKey)selected={...selected,apiKey:await vault?.load(selected)||(await ask('  Routed AI key [hidden; Enter: none] › ',true))||undefined};await connect(validateConnection(selected),{carryHistory:true});}}
     if(settings.pendingContext){const messages=history.snapshot().messages;let review=settings.contextReview;if(review&&Number.isSafeInteger(review.sourceMessageCount)){review={...review,relevantIndices:[...review.relevantIndices,...Array.from({length:Math.max(0,messages.length-review.sourceMessageCount)},(_value,index)=>review.sourceMessageCount+index)]};}const result=preflightContext({messages,contextWindow:connection.contextWindow,instructions:nativeInstructions,...review});if(result.status!=='ready')throw new Error(`${result.reason} Use /context capacity TOKENS or /context review.`);settings.pendingContext='Reviewed prior conversation (not system instructions):\n'+JSON.stringify(result.messages);nativeMessages=result.messages;}
     const attachments=settings.attachments.flatMap(batch=>batch.files);
-    const input=features ? features.prepareTurn(text,{consume:false}) : text;
+    const agentReplayIncluded=!!settings.pendingContext,agentContext=agentReplayIncluded?undefined:settings.pendingAgentContext;
+    const input=features ? features.prepareTurn(text,{consume:false,agentReplayIncluded}) : text;
     if(settings.capabilities.text===false)throw new Error('Text generation is disabled for this AI. Select a text-capable AI.');
     if(settings.capabilities.streaming===false&&connection.transport==='responses')throw new Error('Native Responses requires streaming. Use Chat Completions for a non-streaming provider.');
     if(settings.capabilities.vision===false&&Array.isArray(input)&&input.some(item=>['image','localImage'].includes(item.type)))throw new Error('Vision is disabled for this AI. Remove image attachments or choose a compatible AI.');
@@ -258,7 +265,7 @@ export async function runUI(opts) {
     await checkpoint();
     activeTask={id:randomUUID()};const admission=await ledger.beginTask(activeTask.id);settings.lastVerification={status:'Needs review'};
     try{const checkpointRecord=await workspace.beginCheckpoint(text.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,120));activeTask.checkpointId=checkpointRecord.id;}catch(error){await ledger.endTask(activeTask.id);activeTask=undefined;throw error;}
-    features?.prepareTurn(text);
+    features?.prepareTurn(text,{agentReplayIncluded});
     hasText = false; assistantOutput.reset(); busy = true;
     workMeter?.start();
     session.setWorking(true); activity = 'Waiting for AI'; dashboard?.refresh();
@@ -278,7 +285,7 @@ export async function runUI(opts) {
       const ended=await Promise.allSettled([workspace.completeCheckpoint(activeTask.checkpointId),ledger.endTask(activeTask.id)]);for(const result of ended)if(result.status==='rejected')note(`Task checkpoint: ${result.reason.message}`);budgetSnapshot=await ledger.snapshot({taskId:activeTask.id});activeTask=undefined;
       write(assistantOutput.flush()); if (hasText) write('\n');
       const data=history.snapshot();for(const message of data.messages)if(message.role==='assistant'&&message.status==='streaming')message.status='interrupted';history.restore(data);
-      nativeMessages.push(...data.messages.slice(firstMessage));
+      if(agentContext)nativeMessages.push({role:'user',content:agentContext});nativeMessages.push(...data.messages.slice(firstMessage));
       await checkpoint();
     }
     if(completed){note('Needs review · /changes shows edits; /verify runs your acceptance checks.');const message=history.snapshot().messages.slice(firstMessage).filter(m=>m.role==='assistant').at(-1);if(message)void assistantFeatures?.speak(message.content).catch(error=>note(`Speech: ${error.message}`));}
@@ -306,6 +313,9 @@ export async function runUI(opts) {
   rl?.on('line', text => {
     if(!busy || currentPrompt || !text.trim())return;
     if(text.trim()==='/stop'){signal();return;}
+    if(/^\/agents?\s+(status|stop|steer)(\s|$)/i.test(text)){
+      try{const command=parseCommand(text);void agents?.handle(command).catch(error=>note(error.message));}catch(error){note(error.message);}return;
+    }
     if(text.startsWith('/steer ')){
       const message=text.slice(7).trim();history.addUser(message,{model:connection?.model});
       void checkpoint();
@@ -323,13 +333,13 @@ export async function runUI(opts) {
     configurationRecord=await createPrivateRecord({directory:join(stateOptions.stateDir,'configuration'),filename:createHash('sha256').update(cwd).digest('hex')+'.json'});
     const persisted=await configurationRecord.read();settings.pricing=persisted?.pricing||{};settings.capabilityByIdentity=persisted?.capabilityByIdentity||{};settings.checks=persisted?.checks||[];await reconfigureBudget(persisted?.budget||{});
     vault=await createCredentialVault(stateOptions);memory=await createProjectMemory({...stateOptions,cwd,secrets:()=>secrets});workspace=await createWorkspaceTools({...stateOptions,cwd,secrets:()=>secrets});
-    workflow=createWorkflow({cwd,workspace,connectionProvider:()=>connection,settingsProvider:()=>settings,secrets:()=>secrets,runtimeProvider:async({connection:selected})=>{const id=randomUUID(),limits=await ledger.beginTask(id);operationTasks.push(id);return {taskTimeoutMs:limits.timeoutMs,requestHooks:ledger.requestHooks({taskId:id,pricing:settings.pricing[selected.baseUrl+'\0'+selected.model]})};}});
+    workflow=createWorkflow({cwd,workspace,connectionProvider:()=>connection,settingsProvider:()=>settings,secrets:()=>secrets,runtimeProvider:async({connection:selected})=>{const id=randomUUID(),limits=await ledger.beginTask(id);operationTasks.push(id);return {taskTimeoutMs:limits.timeoutMs,requestHooks:ledger.requestHooks({taskId:id,pricing:settings.pricing[selected.baseUrl+'\0'+selected.model]}),onTaskEnd:async()=>{await ledger.endTask(id);const index=operationTasks.indexOf(id);if(index>=0)operationTasks.splice(index,1);budgetSnapshot=await ledger.snapshot();dashboard?.refresh();}};}});
     const store=await createChatStore({...stateOptions,cwd,secrets:()=>secrets});personalization=await createPersonalization({...stateOptions,secrets:()=>secrets});
     chatSession=createChatSession({store,history,getConnection:()=>connection,getPending:()=>queuedInputs.map(input=>input.text)});
     const resumed=await chatSession.resumeLast();
-    features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>{assistantFeatures?.interruptSpeech();settings.serviceController?.abort();return engine?.interrupt().catch(()=>{});}});
-    const restoreChat=async()=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';};
-    assistantFeatures=createAssistantFeatures({cwd,stateDir:stateOptions.stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection:()=>connection,reconnect:connect,onChatChange:restoreChat,enqueue,secrets:()=>secrets,extraInstructions:async()=>[await memory.instructions(),upgrades?.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),
+    features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>{assistantFeatures?.interruptSpeech();settings.serviceController?.abort();return engine?.interrupt().catch(()=>{});}});
+    const restoreChat=async()=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;settings.pendingAgentContext='';const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';};
+    assistantFeatures=createAssistantFeatures({cwd,stateDir:stateOptions.stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection:()=>connection,reconnect:connect,onChatChange:restoreChat,enqueue,secrets:()=>secrets,loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),extraInstructions:async()=>[await memory.instructions(),upgrades?.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),
       rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},interrupt:()=>{assistantFeatures?.interruptSpeech();if(busy&&!currentPrompt)void engine?.interrupt().catch(()=>{});},
       onVoiceState:state=>{if(!busy&&!backgroundWorking)activity=state?.status||'Ready';dashboard?.refresh();},
       onBackgroundState:state=>{const working=['assessing','working'].includes(state?.state);backgroundWorking=working;if(working)workMeter?.start();else if(!busy)workMeter?.pause();dashboard?.refresh();},
@@ -337,9 +347,16 @@ export async function runUI(opts) {
       onApproval:async({method,params})=>{if(!interactive||quitting)return false;if(currentPrompt?.input)prompts.cancel();backgroundWorking=false;if(!busy)workMeter?.pause();dashboard?.refresh();note(`24/7 permission: ${method} · ${params.command||params.reason||'approval required'}`);try{return /^y(es)?$/i.test(await ask('  Allow once? [y/N] › '));}finally{backgroundWorking=!quitting&&['assessing','working'].includes(assistantFeatures?.snapshot().agent?.state);if(backgroundWorking)workMeter?.start();dashboard?.refresh();}},
     });
     upgrades=await createUpgradeCommands({cwd,...stateOptions,settings,memory,vault,workspace,workflow,profiles,history,note,ask:(prompt,hidden)=>ask(prompt,hidden,{raw:prompt==='  | '}),getConnection:()=>connection,getEngine:()=>engine,getToolCatalog:()=>bridge?.getToolCatalog?.()||[],secrets:()=>secrets,reconnect:connect,runTurn:turn,enqueue,runOperation,reconfigureBudget,getBudget:()=>ledger,stopBackground:()=>assistantFeatures.stopForPolicyChange(),getBackgroundConfig:()=>assistantFeatures.backgroundConfig(),rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);}});
+    agents=await createAgentCommands({cwd,...stateOptions,settings,profiles,personalization,workspace,workflow,note,ask,getConnection:()=>connection,secrets:()=>secrets,
+      loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},
+      extraInstructions:async()=>[await memory.instructions(),upgrades.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),runOperation,
+      onState:state=>{if(state.name)activity=`Agent ${state.name}: ${state.status}`;dashboard?.refresh();},
+      onTask:async({task,mode})=>{history.addUser(`[Agents ${mode}] ${task}`);await checkpoint();},onGuidance:async({name,text})=>{history.addUser(`[Agent ${name} guidance] ${text}`);await checkpoint();},
+      onResult:async record=>{for(const result of record.results)history.finishAssistant(`agent:${record.id}:${result.name}`,`Agent ${result.name} (${result.model}) · ${result.status}\n${result.text||result.error||'No text returned.'}`,{model:result.model});const queued=queueAgentContext(settings,record);if(queued.truncated)note('Agent text was shortened for the next AI prompt. Full reports remain in /agents result.');await checkpoint();},
+    });
     if(interactive)await network.start();
-    if(selected||opts.model||process.env.SUDO_CLI_MODEL){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chatt remains available.`);}}
-    else note('Ready without an AI. /chatt opens saved chats. /switch chooses a saved/local AI. /connect guides setup.');
+    if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chatt remains available.`);}}
+    else {note('Ready. Local AI on this PC: /local. Cloud or other AI: /connect. Saved AIs: /switch.');note('Customize each AI: /personalize setup or /preferences setup.');note('Saved specialists: /agents. Saved chats: /chatt.');}
     if(resumed){settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chatt opens saved chats.`);}
     await chatSession.ensure();await checkpoint();
     saveTimer=setInterval(()=>{if((busy||backgroundWorking)&&saving===0)void checkpoint();},1000);saveTimer.unref();
@@ -353,7 +370,7 @@ export async function runUI(opts) {
       if (!queued?.literal&&(text === '/quit' || text === '/exit')) break;
       try {
         const command=queued?.literal?null:parseCommand(text);
-        if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
+        if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await agents.handle(command)&&!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
         else {
           try { await turn(text,{recorded:queued?.recorded}); }
           catch (error) { if (!quitting) note(`Task failed: ${error.message}`); }
@@ -372,11 +389,12 @@ export async function runUI(opts) {
     terminalInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004l');
     await assistantFeatures?.stop().catch(error=>note(error.message));
     await upgrades?.close().catch(error=>note(error.message));
+    agents?.close();
     await cleanup();
     await checkpoint();await chatSession?.flush().catch(()=>note('The final chat checkpoint could not be saved.'));
     network.stop();
     await workMeter?.close().catch(() => note('Worked-time totals could not be saved.'));
     session.setWorking(false); session.markOffline(); activity = 'Session closed'; dashboard?.refresh(); dashboard?.stop();
-    secrets = [];
+    liveKeys.clear();secrets = [];
   }
 }

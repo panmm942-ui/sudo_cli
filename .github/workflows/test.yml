@@ -58,6 +58,9 @@ jobs:
       - name: Test Unix root admission, real engine and local fixtures
         if: runner.os != 'Windows'
         run: sudo -E "$(command -v node)" --test --test-concurrency=4
-      - name: Exercise actual Linux PTY acceptance with loopback provider
+      - name: Exercise broad native Linux terminal regression
         if: runner.os == 'Linux'
-        run: sudo -E python3 -B test/manual/verify-v0.6-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6-terminal-proof"
+        run: sudo -E python3 -B test/manual/verify-v0.6-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.1-regression-proof"
+      - name: Exercise native Linux local AI and agent acceptance
+        if: runner.os == 'Linux'
+        run: sudo -E python3 -B test/manual/verify-v0.6.1-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.1-terminal-proof"
