@@ -1,8 +1,10 @@
-# Verification — sudo cli 0.1.0
+# Verification — sudo cli 0.2.0
 
-Verified on Windows x64, October 7, 2026, using the included Node.js 24.19.0 and Codex 0.160.1 runtime.
+Verified on Windows x64 and native Linux x64 in an existing WSL2 distribution, October 7, 2026, using Node.js 24.19.0 and Codex 0.160.1.
 
-`runtime/node.exe --test`: **87 tests passed**, zero failed, cancelled, or skipped.
+Windows `node --test`: **120 passed**, 1 Unix-only test skipped, zero failed or cancelled, 121 total.
+
+Linux `node --test`: **118 passed**, 3 Windows-only tests skipped, zero failed or cancelled, 121 total. It uses the project-local installed native ELF engine, without the user's unrelated Codex shell wrapper. Its three real-engine integration checks pass. macOS and arm64 runtime mappings are tested; native execution on those systems is pending. `.github/workflows/test.yml` supplies Ubuntu/Windows/macOS native CI checks.
 
 The suite covers the localhost HTTP bridge, native process protocol, settings validation, isolated-home cleanup, launch behavior, serialized and cancellable readline prompts, the connection wizard, and streamed output sanitization. It also runs three integrations through the real Codex engine:
 
@@ -12,7 +14,9 @@ The suite covers the localhost HTTP bridge, native process protocol, settings va
 
 `sudo-cli.cmd doctor` reports Node 24.19.0 and `codex-cli 0.160.1`, without calling a model. Both Windows launchers return the branded version.
 
-Manual terminal checks: custom banner; hidden key entry without echo; `/connect` asks for new settings despite launch flags; invalid wizard input is reported and retried; idle Ctrl+C exits after a real engine connection.
+Terminal checks: large ASCII banner and all requested header fields; live clock; green Working and Online; red Not working; actual context occupancy; hidden credentials during clock updates and resize; partial typed input preserved across 132-to-78-to-132 column changes; `/connect` asks for new settings despite launch flags; invalid wizard input is reported and retried; idle Ctrl+C and `/quit` restore terminal scrolling and exit cleanly.
+
+The Windows and Linux installers were also executed against the official release. Pinned archive digests passed, native helpers were retained, doctor passed, and repeat installation reused the existing local Linux runtime. The 0.2 Windows portable archive uses the full native release package, including its bundled search and sandbox resources.
 
 Review corrections were independently identified and then covered by regressions. Generation fixtures run on localhost; no live Kimi/MiMo/GLM endpoint, paid API, third-party MCP service, or training system was used. Compatibility with a specific cloud model requires a subsequent live connection check.
 

@@ -19,7 +19,7 @@ test('branded help works without connecting a model or modifying app settings', 
 test('version works with no runtime installed', () => {
   const result = run(['--version'], { SUDO_CLI_CODEX: 'missing-runtime' });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /0\.1\.0/);
+  assert.match(result.stdout, /0\.2\.0/);
 });
 
 test('missing settings in noninteractive mode are actionable and do not initiate a model request', () => {

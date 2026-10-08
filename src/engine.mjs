@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { VERSION } from './version.mjs';
 
 const MAX_LINE_CHARS = 8 * 1024 * 1024;
 const isTurn = (turn) => typeof turn?.id === 'string' && turn.id.length > 0 && Array.isArray(turn.items)
@@ -150,7 +151,7 @@ export async function createEngine({
 
   try {
     await request('initialize', {
-      clientInfo: { name: 'sudo_cli', title: 'sudo', version: '0.1.0' },
+      clientInfo: { name: 'sudo_cli', title: 'sudo', version: VERSION },
       capabilities: { experimentalApi: true, explicitGatewayOauth: true },
     });
     send({ method: 'initialized', params: {} });

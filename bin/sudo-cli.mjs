@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { VERSION } from '../src/version.mjs';
 
-const VERSION = '0.1.0';
 const HELP = `sudo cli ${VERSION}
 Your terminal. Your model. Powered by the open-source Codex engine.
 

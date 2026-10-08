@@ -2,13 +2,26 @@
 
 Your terminal. Your model.
 
-**sudo cli 0.1.0** is a separate terminal interface built on the open-source Codex engine. Choose the cloud or self-hosted model while the program runs. Model settings and API keys stay in the current session; you do not edit a configuration file.
+**sudo cli 0.2.0** is a terminal-only coding assistant built on the open-source Codex engine. Choose the cloud or self-hosted model while the program runs. Model settings and API keys stay in the current session; you do not edit a configuration file. There is no desktop window or web interface.
 
-This Windows x64 bundle includes Node.js and the Codex engine. It does not install extensions, change the ChatGPT/Codex desktop app, alter its configuration, or reuse its login.
+The frontend supports **Windows, Linux, and macOS** on x64 or arm64 with the matching native engine. The Windows x64 portable bundle includes Node.js and Codex. The cross-platform source bundle includes a local installer for the other runtimes. It does not change the ChatGPT/Codex desktop app, alter its configuration, or reuse its login.
 
-The separately supplied source-only ZIP omits executable runtimes. To use that version, supply Node.js 22+ and a compatible Codex engine on PATH or through `SUDO_CLI_CODEX`.
+The separately supplied cross-platform ZIP omits executable runtimes. It requires Node.js 22+. Install the matching engine locally with `node scripts/setup-runtime.mjs`; no global installation or configuration editing is needed. See the [platform guide](docs/platforms.md).
 
-## Start
+## Linux and macOS
+
+Extract the cross-platform ZIP and open a terminal in its `sudo-cli` folder:
+
+```sh
+node scripts/setup-runtime.mjs
+sh ./sudo cli
+```
+
+The setup script detects OS/architecture and downloads the pinned, SHA-256-verified official Codex runtime. It writes only into this project's runtime directory. `sh ./sudo-cli doctor` checks the runtime. `chmod +x sudo sudo-cli` enables `./sudo cli` directly.
+
+Windows and native Linux execution are verified. macOS runtime selection and installer behavior are covered by automated tests; execution on a Mac is still pending. A three-OS CI workflow is included for that native check when this source is placed in a GitHub repository.
+
+## Windows
 
 Extract the portable ZIP, open PowerShell in the `sudo-cli` folder, and run:
 
@@ -31,6 +44,20 @@ For a coding project, choose its directory:
 The wizard asks for a model ID, API base URL, API format, and a hidden API key. Use the provider's exact model ID and base URL, commonly ending in `/v1`. Select Chat Completions for a compatible `/chat/completions` endpoint, or Responses for a compatible `/responses` endpoint. Leave the key empty for an unauthenticated local server. Invalid wizard fields are explained and asked again.
 
 No model is preselected. Kimi, MiMo, GLM, and other providers can be configured later when you have their endpoint and model ID. Their live endpoints and model-specific behavior have not been tested in this build.
+
+## Terminal dashboard
+
+A large `SUDO CLI` ASCII banner sits beside these live fields:
+
+- **Time:** local date, clock, and timezone, updated each second.
+- **Software System:** detected Windows, Linux, or macOS and architecture.
+- **Working:** green `Working` during an AI turn and its tools; red `Not working` when idle.
+- **Status:** green `Online` after an actual API response; red `Offline` before confirmation or after a connection/authentication failure. Initial setup is explicitly marked `not checked`.
+- **Connected AI:** the confirmed model ID, or `No AI connected`.
+- **Context:** percentage and tokens used/available from the engine's latest token report. Unknown values stay unknown. `~` indicates the last reported context, which can exclude later local tool results. This is context occupancy, not cumulative billing usage.
+- **Activity** and **Project:** current action and working directory name.
+
+The header stays above the scrolling conversation in supported terminals. It uses cyan for the banner, muted labels, and green/red state values. `NO_COLOR=1` disables colors. Narrow terminals stack the details; very small or legacy terminals show a plain header and state updates. No live header or terminal escape sequences are added to `--once` response output.
 
 ## During a session
 
@@ -79,7 +106,7 @@ These are illustrative URLs: you must run or have access to those tool servers. 
 
 The custom frontend in `bin/` and `src/` starts a private `codex --no-daemon app-server --listen stdio://` process and uses its JSON-RPC protocol. Codex provides the agent loop, project tools, execution approvals, MCP integration, and context handling. The frontend supplies its own screen, runtime wizard, and API compatibility bridge.
 
-The bundle uses the existing official Codex **0.160.1** executable, copied into this project's `runtime/` directory. Its matching complete open-source snapshot is included as [`upstream/codex-rust-v0.160.1-source.zip`](upstream/codex-rust-v0.160.1-source.zip), from tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. The Rust engine is unchanged and was not recompiled for this build. The new interface builds on its public app-server layer. See [OpenAI's source repository](https://github.com/openai/codex/tree/rust-v0.160.1) for the engine's build instructions.
+The bundle uses the official native Codex **0.160.1** release package in `runtime/win32-x64/`. Linux and macOS setup obtains the matching native package. The complete open-source snapshot is included as [`upstream/codex-rust-v0.160.1-source.zip`](upstream/codex-rust-v0.160.1-source.zip), from tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. The Rust engine is unchanged and was not recompiled for this build. The new interface builds on its public app-server layer. See [OpenAI's source repository](https://github.com/openai/codex/tree/rust-v0.160.1) for the engine's build instructions.
 
 A temporary, empty `CODEX_HOME` isolates every session from desktop settings and authentication. The frontend passes settings for that process only and requires an ephemeral thread. It removes the temporary home when the UI exits, including idle Ctrl+C or stdin closure. Interrupting a task keeps the current session available. The engine may create transient runtime files there. Abrupt process termination or power loss can leave that temporary directory behind; conversation resume and saved profiles are not implemented in this version.
 
@@ -96,6 +123,6 @@ No npm packages are needed. With the included runtime:
 .\runtime\node.exe bin\sudo-cli.mjs doctor
 ```
 
-Tests exercise actual HTTP servers, spawned protocol processes, interruption and permission handling, streamed secret redaction, runtime setup, and the real Codex engine. The external model boundary is replaced by a deterministic localhost fixture; integration checks include a real workspace file write and native Responses streaming. No paid API was used.
+Tests exercise actual HTTP servers, spawned protocol processes, interruption and permission handling, streamed secret redaction, runtime setup, dashboard rendering, context reports, OS/architecture selection, and the real Codex engine. The external model boundary is replaced by a deterministic localhost fixture; integration checks include a real workspace file write and native Responses streaming. A Linux PTY check also verifies clock updates, state colors, hidden key entry during resizing, and typed-input preservation. No paid API was used.
 
 See [`docs/verification.md`](docs/verification.md) for the final results, [`runtime/manifest.json`](runtime/manifest.json) for binary hashes, and [`THIRD_PARTY.md`](THIRD_PARTY.md) for licensing.

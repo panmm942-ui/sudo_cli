@@ -1,0 +1,130 @@
+import { stripVTControlCharacters } from 'node:util';
+import { basename } from 'node:path';
+import { VERSION } from './version.mjs';
+
+const LOGO = [
+  ' ____  _   _ ____   ___      ____ _     ___ ',
+  '/ ___|| | | |  _ \\ / _ \\    / ___| |   |_ _|',
+  '\\___ \\| | | | | | | | | |  | |   | |    | | ',
+  ' ___) | |_| | |_| | |_| |  | |___| |___ | | ',
+  '|____/ \\___/|____/ \\___/    \\____|_____|___|',
+];
+const clean = value => stripVTControlCharacters(String(value ?? '')).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '').replace(/[\r\n\t]/g, ' ');
+const cellWidth = character => {
+  const code = character.codePointAt(0);
+  if (/\p{Mark}/u.test(character)) return 0;
+  return (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe6f) || (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1f300 && code <= 0x1faff) || code >= 0x20000)) ? 2 : 1;
+};
+const width = value => [...clean(value)].reduce((count, character) => count + cellWidth(character), 0);
+function fit(value, columns) {
+  const plain = clean(value);
+  if (width(plain) <= columns) return plain;
+  let result = '', count = 0;
+  for (const character of plain) { const cells = cellWidth(character); if (count + cells > Math.max(0, columns - 1)) break; result += character; count += cells; }
+  return columns > 0 ? result + '~' : '';
+}
+
+export function describeSystem({ platform = process.platform, arch = process.arch } = {}) {
+  return `${({ win32: 'Windows', linux: 'Linux', darwin: 'macOS' })[platform] || platform} (${arch})`;
+}
+
+function clock(date, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short', numberingSystem: 'latn' }).formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${parts.timeZoneName}`;
+}
+
+function contextText(context, columns) {
+  if (context?.used == null) return context?.limit ? `Unknown / ${context.limit.toLocaleString('en-US')} tokens` : 'Unknown';
+  const percentage = context.percent == null ? '?%' : `~${context.percent}%`;
+  const numeric = value => value == null ? 'unknown' : value.toLocaleString('en-US');
+  const full = `${percentage} ${numeric(context.used)}/${numeric(context.limit)} tokens`;
+  if (full.length <= columns) return full;
+  const compact = value => value == null ? '?' : new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+  return `${percentage} ${compact(context.used)}/${compact(context.limit)} tokens`;
+}
+
+export function renderDashboard({ state, columns = 100, rows = 24, color = false, now = new Date(), timeZone, platform = process.platform, arch = process.arch, activity = 'Idle' }) {
+  columns = Math.max(20, Math.floor(columns || 80)); rows = Math.max(1, Math.floor(rows || 24));
+  const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
+  const logoWidth = Math.max(...LOGO.map(line => line.length));
+  const beside = columns >= logoWidth + 36;
+  const available = beside ? columns - logoWidth - 3 : columns;
+  const field = (label, value, code = 37) => paint(90, `${label}: `) + paint(code, fit(value, Math.max(0, available - label.length - 2)));
+  const pending = state.connectionState === 'pending' ? ' (not checked)' : '';
+  const fields = [
+    field('Time', clock(now, timeZone)),
+    field('Software System', describeSystem({ platform, arch })),
+    field('Working', state.working ? 'Working' : 'Not working', state.working ? 32 : 31),
+    field('Status', state.status + pending, state.status === 'Online' ? 32 : 31),
+    field('Connected AI', state.connectedAI || 'No AI connected'),
+    field('Context', contextText(state.context, available - 9)),
+    field('Activity', activity),
+    field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
+  ];
+  let lines;
+  if (beside) lines = fields.map((right, index) => paint(36, (LOGO[index] || '').padEnd(logoWidth)) + '   ' + right);
+  else if (rows >= 21) lines = [...LOGO.map(line => paint(36, fit(line, columns))), '', ...fields];
+  else lines = [paint(36, 'SUDO CLI'), ...fields];
+  lines.push(paint(90, fit(`v${VERSION} | /help | Ctrl+C interrupts | Context: last reported`, columns)), paint(90, '-'.repeat(columns)));
+  return { lines, height: lines.length, sticky: rows - lines.length >= 4 };
+}
+
+/** A terminal-only header. It never reads or redraws secret input. */
+export function createDashboard({ output = process.stdout, snapshot, now = () => new Date(), timeZone, platform, arch, activity = () => 'Idle', color = output.isTTY && !process.env.NO_COLOR, env = process.env, tickMs = 1000, onResize = () => {} }) {
+  let started = false, sticky = false, height = 0, last = '', timer, body = '';
+  const view = () => renderDashboard({ state: snapshot(), columns: output.columns || 80, rows: output.rows || 24, color: color && !!output.isTTY && env.TERM !== 'dumb', now: now(), timeZone, platform, arch, activity: activity() });
+  const draw = (lines) => lines.map((line, index) => `\x1b[${index + 1};1H\x1b[2K${line}`).join('');
+  function resize() {
+    if (!started) return;
+    const previousSticky = sticky;
+    const current = view();
+    sticky = !!output.isTTY && env.TERM !== 'dumb' && current.sticky;
+    height = current.height; last = current.lines.join('\n');
+    if (sticky) {
+      output.write(`\x1b[r\x1b[2J\x1b[H${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r\x1b[${height + 1};1H`);
+      const lines = stripVTControlCharacters(body).split('\n');
+      const tail = [];
+      for (const line of lines) {
+        let piece = '', size = 0;
+        for (const character of line) { const cells = cellWidth(character); if (size + cells >= (output.columns || 80)) { tail.push(piece); piece = ''; size = 0; } piece += character; size += cells; }
+        tail.push(piece);
+      }
+      const visible = tail.slice(-Math.max(1, (output.rows || 24) - height - 3)).join('\n');
+      if (visible) output.write(visible + '\n');
+      onResize();
+    } else { output.write((previousSticky ? '\x1b[r' : '') + last + '\n'); onResize(); }
+  }
+  function refresh() {
+    if (!started) return;
+    const current = view(), next = current.lines.join('\n');
+    if (!sticky) {
+      // Legacy/tiny terminals get state changes without per-second output spam.
+      const withoutTime = lines => lines.split('\n').filter(line => !stripVTControlCharacters(line).startsWith('Time:')).join('\n');
+      if (withoutTime(next) !== withoutTime(last)) { last = next; output.write('\n' + next + '\n'); }
+      return;
+    }
+    if (current.height !== height) return resize();
+    if (next === last) return;
+    last = next;
+    output.write(`\x1b7${draw(current.lines)}\x1b8`);
+  }
+  return {
+    start() {
+      if (started) return;
+      started = true;
+      const current = view(); height = current.height; last = current.lines.join('\n');
+      sticky = !!output.isTTY && env.TERM !== 'dumb' && current.sticky;
+      if (sticky) output.write(`\x1b[2J\x1b[H${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r\x1b[${height + 1};1H`);
+      else output.write(last + '\n');
+      output.on?.('resize', resize);
+      if (output.isTTY && env.TERM !== 'dumb' && tickMs > 0) { timer = setInterval(refresh, tickMs); timer.unref?.(); }
+    },
+    refresh,
+    write(text) { const value = String(text); body = (body + value).slice(-65536); output.write(value); },
+    stop() {
+      if (!started) return;
+      started = false; clearInterval(timer); output.removeListener?.('resize', resize);
+      if (sticky) output.write(`\x1b[r\x1b[0m\x1b[${output.rows || 24};1H\n`);
+    },
+  };
+}

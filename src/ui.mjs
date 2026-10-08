@@ -10,15 +10,16 @@ import { localCodex } from './local-engine.mjs';
 import { createPromptQueue } from './prompts.mjs';
 import { configureConnection } from './wizard.mjs';
 import { createRedactor } from './redactor.mjs';
+import { createDashboard } from './dashboard.mjs';
+import { createSessionState } from './session-state.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
   const interactive = !!process.stdin.isTTY && !once;
-  const color = process.stdout.isTTY && !process.env.NO_COLOR;
+  const color = process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb';
   const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
   const cyan = (s) => paint('96', s);
   const dim = (s) => paint('90', s);
-  const bold = (s) => paint('1', s);
   let secrets = [];
   const assistantOutput = createRedactor({ secrets: () => secrets });
   const safe = (value) => {
@@ -26,33 +27,40 @@ export async function runUI(opts) {
     for (const key of secrets) if (key) text = text.split(key).join('[redacted]');
     return text;
   };
-  const note = (text) => (once ? process.stderr : process.stdout).write(`${dim('  ·')} ${safe(text)}\n`);
+  let dashboard;
+  const write = text => dashboard ? dashboard.write(text) : process.stdout.write(text);
+  const note = (text) => {
+    const message = `${dim('  ·')} ${safe(text)}\n`;
+    if (once) process.stderr.write(message); else write(message);
+  };
   const cwd = resolve(opts.cwd || process.cwd());
   if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Error('Project directory does not exist. Choose a directory with --cwd.');
+  const session = createSessionState({ cwd });
+  let activity = 'Configure connection', currentPrompt = null;
 
   let muted = false;
   const output = new Writable({ write(chunk, encoding, done) { if (!muted) process.stdout.write(chunk, encoding); done(); } });
   output.isTTY = process.stdout.isTTY;
-  output.columns = process.stdout.columns;
+  Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
   const rl = interactive ? createInterface({ input: process.stdin, output, terminal: true }) : null;
   const prompts = createPromptQueue({ question: async (prompt, { signal, hidden }) => {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudo-cli in an interactive terminal.');
+    currentPrompt = { prompt, hidden };
     if (hidden) { process.stdout.write(prompt); muted = true; }
     try { return (await rl.question(hidden ? '' : prompt, { signal })).trim(); }
-    finally { if (hidden) { muted = false; process.stdout.write('\n'); } }
+    finally { if (hidden) { muted = false; process.stdout.write('\n'); } currentPrompt = null; }
   } });
   const ask = (prompt, hidden = false) => prompts.ask(cyan(prompt), hidden);
 
   let engine, bridge, home, connection, busy = false, quitting = false, hasText = false;
   const displayed = new Set();
-  const banner = () => {
-    process.stdout.write(`\n${cyan('  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓')}\n`);
-    process.stdout.write(`${cyan('  ┃')}  ${bold('sudo cli')} ${dim('0.1.0')}                             ${cyan('┃')}\n`);
-    process.stdout.write(`${cyan('  ┃')}  ${dim('Your terminal. Your model.')}                      ${cyan('┃')}\n`);
-    process.stdout.write(`${cyan('  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛')}\n\n`);
-    note(`Project: ${cwd}`);
-    note('Runtime setup only · workspace permissions · /help for commands');
-  };
+  if (interactive) dashboard = createDashboard({ snapshot: () => session.snapshot(), activity: () => activity, color,
+    onResize: () => {
+      if (!currentPrompt || !rl) return;
+      if (currentPrompt.hidden) process.stdout.write(currentPrompt.prompt);
+      else rl.prompt(true);
+    },
+  });
 
   const configure = async (refresh = false) => {
     const selected = await configureConnection({ opts, interactive, ask, refresh, report: note });
@@ -61,21 +69,25 @@ export async function runUI(opts) {
   };
 
   const event = ({ method, params = {} }) => {
+    session.applyEvent({ method, params });
+    dashboard?.refresh();
     if (method === 'item/agentMessage/delta') {
-      if (!hasText && !once) process.stdout.write(`\n${cyan('  sudo')}\n`);
+      if (!hasText && !once) write(`\n${cyan('  sudo')}\n`);
       hasText = true;
       displayed.add(params.itemId);
-      process.stdout.write(assistantOutput.write(params.delta));
+      write(assistantOutput.write(params.delta));
     } else if (method === 'item/completed' && params.item?.type === 'agentMessage') {
       if (!displayed.has(params.item.id)) {
-        if (!hasText && !once) process.stdout.write(`\n${cyan('  sudo')}\n`);
+        if (!hasText && !once) write(`\n${cyan('  sudo')}\n`);
         hasText = true;
         displayed.add(params.item.id);
-        process.stdout.write(assistantOutput.write(params.item.text));
+        write(assistantOutput.write(params.item.text));
       }
-      process.stdout.write(assistantOutput.flush() + '\n');
+      write(assistantOutput.flush() + '\n');
     } else if (method === 'item/started') {
       const item = params.item || {};
+      activity = ({ commandExecution: 'Running command', fileChange: 'Editing files', mcpToolCall: 'Using a tool', contextCompaction: 'Compacting context' })[item.type] || activity;
+      dashboard?.refresh();
       if (item.type === 'commandExecution') note(`Running: ${item.command || 'terminal command'}`);
       else if (item.type === 'fileChange') note(`Editing: ${item.changes?.map(change => change.path).join(', ') || 'workspace files'}`);
       else if (item.type === 'mcpToolCall') note(`Tool: ${item.server || ''}/${item.tool || ''}`);
@@ -91,6 +103,8 @@ export async function runUI(opts) {
 
   const connect = async (selected) => {
     await cleanup();
+    session.updateConnection(selected);
+    activity = 'Starting engine'; dashboard?.refresh();
     displayed.clear();
     home = await createSessionHome();
     const env = { ...process.env, CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' };
@@ -112,27 +126,37 @@ export async function runUI(opts) {
     engine = await createEngine({ codexPath: localCodex(), cwd, model: selected.model, providerArgs: args, env, onEvent: event,
       onApproval: async ({ method, params }) => {
         if (!interactive) return false;
+        activity = 'Waiting for permission'; dashboard?.refresh();
         note(`Permission requested: ${method}`);
         note(params.command || params.reason || 'This action needs your permission.');
         if (params.cwd) note(`Directory: ${params.cwd}`);
         if (params.grantRoot) note(`Requested write access: ${params.grantRoot}`);
         if (params.fileChanges) note(`Files: ${Object.keys(params.fileChanges).join(', ')}`);
         if (params.permissions) note(`Requested permissions: ${JSON.stringify(params.permissions)}`);
-        return /^y(es)?$/i.test(await ask(cyan('  Allow once? [y/N] › ')));
+        try { return /^y(es)?$/i.test(await ask(cyan('  Allow once? [y/N] › '))); }
+        finally { activity = 'Working'; dashboard?.refresh(); }
       },
     });
     connection = selected;
+    session.bindThread(engine.threadId);
+    activity = 'Ready'; dashboard?.refresh();
     if (!once) {
-      note(`Connected: ${selected.model} · ${new URL(selected.baseUrl).host}`);
+      note(`Configured: ${selected.model} · ${new URL(selected.baseUrl).host}. API status is confirmed by its first response.`);
       note('Enter a task. /model changes the model; /connect starts a new connection.');
     }
   };
 
   const turn = async (text) => {
     hasText = false; assistantOutput.reset(); busy = true;
+    session.setWorking(true); activity = 'Waiting for AI'; dashboard?.refresh();
     if (!once) note('Working · Ctrl+C to interrupt');
-    try { await engine.startTurn(text, { model: connection.model }); }
-    finally { busy = false; process.stdout.write(assistantOutput.flush()); if (hasText) process.stdout.write('\n'); }
+    try {
+      const result = await engine.startTurn(text, { model: connection.model });
+      if (result.status === 'completed') session.markOnline();
+    } finally {
+      busy = false; session.setWorking(false); activity = 'Ready'; dashboard?.refresh();
+      write(assistantOutput.flush()); if (hasText) write('\n');
+    }
   };
   const signal = () => {
     prompts.cancel();
@@ -145,7 +169,7 @@ export async function runUI(opts) {
   rl?.on('SIGINT', signal);
   rl?.once('close', terminate);
   try {
-    if (interactive) banner();
+    dashboard?.start();
     await connect(await configure());
     if (once) { await turn(opts.once); return; }
     while (!quitting) {
@@ -161,10 +185,14 @@ export async function runUI(opts) {
           note('/quit — close sudo cli · Ctrl+C interrupts work');
         } else if (text === '/status') {
           note(`${connection.model} · ${new URL(connection.baseUrl).host} · ${connection.transport}`);
+          const current = session.snapshot();
+          note(`Status: ${current.status} · Working: ${current.working ? 'Working' : 'Not working'}`);
+          note(`Context (last reported): ${current.context.used ?? 'unknown'} / ${current.context.limit ?? 'unknown'} tokens · ${current.context.percent == null ? 'unknown' : current.context.percent + '%'}`);
           note('Settings and credentials are held in memory only.');
         } else if (text.startsWith('/model ')) {
           const model = text.slice(7).trim();
           connection = validateConnection({ ...connection, model });
+          session.updateConnection(connection); dashboard?.refresh();
           note(`Model: ${model}`);
         } else if (text === '/clear') await connect(connection);
         else if (text === '/connect') await connect(await configure(true));
@@ -183,6 +211,7 @@ export async function runUI(opts) {
     prompts.close();
     rl?.close();
     await cleanup();
+    session.setWorking(false); session.markOffline(); activity = 'Session closed'; dashboard?.refresh(); dashboard?.stop();
     secrets = [];
   }
 }

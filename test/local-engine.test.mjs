@@ -6,7 +6,9 @@ import { existsSync } from 'node:fs';
 
 test('sudo cli selects its bundled engine without requiring ChatGPT app runtime lookup', async (t) => {
   const { localCodex } = await import('../src/local-engine.mjs');
-  const expected = fileURLToPath(new URL('../runtime/codex.exe', import.meta.url));
+  const matching = fileURLToPath(new URL(`../runtime/win32-${process.arch}/bin/codex.exe`, import.meta.url));
+  const legacy = fileURLToPath(new URL('../runtime/codex.exe', import.meta.url));
+  const expected = existsSync(matching) ? matching : legacy;
   if (process.platform !== 'win32' || !existsSync(expected)) { t.skip('Windows bundled engine not present in source-only distribution'); return; }
   const result = localCodex({ env: { PATH: '' } });
   if (process.platform === 'win32') assert.equal(result, expected);

@@ -69,7 +69,7 @@ export function resolveCodex({ env = process.env } = {}) {
       // The optional desktop bundle may be absent or inaccessible.
     }
   }
-  throw new Error('Codex executable was not found. Install Codex CLI or set SUDO_CLI_CODEX to its executable path.');
+  throw new Error('Codex executable was not found. Run node scripts/setup-runtime.mjs in the sudo cli folder or set SUDO_CLI_CODEX to its executable path.');
 }
 
 function validatedUrl(value) {

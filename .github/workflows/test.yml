@@ -1,0 +1,23 @@
+name: Native terminal CLI verification
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the pinned project-local native engine
+        run: node scripts/setup-runtime.mjs
+      - name: Verify engine startup
+        run: node bin/sudo-cli.mjs doctor
+      - name: Test real engine and local model fixtures
+        run: node --test

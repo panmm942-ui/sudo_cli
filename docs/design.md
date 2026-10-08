@@ -16,7 +16,7 @@ Commands: `sudo-cli`, `--model ID --base-url URL --transport responses|chat-comp
 
 ## Completion
 
-- Runnable version0.1.0 with Windows launchers, no npm runtime dependencies.
+- Runnable version0.2.0 with Windows/Unix launchers, a local native-runtime installer, and no npm runtime dependencies.
 - Prefer the independently bundled engine, honor SUDO_CLI_CODEX overrides, then discover via PATH with useful missing-runtime errors.
 - Validate settings; no secrets in argv or diagnostics, no persisted connection file.
 - Preserve cwd, subprocess exits/interrupts, and close engine/bridge/temp resources.

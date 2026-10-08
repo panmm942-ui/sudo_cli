@@ -1,0 +1,10 @@
+ ____  _   _ ____   ___      ____ _     ___    Time: 2026-10-07 20:49:45 EEST
+/ ___|| | | |  _ \ / _ \    / ___| |   |_ _|   Software System: Windows (x64)
+\___ \| | | | | | | | | |  | |   | |    | |    Working: Not working
+ ___) | |_| | |_| | |_| |  | |___| |___ | |    Status: Offline
+|____/ \___/|____/ \___/    \____|_____|___|   Connected AI: No AI connected
+                                               Context: Unknown
+                                               Activity: Idle
+                                               Project: sudo-cli
+v0.2.0 | /help | Ctrl+C interrupts | Context: last reported
+--------------------------------------------------------------------------------------------------------------
