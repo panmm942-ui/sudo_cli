@@ -172,7 +172,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(['/model','/effort','/upload','/skills','/compact'].includes(name)&&!getConnection())throw new Error('Connect an AI with /switch or /connect first.');
     if(name==='/effort'&&args[0]&&!['default','supported'].includes(args[0])&&settings.capabilities?.reasoning===false)throw new Error('Reasoning overrides are disabled for this AI. Use /effort default.');
     if(name==='/training'&&args[0]==='start'&&settings.capabilities?.training===false&&settings.trainingService?.model===getConnection()?.model&&settings.trainingService?.baseUrl===getConnection()?.baseUrl)throw new Error('Training is disabled for this AI. Select a supported training service first.');
-    if(name==='/help'){note(commandMenu(rawArgs,{compact:!args.length}));return true;}
+    if(name==='/help'){note(commandMenu(rawArgs));return true;}
     if(name==='/status'){
       const current=getSnapshot();const connection=getConnection();note(connection?`${connection.model} · ${new URL(connection.baseUrl).host} · ${connection.transport}`:'No AI selected. /switch or /connect configures one.');
       note(`Status: ${current.working?'Working':'Not Working'} · WiFi Connection: ${current.network?.wifi||'Unknown'}`);

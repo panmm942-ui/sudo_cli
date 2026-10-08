@@ -1,4 +1,4 @@
-# Using sudocli 0.6
+# Using sudocli 0.6.2
 
 Complete [first setup](platforms.md), then launch from the project you want to work on. Windows requires an Administrator terminal; Unix uses `sudo "$HOME/.local/bin/sudocli"` or the full local launcher path. Setup, help, version and doctor work normally without elevation. The CLI never elevates itself.
 
@@ -14,7 +14,9 @@ A default interactive launch starts with no AI selected and no model request. Yo
 /connect
 ```
 
-`/connect` offers cloud/custom, Ollama or LM Studio. Local shortcuts discover models from an already-running compatible server; they do not install or host model weights. Supply the exact model ID, base URL, API format, capacity if known and hidden key. Chat Completions needs `/chat/completions`; Responses needs a compatible `/responses` endpoint. A local server without authentication can use a blank key.
+`/local` connects Ollama, LM Studio or another compatible server already running on this computer without a cloud API key. `/connect` offers both cloud and local setup. For a model file that has not been loaded yet, use `/local file "PATH"`. It detects the contents, offers supported installed runners and preserves your original file. `/local info "PATH"` inspects without importing. Unsupported formats explain the runner/model files needed. See [local model files](local-model-files.md).
+
+For a server, select its exact model ID, base URL, API format and capacity if known. Supply a hidden key only if the server requires authentication. Chat Completions needs `/chat/completions`; Responses needs a compatible `/responses` endpoint.
 
 Launch flags can supply the connection directly:
 
@@ -44,7 +46,7 @@ The default credential lifetime is this process. `/credentials status` reports t
 
 ## Enter readable prompts and search
 
-Enter a normal task, such as `Explain this project and identify its main entry point.` `/help` shows common commands; `/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
+Enter a normal task, such as `Explain this project and identify its main entry point.` Type `/` at an empty idle prompt to open all commands in a selectable menu. Type to filter, use arrows or Page Up/Down, and press Enter to fill a command. Add arguments if needed and press Enter again to run it. Escape restores your slash query. `/help` prints the complete list; `TERM=dumb` uses `/` followed by Enter for that list. `/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
 
 Clear reading is on by default: short initial answers, short lines and spaced actions. `/readability off` disables it. `/details` asks the connected AI to expand the last answer.
 

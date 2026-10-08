@@ -4,7 +4,7 @@ export const COMMANDS = [
   {name:'/switch',usage:'[NAME|add|local|save NAME|remove NAME]',description:'Saved cloud/local AIs; transfer full chat on switch'},
   {name:'/model',usage:'[ID|list]',description:'Current model or endpoint model list'},
   {name:'/connect',usage:'[local]',description:'Choose cloud or local AI; cloud keys are optional for local servers'},
-  {name:'/local',usage:'[add|SAVED_NAME]',description:'Use an AI already running on this PC; no cloud API key needed'},
+  {name:'/local',usage:'[add|SAVED_NAME|file PATH|info PATH]',description:'Load a model file or connect a local AI; no cloud API key needed'},
   {name:'/effort',usage:'[default|LEVEL|supported LEVELS]',description:'Reasoning request and declared model capabilities'},
   {name:'/permissions',usage:'[ask|allow-everything|scope read-only|project|full|tools|folders]',description:'Runtime permissions, scope, selected tools and write folders'},
   {name:'/web',usage:'[on|off]',description:'Runtime web tools / sandbox networking'},

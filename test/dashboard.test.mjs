@@ -5,6 +5,15 @@ import { stripVTControlCharacters } from 'node:util';
 
 const example = { cwd: '/projects/demo', working: false, status: 'Offline', connectionState: 'pending', configuredModel: 'test-model', connectedAI: null, context: { used: null, limit: 200000, percent: null } };
 
+test('command picker receives a bounded input area below the header after terminal resize',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:150,rows:44,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},tickMs:0});
+  dashboard.start();const area=dashboard.inputArea();assert.ok(area.top>1);assert.equal(area.top+area.rows-1,44);assert.equal(area.columns,149);
+  out.rows=8;out.columns=35;out.emit('resize');const small=dashboard.inputArea();assert.equal(small.top,2);assert.equal(small.rows,7);assert.equal(small.columns,34);
+  dashboard.redraw();dashboard.stop();assert.ok(out.text.endsWith('\x1b[?1049l'));
+});
+
 test('connection thresholds, permissions, web switch and worked totals are visible', async () => {
   const { renderDashboard } = await import('../src/dashboard.mjs');
   for (const [percent, code, label] of [[100, '32', 'Good'], [71, '32', 'Good'], [70, '38;5;208', 'Fair'], [51, '38;5;208', 'Fair'], [50, '31', 'Bad'], [0, '31', 'Bad']]) {

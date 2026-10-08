@@ -64,3 +64,6 @@ jobs:
       - name: Exercise native Linux local AI and agent acceptance
         if: runner.os == 'Linux'
         run: sudo -E python3 -B test/manual/verify-v0.6.1-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.1-terminal-proof"
+      - name: Exercise live slash picker and local model file inspection
+        if: runner.os == 'Linux'
+        run: sudo -E python3 -B test/manual/verify-v0.6.2-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.2-terminal-proof"

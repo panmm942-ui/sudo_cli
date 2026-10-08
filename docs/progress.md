@@ -1,6 +1,6 @@
 # sudo cli progress
 
-Current release: **0.6.1**. Local AI setup now has an explicit keyless path. Personalization and preferences can be edited per AI. Named agents add saved specialists, independent parallel teams, isolated coding proposals and a review pipeline. See [local AI and agents](local-ai-and-agents.md) and [current verification](verification-v0.6.1.md). The prior 0.6.0 release implemented the 22 approved roadmap areas: [feature evidence and dependencies](v0.6-feature-evidence.md), [user guide](user-guide.md), [previous native terminal acceptance](v0.6-terminal-evidence.md), and [previous verification](verification-v0.6.md).
+Current release: **0.6.2**. Green prompt accents, an immediate selectable slash menu and local model file inspection/import are available. Any extension can be inspected; actual loading depends on the model format, installed runner and hardware. See [local model files](local-model-files.md), [terminal acceptance](v0.6.2-terminal-evidence.md) and [current verification](verification-v0.6.2.md). Version 0.6.1 added keyless local setup, per-AI personalization and saved specialists: [local AI and agents](local-ai-and-agents.md), [previous verification](verification-v0.6.1.md). Version 0.6.0 implemented the 22 approved roadmap areas: [feature evidence](v0.6-feature-evidence.md), [user guide](user-guide.md) and [previous verification](verification-v0.6.md).
 
 The notes below describe the historical 0.2 build, not the current feature set.
 

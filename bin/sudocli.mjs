@@ -8,7 +8,9 @@ Your terminal. Your model. Powered by the open-source Codex engine.
 
 First setup: node scripts/setup.mjs (or setup.cmd / sh ./setup)
 Start: sudocli in an Administrator terminal (Windows), or sudo with the launcher path (Linux/macOS).
-Choose a model, endpoint and key interactively. /switch saves optional model profiles.
+Start offline. /local connects a local runner; /connect configures a cloud/API model.
+/local file "PATH" inspects a model file and offers supported installed runners.
+Type / for the command picker. /switch saves optional model profiles.
 
 Options:
   --model ID                Model served by your endpoint

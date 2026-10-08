@@ -182,6 +182,8 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
       }
     },
     refresh,
+    inputArea() { const bottom=Math.max(1,output.rows||24),top=Math.min(bottom,height+1);return {top,bottom,rows:Math.max(1,bottom-top+1),columns:Math.max(1,(output.columns||80)-1)}; },
+    redraw:resize,
     write(text) { const value = String(text); body = (body + value).slice(-65536); output.write(value); },
     stop() {
       if (!started) return;

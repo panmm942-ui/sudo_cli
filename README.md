@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.1**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.2**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -34,7 +34,9 @@ Local launchers are `.\sudocli.cmd` on Windows and `sudo sh ./sudocli` on Unix. 
 
 ## Start offline, then connect
 
-The default launch opens a usable shell with no model traffic. `/local` offers Ollama, LM Studio or another compatible server already running on your computer. It lists available models when the server supports discovery and asks for a key only if you opt into local authentication. `/connect` offers both cloud and local setup. `/chatt` opens saved project chats, `/help` browses commands, and `/memory` shows your approved project rules.
+The default launch opens a usable shell with no model traffic. `/local` offers Ollama, LM Studio or another compatible server already running on your computer. It lists available models when the server supports discovery and asks for a key only if you opt into local authentication. `/local file "PATH"` inspects a file or model folder and offers supported installed runners; `/local info "PATH"` only inspects it. GGUF and Safetensors detection reads bounded metadata and can recognize unusual extensions. Actual loading requires a supported model architecture, compatible runner and sufficient hardware. See [local model files](docs/local-model-files.md).
+
+`/connect` offers both cloud and local setup. `/chatt` opens saved project chats, `/help` lists all commands, and `/memory` shows your approved project rules.
 
 `/switch` selects saved/local AI profiles. `/switch save NAME` saves nonsecret connection metadata; `/model ID` changes the model. Selecting an AI shows its configured name immediately, while a real answer confirms response health. `/test-connection` probes the model catalog without generation; `/capabilities` separates observed, declared and unknown support. Tool, vision, reasoning, audio and training support depend on the endpoint/model.
 
@@ -76,7 +78,9 @@ The complete visible transcript stays archived. Before replaying it to a new nat
 
 `/memory edit` saves only rules, decisions and preferences you approve. `/personalize setup` saves optional preferences separately for each endpoint/model/protocol. `/personalize set persona TEXT` or `/preferences set language Greek` changes one field while preserving the rest. Other fields are tone, length, format and instructions; `unset FIELD` removes one. These are instructions, not model training or permission grants.
 
-Clear reading is on by default; `/readability off` disables it and `/details` requests more explanation. `/prompt` accepts multiple lines until `/end`. Supported terminals use bracketed paste to keep pasted slash text literal. `/help work`, `/help voice` and `/help SEARCH` narrow the menu; `/search-chat TEXT` searches visible chat. Tab completes command names.
+Clear reading is on by default; `/readability off` disables it and `/details` requests more explanation. Type `/` at an empty idle prompt to open the green command picker immediately. Type to filter, use arrows or Page Up/Down to browse, then press Enter to fill the selected command. Add its arguments and press Enter again to run it. Escape returns your typed slash query to the prompt. All registered commands are available across pages. `TERM=dumb` uses `/` followed by Enter for a plain list.
+
+`/prompt` accepts multiple lines until `/end`. Supported terminals use bracketed paste to keep pasted slash text literal. `/help work`, `/help voice` and `/help SEARCH` narrow the list; `/search-chat TEXT` searches visible chat. Tab completes command names. Hidden keys, setup questions and active tasks retain their own input behavior.
 
 Additional prompts submitted during work queue in order. `/stop` or Ctrl+C interrupts work while retaining that queue; `/steer TEXT` guides an active native turn when supported. Ctrl+C exits when idle.
 
@@ -124,7 +128,9 @@ The [22-area evidence table](docs/v0.6-feature-evidence.md) records mechanisms, 
 
 The previous 0.6.0 complete suites passed: Windows 487 tests with 23 platform skips; root Linux 501 tests with 9 platform skips; zero failures on both. See [previous verification](docs/verification-v0.6.md). Current local setup, personalization and agents are described in [the quick guide](docs/local-ai-and-agents.md).
 
-Version 0.6.1 complete suites passed: Windows 537 tests with 24 platform skips; root Linux 552 tests with 9 platform skips; zero failures or cancellations. Its new native terminal acceptance passed with 25 streamed requests and the retained broad regression passed with 22. See [current verification](docs/verification-v0.6.1.md).
+Version 0.6.1 complete suites passed: Windows 537 tests with 24 platform skips; root Linux 552 tests with 9 platform skips; zero failures or cancellations. Its native terminal acceptance passed with 25 streamed requests and the retained broad regression passed with 22. See [previous verification](docs/verification-v0.6.1.md).
+
+Version 0.6.2 adds green input accents, the live command picker and local model file inspection/import. Complete suites passed on Windows (580 passed, 24 platform skips) and root Linux (595 passed, 9 platform skips), with zero failures or cancellations. New native acceptance selected all 59 commands, made 3 fixture requests and exited cleanly in four terminal variants. See [current verification](docs/verification-v0.6.2.md) and [terminal evidence](docs/v0.6.2-terminal-evidence.md).
 
 ## Launch options, source and licenses
 

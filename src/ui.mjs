@@ -44,13 +44,15 @@ import {routeModel} from './model-router.mjs';
 import {createPasteInput} from './terminal-paste.mjs';
 import {createAgentCommands} from './agent-commands.mjs';
 import {queueAgentContext} from './agent-context.mjs';
+import {createSlashMenuInput} from './slash-menu.mjs';
+import {createLocalFileCommands} from './local-file-commands.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
   const interactive = !!process.stdin.isTTY && !once;
   const color = process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb';
   const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m${BACKGROUND_STYLE}` : text;
-  const cyan = (s) => paint('96', s);
+  const green = (s) => paint('92', s);
   const dim = (s) => paint('90', s);
   let secrets = [];
   const assistantOutput = createRedactor({ secrets: () => secrets });
@@ -59,11 +61,12 @@ export async function runUI(opts) {
     for (const key of secrets) if (key) text = text.split(key).join('[redacted]');
     return text;
   };
-  let dashboard;
+  let dashboard,slashMenu;
   const write = text => dashboard ? dashboard.write(text) : process.stdout.write(text);
   const note = (text) => {
     const message = `${dim('  ·')} ${safe(text)}\n`;
     if (once) process.stderr.write(message); else write(message);
+    if(slashMenu?.snapshot().active)slashMenu.refresh();
   };
   const cwd = resolve(opts.cwd || process.cwd());
   if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Error('Project directory does not exist. Choose a directory with --cwd.');
@@ -72,7 +75,7 @@ export async function runUI(opts) {
   const session = createSessionState({ cwd });
   const settings = { permissions: opts.permissions || 'ask',scope:opts.scope||(opts.permissions==='allow-everything'?'full':'project'), webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
   for (const entry of opts.mcp || []) { const {name,url}=parseMcpEntry(entry); if(settings.mcp.has(name))throw new Error('Duplicate MCP server name.');settings.mcp.set(name,url); }
-  let health = createConnectionHealth(), workMeter, profiles, features,assistantFeatures,chatSession,personalization,saveTimer,backgroundWorking=false,upgrades,agents,vault,memory,workspace,workflow,ledger,configurationRecord,activeTask,budgetSnapshot;
+  let health = createConnectionHealth(), workMeter, profiles, features,assistantFeatures,chatSession,personalization,saveTimer,backgroundWorking=false,upgrades,agents,localFiles,vault,memory,workspace,workflow,ledger,configurationRecord,activeTask,budgetSnapshot;
   const history = createChatHistory({secrets:()=>secrets});
   const liveKeys=new Map();
   const network = createNetworkStatus();
@@ -83,8 +86,14 @@ export async function runUI(opts) {
   const output = new Writable({ write(chunk, encoding, done) { if (!muted) process.stdout.write(chunk, encoding); done(); } });
   output.isTTY = process.stdout.isTTY;
   Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
-  const terminalInput=interactive?createPasteInput({input:process.stdin,onPaste:text=>{if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){enqueue(text,{literal:true});return '';}return text.replace(/\n/g,' ');},onError:error=>note(error.message)}):undefined;
-  const rl = interactive ? createInterface({ input: terminalInput, output, terminal: true, completer: completeCommand }) : null;
+  let rl;
+  const pasteInput=interactive?createPasteInput({input:process.stdin,onPaste:text=>{slashMenu?.closeMenu({reason:'paste',restore:false});if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){enqueue(text,{literal:true});return '';}return text.replace(/\n/g,' ');},onError:error=>note(error.message)}):undefined;
+  const terminalInput=interactive?slashMenu=createSlashMenuInput({input:pasteInput,getContext:()=>({enabled:!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
+    getSize:()=>dashboard?.inputArea()||{columns:Math.max(1,(process.stdout.columns||80)-1),rows:Math.max(3,(process.stdout.rows||24)-2)},
+    onRender:view=>{const area=dashboard?.inputArea();if(!area)return;const lines=view.lines.slice(0,Math.max(1,area.rows-1)).map((line,index)=>index===0||line.startsWith('>')?green(line):line);process.stdout.write(`\x1b[${area.top};1H\x1b[J`+lines.map(line=>line+'\x1b[K').join('\r\n'));},
+    onClose:({selected,query,restore})=>{dashboard?.redraw();if(currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&(selected||restore)){rl?.write(null,{ctrl:true,name:'u'});rl?.write(selected||'/'+query);}},onError:error=>note(error.message),
+  }):undefined;
+  rl = interactive ? createInterface({ input: terminalInput, output, terminal: true, completer: completeCommand }) : null;
   const prompts = createPromptQueue({ question: async (prompt, { signal, hidden, input,raw }) => {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');
     if(input&&engine&&queuedInputs.length)throw new DOMException('A queued task is ready.','AbortError');
@@ -92,9 +101,9 @@ export async function runUI(opts) {
     currentPrompt = { prompt, hidden, input,raw,resolvePaste };
     if (hidden) { process.stdout.write(prompt); muted = true; }
     try { const answer=await Promise.race([rl.question(hidden ? '' : prompt, { signal:AbortSignal.any([signal,localController.signal]) }),pasted]);return raw?answer:answer.trim(); }
-    finally { if (hidden) { muted = false; process.stdout.write('\n'); } currentPrompt = null; }
+    finally { slashMenu?.closeMenu({reason:'prompt',restore:false});if (hidden) { muted = false; process.stdout.write('\n'); } currentPrompt = null; }
   } });
-  const ask = (prompt, hidden = false, metadata) => prompts.ask(cyan(prompt), hidden, metadata);
+  const ask = (prompt, hidden = false, metadata) => prompts.ask(green(prompt), hidden, metadata);
 
   let engine, bridge, home, connection, busy = false, quitting = false, hasText = false,nativeMessages=[],nativeInstructions='';
   const queuedInputs = [];
@@ -105,6 +114,7 @@ export async function runUI(opts) {
   if (interactive) dashboard = createDashboard({ snapshot, activity: () => activity, color,
     onResize: () => {
       if (!rl) return;
+      if(slashMenu?.snapshot().active){slashMenu.refresh();return;}
       if (!currentPrompt) { if(busy && rl.line)rl.prompt(true);return; }
       if (currentPrompt.hidden) process.stdout.write(currentPrompt.prompt);
       else rl.prompt(true);
@@ -146,14 +156,14 @@ export async function runUI(opts) {
     dashboard?.refresh();
     if (method === 'item/agentMessage/delta') {
       history.appendAssistant(`${params.threadId || engine?.threadId}:${params.itemId}`,String(params.delta || ''),{model:connection?.model});
-      if (!hasText && !once) write(`\n${cyan('  sudo')}\n`);
+      if (!hasText && !once) write(`\n${green('  sudo')}\n`);
       hasText = true;
       displayed.add(params.itemId);
       write(assistantOutput.write(params.delta));
     } else if (method === 'item/completed' && params.item?.type === 'agentMessage') {
       history.finishAssistant(`${params.threadId || engine?.threadId}:${params.item.id}`,params.item.text,{model:connection?.model});
       if (!displayed.has(params.item.id)) {
-        if (!hasText && !once) write(`\n${cyan('  sudo')}\n`);
+        if (!hasText && !once) write(`\n${green('  sudo')}\n`);
         hasText = true;
         displayed.add(params.item.id);
         write(assistantOutput.write(params.item.text));
@@ -227,7 +237,7 @@ export async function runUI(opts) {
         if (params.grantRoot) note(`Requested write access: ${params.grantRoot}`);
         if (params.fileChanges) note(`Files: ${Object.keys(params.fileChanges).join(', ')}`);
         if (params.permissions) note(`Requested permissions: ${JSON.stringify(params.permissions)}`);
-        try { return /^y(es)?$/i.test(await ask(cyan('  Allow once? [y/N] › '))); }
+        try { return /^y(es)?$/i.test(await ask(green('  Allow once? [y/N] › '))); }
         finally { if (busy && !quitting) {workMeter?.start();session.setWorking(true);} activity = 'Working'; dashboard?.refresh(); }
       },
     });
@@ -354,9 +364,10 @@ export async function runUI(opts) {
       onTask:async({task,mode})=>{history.addUser(`[Agents ${mode}] ${task}`);await checkpoint();},onGuidance:async({name,text})=>{history.addUser(`[Agent ${name} guidance] ${text}`);await checkpoint();},
       onResult:async record=>{for(const result of record.results)history.finishAssistant(`agent:${record.id}:${result.name}`,`Agent ${result.name} (${result.model}) · ${result.status}\n${result.text||result.error||'No text returned.'}`,{model:result.model});const queued=queueAgentContext(settings,record);if(queued.truncated)note('Agent text was shortened for the next AI prompt. Full reports remain in /agents result.');await checkpoint();},
     });
+    localFiles=createLocalFileCommands({cwd,settings,profiles,ask,note,reconnect:connect,runOperation});
     if(interactive)await network.start();
     if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chatt remains available.`);}}
-    else {note('Ready. Local AI on this PC: /local. Cloud or other AI: /connect. Saved AIs: /switch.');note('Customize each AI: /personalize setup or /preferences setup.');note('Saved specialists: /agents. Saved chats: /chatt.');}
+    else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chatt.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
     if(resumed){settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chatt opens saved chats.`);}
     await chatSession.ensure();await checkpoint();
     saveTimer=setInterval(()=>{if((busy||backgroundWorking)&&saving===0)void checkpoint();},1000);saveTimer.unref();
@@ -364,13 +375,13 @@ export async function runUI(opts) {
     while (!quitting) {
       const queued=engine?queuedInputs.shift():undefined;
       let text;
-      try{if(queued)text=queued.text;else text=await ask(cyan('\n  you › '),false,{input:true});}
+      try{if(queued)text=queued.text;else text=await ask(green('\n  you › '),false,{input:true});}
       catch(error){if(error.name==='AbortError'){if(quitting)break;continue;}throw error;}
       if (!text) continue;
       if (!queued?.literal&&(text === '/quit' || text === '/exit')) break;
       try {
         const command=queued?.literal?null:parseCommand(text);
-        if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await agents.handle(command)&&!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
+        if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await localFiles.handle(command)&&!await agents.handle(command)&&!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
         else {
           try { await turn(text,{recorded:queued?.recorded}); }
           catch (error) { if (!quitting) note(`Task failed: ${error.message}`); }
@@ -386,7 +397,7 @@ export async function runUI(opts) {
     process.removeListener('SIGHUP', terminate);
     prompts.close();
     rl?.close();
-    terminalInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004l');
+    terminalInput?.detach();pasteInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004l');
     await assistantFeatures?.stop().catch(error=>note(error.message));
     await upgrades?.close().catch(error=>note(error.message));
     agents?.close();
