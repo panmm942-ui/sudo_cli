@@ -26,7 +26,9 @@ The coordinator invokes the sleep hook after the configured idle interval, inclu
 
 Folder watches are opt-in and limited to real directories inside the current project. They debounce nearby changes into one task. Files under the CLI's state directory, `.git`, `node_modules`, `.sudocli` and `.codexcli` are ignored. Symlinks leading outside the selected project are excluded. Paths are passed as data for inspection; a changed file is not automatically treated as a new instruction.
 
-Changes emitted while the supervisor or cloud worker is handling a task, and during a brief quiet interval afterward, are suppressed to prevent the worker's own file edits from triggering itself indefinitely. Submit important additional work explicitly to the inbox while a task is running.
+Watches pause while the supervisor or cloud worker handles a task. Before watching resumes, the coordinator records current file versions so delayed events from the worker's own edits do not create another task. Later external edits, including edits to the same file, still create tasks. Submit important additional work explicitly to the inbox while a task is running.
+
+The baseline is limited to 10,000 eligible entries and a 2.5-second scan. Select smaller folders if the coordinator reports that the baseline cannot be established. It leaves folder watching disabled when a complete safe baseline cannot be obtained; explicit inbox tasks remain available.
 
 An explicit standing goal enables periodic **local** supervisor assessments even when the inbox is empty. A waiting local assessment never wakes the cloud. Cloud decisions create durable tasks, and identical consecutive task prompts are suppressed until the supervisor returns to waiting/local handling or identifies a different task. The latest standing-goal task also seeds this protection after a worker restart.
 
@@ -34,7 +36,7 @@ An explicit standing goal enables periodic **local** supervisor assessments even
 
 `await createTaskInbox({stateDir, cwd, secrets})` returns `submit({prompt, source?})`, `list()`, `get(id)`, `update(id, {status, reason?, result?})`, `recoverInterrupted()`, `acquireWorker()`, `redact(text)`, `warnings()`, `directory`, `cwd` and `stateDir`. `acquireWorker()` returns an idempotent asynchronous `release()` method. Recovery requires an acquired lease. Explicitly updating a terminal task back to `pending` clears its previous reason/result and retries it.
 
-`createAlwaysOn({inbox, assess, runCloud, onState?, onError?, wake?, sleep?, idleSleepMs?, pollMs?, standingGoal?, heartbeatMs?, watchPaths?, watchDebounceMs?})` returns asynchronous `start()`, `stop()`, `submit()` and synchronous `snapshot()`.
+`createAlwaysOn({inbox, assess, runCloud, onState?, onError?, wake?, sleep?, idleSleepMs?, pollMs?, standingGoal?, heartbeatMs?, watchPaths?, watchDebounceMs?, watchEntryLimit?, watchScanTimeoutMs?})` returns asynchronous `start()`, `stop()`, `submit()` and synchronous `snapshot()`.
 
 Callbacks:
 

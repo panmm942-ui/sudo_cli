@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from './fixtures/temp-root.mjs';
 import { createTaskInbox } from '../src/task-inbox.mjs';
@@ -139,10 +139,34 @@ test('closed task watch streams reject delayed own writes while a fresh stream a
   assert.equal(first.closed,true);assert.equal(watches.streams.length,2);
   assert.equal((await inbox.list()).length,1);assert.equal((await inbox.list())[0].status,'completed');
   const fresh=watches.streams[1];
+  fresh.callback('change','worker-output.txt');await delay(150);
+  assert.equal((await inbox.list()).length,1,'unchanged own writes replayed through the fresh stream remain suppressed');
   await writeFile(join(cwd,'worker-output.txt'),'later external edit');fresh.callback('change','worker-output.txt');
   await until(()=>processed===2&&agent.snapshot().state==='idle');
   assert.equal((await inbox.list()).length,2,'a later external edit of the same path is accepted');
   await agent.stop();assert.ok(watches.streams.every(stream=>stream.closed));
+});
+
+test('unchanged startup events and duplicate current versions do not admit extra watch tasks',async t=>{
+  const watches=interceptedWatches(t);let processed=0;
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],watchDebounceMs:10,assess:async()=>({action:'cloud'}),runCloud:async()=>{processed++;return 'Done';}});
+  t.after(()=>watches.restore());await writeFile(join(cwd,'source.txt'),'already present');await agent.start();
+  const stream=watches.streams.at(-1);stream.callback('change','source.txt');stream.callback('change','source.txt');await delay(150);
+  assert.equal((await inbox.list()).length,0,'a startup replay is unchanged from the initial baseline');
+  await writeFile(join(cwd,'source.txt'),'real external edit');stream.callback('change','source.txt');stream.callback('change','source.txt');
+  await until(()=>processed===1&&agent.snapshot().state==='idle');await delay(100);
+  assert.equal((await inbox.list()).length,1);assert.equal(processed,1);
+});
+
+test('later deletion and recreation of the same file are admitted while missing-path replays stay quiet',async t=>{
+  const watches=interceptedWatches(t);let processed=0;
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],watchDebounceMs:10,assess:async()=>({action:'cloud'}),runCloud:async()=>{processed++;return 'Done';}});
+  t.after(()=>watches.restore());await writeFile(join(cwd,'source.txt'),'before deletion');await agent.start();
+  watches.streams.at(-1).callback('rename','never-present.txt');await delay(100);assert.equal((await inbox.list()).length,0);
+  await rm(join(cwd,'source.txt'));watches.streams.at(-1).callback('rename','source.txt');await until(()=>processed===1&&agent.snapshot().state==='idle');
+  watches.streams.at(-1).callback('rename','source.txt');await delay(100);assert.equal((await inbox.list()).length,1);
+  await writeFile(join(cwd,'source.txt'),'after recreation');watches.streams.at(-1).callback('rename','source.txt');await until(()=>processed===2&&agent.snapshot().state==='idle');
+  assert.equal((await inbox.list()).length,2);
 });
 
 test('an event pending canonical validation cannot cross the task watch generation',{timeout:5000},async t=>{
@@ -202,6 +226,98 @@ test('a standing-goal heartbeat and its nested cloud task leave one fresh watch 
   await until(()=>agent.snapshot().completed===2&&agent.snapshot().state==='idle');
   assert.equal((await inbox.list()).length,2);assert.equal(watches.streams.filter(stream=>!stream.closed).length,1);
   await agent.stop();assert.ok(watches.streams.every(stream=>stream.closed));
+});
+
+test('an eligible-entry cap disables replay admission without changing a completed task',async t=>{
+  const watches=interceptedWatches(t),errors=[];
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],watchEntryLimit:2,onError:error=>errors.push(error.message),assess:async()=>({action:'cloud'}),runCloud:async()=>{await writeFile(join(cwd,'new.txt'),'task-owned');return 'Done';}});
+  await writeFile(join(cwd,'existing.txt'),'baseline');t.after(()=>watches.restore());await agent.start();await agent.submit('Actual task');
+  await until(()=>agent.snapshot().completed===1&&agent.snapshot().state==='idle');
+  assert.equal(errors.length,1);assert.match(errors[0],/fewer eligible entries/);assert.equal(watches.streams.length,1);assert.equal(watches.streams[0].closed,true);
+  assert.equal((await inbox.list())[0].status,'completed');watches.streams[0].callback('change','new.txt');await delay(100);assert.equal((await inbox.list()).length,1);
+});
+
+test('a baseline scan deadline disables watching, preserves completion, and closes a directory that arrives late',{timeout:5000},async t=>{
+  const watches=interceptedWatches(t),errors=[];let hold=false,release,lateClosed=false;
+  const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],watchScanTimeoutMs:200,onError:error=>errors.push(error.message),assess:async()=>({action:'cloud'}),runCloud:async()=>{hold=true;return 'Done';}});
+  await agent.start();const original=fs.promises.opendir;
+  const replacement=t.mock.method(fs.promises,'opendir',async(...args)=>{if(hold&&args[0]===cwd){await gate;const directory=await original(...args),close=directory.close.bind(directory);directory.close=async()=>{await close();lateClosed=true;};return directory;}return original(...args);});
+  syncBuiltinESMExports();t.after(()=>{release();replacement.mock.restore();syncBuiltinESMExports();watches.restore();});
+  await agent.submit('Actual task');await until(()=>errors.length===1&&agent.snapshot().state==='idle');
+  assert.match(errors[0],/scan deadline/);assert.equal((await inbox.list())[0].status,'completed');assert.equal(watches.streams.length,1);assert.equal(watches.streams[0].closed,true);
+  release();await until(()=>lateClosed);await agent.stop();
+});
+
+test('stop aborts a pending baseline scan without waiting for its directory read or installing a new stream',{timeout:5000},async t=>{
+  const watches=interceptedWatches(t);let hold=false,release,entered,lateClosed=false;
+  const gate=new Promise(resolve=>{release=resolve;}),pending=new Promise(resolve=>{entered=resolve;});t.after(()=>release());
+  const {agent,cwd}=await fixture(t,{watchPaths:['.'],assess:async()=>({action:'cloud'}),runCloud:async()=>{hold=true;return 'Done';}});
+  await agent.start();const original=fs.promises.opendir;
+  const replacement=t.mock.method(fs.promises,'opendir',async(...args)=>{if(hold&&args[0]===cwd){entered();await gate;const directory=await original(...args),close=directory.close.bind(directory);directory.close=async()=>{await close();lateClosed=true;};return directory;}return original(...args);});
+  syncBuiltinESMExports();t.after(()=>{release();replacement.mock.restore();syncBuiltinESMExports();watches.restore();});
+  await agent.submit('Actual task');await pending;await agent.stop();
+  assert.equal(agent.snapshot().state,'stopped');assert.equal(watches.streams.length,1);assert.equal(watches.streams[0].closed,true);
+  release();await until(()=>lateClosed);assert.equal(watches.streams.length,1);
+});
+
+test('child links are never traversed and a watched-root substitution leaves completed work intact',async t=>{
+  const watches=interceptedWatches(t),errors=[];
+  const {agent,inbox,cwd,root}=await fixture(t,{watchPaths:['watched'],onError:error=>errors.push(error.message),assess:async()=>({action:'cloud'}),runCloud:async()=>{await rm(join(cwd,'watched'),{recursive:true,force:true});await symlink(join(root,'outside'),join(cwd,'watched'),process.platform==='win32'?'junction':'dir');return 'Done';}});
+  const outside=join(root,'outside');await mkdir(outside);await writeFile(join(outside,'private.txt'),'outside fixture');await mkdir(join(cwd,'watched'));
+  await symlink(outside,join(cwd,'watched','linked'),process.platform==='win32'?'junction':'dir');
+  const original=fs.promises.opendir,opened=[];
+  const replacement=t.mock.method(fs.promises,'opendir',(...args)=>{opened.push(args[0]);return original(...args);});syncBuiltinESMExports();
+  t.after(()=>{replacement.mock.restore();syncBuiltinESMExports();watches.restore();});await agent.start();
+  assert.equal(opened.includes(outside),false);assert.equal(opened.includes(join(cwd,'watched','linked')),false);
+  watches.streams.at(-1).callback('change','linked/private.txt');await delay(100);assert.equal((await inbox.list()).length,0);
+  await agent.submit('Actual task');await until(()=>agent.snapshot().completed===1&&agent.snapshot().state==='idle');
+  assert.equal(errors.length,1);assert.equal((await inbox.list())[0].status,'completed');assert.equal(watches.streams.length,1);assert.equal(watches.streams[0].closed,true);
+});
+
+test('watch admission bounds canonical reads before any path validation and fails closed on a burst',{timeout:5000},async t=>{
+  const watches=interceptedWatches(t),errors=[];let release,pending=0,maximum=0;
+  const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],onError:error=>errors.push(error.message),assess:async()=>({action:'cloud'}),runCloud:async()=> 'Done'});
+  await agent.start();const original=fs.promises.realpath;
+  const replacement=t.mock.method(fs.promises,'realpath',async(...args)=>{if(args[0].startsWith(join(cwd,'burst-'))){pending++;maximum=Math.max(maximum,pending);try{await gate;return await original(...args);}finally{pending--;}}return original(...args);});
+  syncBuiltinESMExports();t.after(()=>{release();replacement.mock.restore();syncBuiltinESMExports();watches.restore();});
+  const stream=watches.streams.at(-1);for(let index=0;index<99;index++)stream.callback('change',`burst-${index}.txt`);await until(()=>pending===99);
+  for(let index=99;index<500;index++)stream.callback('change',`burst-${index}.txt`);await delay(30);
+  assert.ok(maximum<=100,`actual pending canonical reads reached ${maximum}`);assert.equal(errors.length,1);assert.equal(stream.closed,true);assert.equal((await inbox.list()).length,0);
+  release();await until(()=>pending===0);await agent.stop();
+});
+
+test('same-path bursts share one pending validation and a later edit is re-read before task admission',{timeout:5000},async t=>{
+  const watches=interceptedWatches(t),observed=[];let release,pending=0,maximum=0,reads=0;
+  const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],watchDebounceMs:10,assess:async()=>({action:'cloud'}),runCloud:async()=>{observed.push(await readFile(join(cwd,'source.txt'),'utf8'));return 'Done';}});
+  await writeFile(join(cwd,'source.txt'),'initial');await agent.start();const original=fs.promises.lstat;
+  const replacement=t.mock.method(fs.promises,'lstat',async(...args)=>{if(args[0]===join(cwd,'source.txt')){const index=++reads;pending++;maximum=Math.max(maximum,pending);try{const value=await original(...args);if(index===1)await gate;return value;}finally{pending--;}}return original(...args);});
+  syncBuiltinESMExports();t.after(()=>{release();replacement.mock.restore();syncBuiltinESMExports();watches.restore();});
+  const stream=watches.streams.at(-1);await writeFile(join(cwd,'source.txt'),'earlier edit');stream.callback('change','source.txt');await until(()=>pending===1);
+  await writeFile(join(cwd,'source.txt'),'latest genuine edit');for(let index=0;index<500;index++)stream.callback('change','source.txt');await delay(30);
+  assert.equal(maximum,1,'repeated callbacks cannot start parallel version reads');release();
+  await until(()=>agent.snapshot().completed===1&&agent.snapshot().state==='idle');
+  assert.ok(reads>=2,'the dirty pending version is checked again');assert.deepEqual(observed,['latest genuine edit']);assert.equal((await inbox.list()).length,1);
+  watches.streams.at(-1).callback('change','source.txt');await delay(100);assert.equal((await inbox.list()).length,1);
+});
+
+test('physical watch reads remain bounded across suspension, reinstallation and stop',{timeout:5000},async t=>{
+  const watches=interceptedWatches(t),errors=[];let release,pending=0,maximum=0;
+  const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],onError:error=>errors.push(error.message),assess:async()=>({action:'cloud'}),runCloud:async()=> 'Done'});
+  await agent.start();const original=fs.promises.realpath;
+  const replacement=t.mock.method(fs.promises,'realpath',async(...args)=>{if(args[0].startsWith(join(cwd,'burst-'))){pending++;maximum=Math.max(maximum,pending);try{await gate;return await original(...args);}finally{pending--;}}return original(...args);});
+  syncBuiltinESMExports();t.after(()=>{release();replacement.mock.restore();syncBuiltinESMExports();watches.restore();});
+  const prior=watches.streams.at(-1);for(let index=0;index<99;index++)prior.callback('change',`burst-${index}.txt`);await until(()=>pending===99);
+  await agent.submit('Actual inbox task');await until(()=>agent.snapshot().completed===1&&agent.snapshot().state==='idle');
+  assert.equal(prior.closed,true);assert.equal(pending,99);assert.equal(errors.length,0);
+  const fresh=watches.streams.at(-1);assert.notEqual(fresh,prior);fresh.callback('change','burst-new.txt');await until(()=>pending===100);
+  fresh.callback('change','burst-overflow.txt');await until(()=>errors.length===1);
+  assert.equal(maximum,100);assert.equal(fresh.closed,true);assert.equal((await inbox.list())[0].status,'completed');
+  await agent.stop();assert.equal(agent.snapshot().state,'stopped');assert.equal(pending,100);
+  release();await until(()=>pending===0);assert.equal((await inbox.list()).length,1);
 });
 
 test('outside-project watch paths are rejected before starting a worker', async t => {

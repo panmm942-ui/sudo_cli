@@ -311,39 +311,67 @@ test('installed-device fallback rejects a capacity record with another PNP insta
 test('Windows installed capacity follows the exact display-class instance and accepts only QWORD bytes', { skip: process.platform !== 'win32', timeout: 35000 }, async t => {
   const powershell = win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const displayDriver = '{4d36e968-e325-11ce-bfc1-08002be10318}\\0042';
-  function fixtureScript(kind, driver = displayDriver) {
+  function fixtureMocks(kind, driver, index) {
     // Mock only read APIs; the full production inventory script resolves identity and byte type.
     const mocks = `
 function Get-CimInstance {
   [CmdletBinding()] param([string]$ClassName)
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_MOCK_CIM_STARTED ' + $fixtureClock.ElapsedMilliseconds)
   if ($ClassName -ne 'Win32_VideoController') { throw 'Unexpected class' }
   [pscustomobject]@{Name='Fixture installed GPU';PNPDeviceID='${nvidiaPnp}';ConfigManagerErrorCode=43;Status='Error'}
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_MOCK_CIM_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)
 }
 function Get-ItemProperty {
   [CmdletBinding()] param([string]$LiteralPath)
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_MOCK_INSTANCE_STARTED ' + $fixtureClock.ElapsedMilliseconds)
   if ($LiteralPath -cne 'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\${nvidiaPnp}') { throw 'Wrong PNP instance' }
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_MOCK_INSTANCE_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)
   [pscustomobject]@{Driver='${driver}'}
 }
 function Get-Item {
   [CmdletBinding()] param([string]$LiteralPath)
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_MOCK_DRIVER_STARTED ' + $fixtureClock.ElapsedMilliseconds)
   if ($LiteralPath -cne 'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\${displayDriver}') { throw 'Wrong driver key' }
   $fixtureKey = [pscustomobject]@{Kind='${kind}';Size=[long]8589934592}
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_METHODS_STARTED ' + $fixtureClock.ElapsedMilliseconds)
   $fixtureKey | Add-Member -MemberType ScriptMethod -Name GetValueKind -Value {
-    param($name) if ($name -ne 'HardwareInformation.qwMemorySize') { throw 'Wrong capacity property' }
+    param($name)
+    [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_VALUE_KIND_STARTED ' + $fixtureClock.ElapsedMilliseconds)
+    if ($name -ne 'HardwareInformation.qwMemorySize') { throw 'Wrong capacity property' }
     [Microsoft.Win32.RegistryValueKind][Enum]::Parse([Microsoft.Win32.RegistryValueKind], $this.Kind)
   }
-  $fixtureKey | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($name,$default) $this.Size }
-  $fixtureKey | Add-Member -MemberType ScriptMethod -Name Close -Value { }
+  $fixtureKey | Add-Member -MemberType ScriptMethod -Name GetValue -Value {
+    param($name,$default)
+    [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_VALUE_STARTED ' + $fixtureClock.ElapsedMilliseconds)
+    $this.Size
+  }
+  $fixtureKey | Add-Member -MemberType ScriptMethod -Name Close -Value {
+    [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_CLOSE_STARTED ' + $fixtureClock.ElapsedMilliseconds)
+  }
+  [Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_METHODS_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)
   $fixtureKey
 }
 `;
-    return mocks + windowsGpuInventory.replace("Add-Type -TypeDefinition @'", "throw 'DXGI fixture unavailable'\nAdd-Type -TypeDefinition @'");
+    return mocks;
   }
   // One bounded stock PowerShell session verifies script correctness separately
   // from the production sampling deadlines exercised by the probe tests below.
-  const cases = [fixtureScript('QWord'), fixtureScript('DWord'), fixtureScript('QWord', '{00000000-0000-0000-0000-000000000000}\\0042')];
-  const script = "[Console]::Error.WriteLine('GPU_FIXTURE_SCRIPT_STARTED')\n$fixtureClock = [Diagnostics.Stopwatch]::StartNew()\n" + cases.map((body, index) =>
-    `[Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_STARTED ' + $fixtureClock.ElapsedMilliseconds)\n& {\n${body}\n}\n[Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)`
+  const phase = name => `[Console]::Error.WriteLine('GPU_FIXTURE_CASE_' + $gpuFixtureCase + '_${name} ' + $fixtureClock.ElapsedMilliseconds)\n`;
+  const inventory = phase('INVENTORY_STARTED') + windowsGpuInventory
+    .replace("Add-Type -TypeDefinition @'", phase('DXGI_SKIPPED') + "throw 'DXGI fixture unavailable'\nAdd-Type -TypeDefinition @'")
+    .replace('    $hash = [System.Security.Cryptography.SHA256]::Create()', phase('HASH_STARTED') + '    $hash = [System.Security.Cryptography.SHA256]::Create()')
+    .replace('$linked = @{}', phase('JOIN_STARTED') + '$linked = @{}')
+    .replace('ConvertTo-Json -InputObject', phase('JSON_STARTED') + 'ConvertTo-Json -InputObject') + phase('JSON_COMPLETE');
+  const cases = [['QWord', displayDriver], ['DWord', displayDriver], ['QWord', '{00000000-0000-0000-0000-000000000000}\\0042']];
+  // Load the exact stock dependency before mocks, then refuse ambient discovery.
+  // The shared script block executes the entire production body for every case.
+  const script = "[Console]::Error.WriteLine('GPU_FIXTURE_SCRIPT_STARTED')\n$fixtureClock = [Diagnostics.Stopwatch]::StartNew()\n"
+    + "[Console]::Error.WriteLine('GPU_FIXTURE_UTILITY_IMPORT_STARTED ' + $fixtureClock.ElapsedMilliseconds)\n"
+    + "Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop\n"
+    + "[Console]::Error.WriteLine('GPU_FIXTURE_UTILITY_IMPORT_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)\n$PSModuleAutoLoadingPreference = 'None'\n"
+    + "[Console]::Error.WriteLine('GPU_FIXTURE_AUTOLOAD_DISABLED ' + $fixtureClock.ElapsedMilliseconds)\n"
+    + `$fixtureInventory = {\n${inventory}\n}\n` + cases.map(([kind, driver], index) =>
+    `[Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_STARTED ' + $fixtureClock.ElapsedMilliseconds)\n& {\n$gpuFixtureCase = ${index}\n${fixtureMocks(kind, driver, index)}\n& $fixtureInventory\n}\n[Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)`
   ).join('\n');
   const stages = [];
   let stageBuffer = '';
@@ -358,7 +386,7 @@ function Get-Item {
       const lines = (stageBuffer + String(chunk)).slice(-4096).split(/\r?\n/);
       stageBuffer = lines.pop() || '';
       for (const line of lines) {
-        if (/^GPU_FIXTURE_(?:SCRIPT_STARTED|CASE_[0-2]_(?:STARTED|COMPLETE) \d{1,8})$/.test(line) && stages.length < 7) stages.push(line);
+        if (/^GPU_FIXTURE_(?:SCRIPT_STARTED|(?:UTILITY_IMPORT_(?:STARTED|COMPLETE)|AUTOLOAD_DISABLED) \d{1,8}|CASE_[0-2]_(?:STARTED|COMPLETE|INVENTORY_STARTED|DXGI_SKIPPED|MOCK_CIM_(?:STARTED|COMPLETE)|MOCK_INSTANCE_(?:STARTED|COMPLETE)|MOCK_DRIVER_STARTED|METHODS_(?:STARTED|COMPLETE)|VALUE_KIND_STARTED|VALUE_STARTED|CLOSE_STARTED|HASH_STARTED|JOIN_STARTED|JSON_(?:STARTED|COMPLETE)) \d{1,8})$/.test(line) && stages.length < 64) stages.push(line);
       }
     },
   });
