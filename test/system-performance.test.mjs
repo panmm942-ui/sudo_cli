@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createHash } from 'node:crypto';
+import { win32 } from 'node:path';
+import { windowsGpuInventory } from '../src/system-performance-windows.mjs';
 
 const api = await import('../src/system-performance.mjs').catch(error => {
   if (error.code === 'ERR_MODULE_NOT_FOUND') return {};
@@ -11,6 +14,11 @@ const cpu = (user, idle, extra = {}) => ({ times: { user, nice: 0, sys: 0, idle,
 const noGpu = async () => ({ source: 'unavailable', adapters: [] });
 const windows = (engines, memory = []) => JSON.stringify({ engines, memory });
 const engine = (pid, number, value, time, luid = 'luid_0x0_0x1_phys_0') => ({ Name: `pid_${pid}_${luid}_eng_${number}_engtype_3D`, UtilizationPercentage: String(value), Timestamp_Sys100NS: String(time) });
+const deviceId = pnp => 'device_' + createHash('sha256').update(pnp.toLowerCase()).digest('hex');
+const nvidiaPnp = 'PCI\\VEN_10DE&DEV_2D98&SUBSYS_800D17AA&REV_A1\\NVIDIA_INSTANCE';
+const unavailableNvidia = () => ({ id: deviceId(nvidiaPnp), pnpDeviceId: nvidiaPnp, name: 'NVIDIA GeForce RTX 5050 Laptop GPU',
+  identified: true, dedicatedBytes: 8 * 1024 ** 3, sharedBytes: null, driverErrorCode: 43,
+  deviceStatus: 'driver-error', capacitySource: 'windows-driver-registry-qword' });
 
 test('CPU shows measured busy time after two samples while RAM uses current OS bytes', async () => {
   let rows = [cpu(10, 90), cpu(20, 80)], free = 600, now = 1000;
@@ -173,6 +181,185 @@ test('stopping resets GPU delta baselines so restarting cannot average the idle 
   assert.equal(monitor.snapshot().gpu.percent, null);
   assert.equal(monitor.snapshot().gpu.status, 'warming-up');
   monitor.stop();
+});
+
+test('installed NVIDIA capacity remains visible without a live counter or fabricated idle utilization', () => {
+  const parse = feature('parseWindowsGpu');
+  const inventory = [unavailableNvidia(), { id: 'luid_0x0_0x1_phys_0', name: 'AMD 780M', dedicatedBytes: 512 * 1024 ** 2, sharedBytes: 16 * 1024 ** 3 }];
+  const result = parse(windows([], [{ Name: 'luid_0x0_0x1_phys_0', DedicatedUsage: '100', SharedUsage: '200' }]), undefined, inventory);
+  const nvidia = result.adapters.find(row => row.name.includes('NVIDIA'));
+  assert.ok(nvidia, 'installed inventory-only card must remain present');
+  assert.equal(nvidia.vramTotalBytes, 8 * 1024 ** 3);
+  assert.equal(nvidia.vramUsedBytes, null);
+  assert.equal(nvidia.percent, null);
+  assert.equal(nvidia.driverErrorCode, 43);
+  assert.equal(nvidia.deviceStatus, 'driver-error');
+  assert.equal(nvidia.status, 'unavailable');
+  assert.equal(nvidia.capacitySource, 'windows-driver-registry-qword');
+  assert.match(nvidia.message, /43/);
+  assert.equal(result.adapters.find(row => row.name === 'AMD 780M').sharedUsedBytes, 200);
+});
+
+test('a GPU device error overrides otherwise readable zero live counters', () => {
+  const parse = feature('parseWindowsGpu');
+  const inventory = [{ ...unavailableNvidia(), id: 'luid_0x0_0x1_phys_0' }];
+  const first = parse(windows([engine(1, 0, 0, 1000)], [{ Name: 'luid_0x0_0x1_phys_0', DedicatedUsage: '0', SharedUsage: '0' }]), undefined, inventory);
+  const second = parse(windows([engine(1, 0, 0, 2000)], [{ Name: 'luid_0x0_0x1_phys_0', DedicatedUsage: '0', SharedUsage: '0' }]), first.baseline, inventory);
+  assert.equal(second.adapters[0].percent, null);
+  assert.equal(second.adapters[0].vramUsedBytes, null);
+  assert.equal(second.adapters[0].vramTotalBytes, 8 * 1024 ** 3);
+});
+
+test('live counter failure retains verified GPU inventory and its capacity provenance in snapshots', async () => {
+  const sampler = feature('createGpuSampler')({ platform: 'win32', run: async (_command, args) => {
+    if (args.join(' ').includes('dxgi.dll')) return JSON.stringify({ adapters: [unavailableNvidia()], complete: true });
+    throw new Error('CIM unavailable; diagnostic secret');
+  } });
+  const monitor = feature('createSystemPerformance')({ intervalMs: 0, gpuIntervalMs: 0, gpuSampler: sampler });
+  await monitor.sample();
+  const snapshot = monitor.snapshot();
+  assert.equal(snapshot.gpu.adapters.length, 1);
+  assert.equal(snapshot.gpu.adapters[0].driverErrorCode, 43);
+  assert.equal(snapshot.gpu.adapters[0].capacitySource, 'windows-driver-registry-qword');
+  assert.equal(snapshot.gpu.adapters[0].vramTotalBytes, 8 * 1024 ** 3);
+  assert.equal(snapshot.gpu.percent, null);
+  assert.ok(!JSON.stringify(snapshot).includes('diagnostic secret'));
+  monitor.stop();
+});
+
+test('DXGI and installed-device records for the same exact PNP instance do not create two cards', () => {
+  const parse = feature('parseWindowsGpu');
+  const healthy = { ...unavailableNvidia(), driverErrorCode: 0, deviceStatus: 'ready' };
+  const inventory = [healthy, { ...healthy, id: 'luid_0x0_0x1_phys_0', capacitySource: 'dxgi' }];
+  const result = parse(windows([], []), undefined, inventory);
+  assert.equal(result.adapters.length, 1);
+  assert.equal(result.adapters[0].id, 'luid_0x00000000_0x00000001_phys_0');
+  assert.equal(result.adapters[0].capacitySource, 'dxgi');
+  const otherPnp = nvidiaPnp.replace('NVIDIA_INSTANCE', 'OTHER_INSTANCE');
+  const separate = parse(windows([], []), undefined, [healthy, { ...healthy, id: deviceId(otherPnp), pnpDeviceId: otherPnp }]);
+  assert.equal(separate.adapters.length, 2, 'identical GPU model names are not an identity match');
+});
+
+test('failed inventory queries retry after a bounded cooldown and later failures keep known capacity', async () => {
+  let now = 0, inventories = 0;
+  const sampler = feature('createGpuSampler')({ platform: 'win32', clock: () => now, inventoryRetryMs: 100,
+    run: async (_command, args) => {
+      if (!args.join(' ').includes('dxgi.dll')) return windows([], []);
+      inventories++;
+      if (inventories !== 2) throw new Error('Inventory temporarily unavailable');
+      return JSON.stringify({ adapters: [unavailableNvidia()], complete: true });
+    } });
+  assert.equal((await sampler()).adapters.length, 0);
+  now = 50; await sampler(); assert.equal(inventories, 1);
+  now = 100; const recovered = await sampler(); assert.equal(recovered.adapters.length, 1); assert.equal(recovered.adapters[0].vramTotalBytes, 8 * 1024 ** 3);
+  now = 200; const later = await sampler();
+  assert.equal(inventories, 3, 'driver-error inventory is periodically refreshed too');
+  assert.equal(later.adapters[0].vramTotalBytes, 8 * 1024 ** 3);
+  assert.equal(later.adapters[0].percent, null);
+});
+
+test('fresh installed-device errors supersede a cached healthy LUID for the same PNP instance', async () => {
+  let now = 0, inventories = 0;
+  const healthy = { ...unavailableNvidia(), id: 'luid_0x0_0x1_phys_0', driverErrorCode: 0, deviceStatus: 'ready', capacitySource: 'dxgi' };
+  const sampler = feature('createGpuSampler')({ platform: 'win32', clock: () => now, inventoryRetryMs: 100,
+    run: async (_command, args) => {
+      if (!args.join(' ').includes('dxgi.dll')) return windows([], [{ Name: 'luid_0x0_0x1_phys_0', DedicatedUsage: '100', SharedUsage: '200' }]);
+      inventories++;
+      return JSON.stringify({ adapters: inventories === 1 ? [healthy] : [{ ...unavailableNvidia(), dedicatedBytes: null }], complete: false });
+    } });
+  const first = await sampler();
+  assert.equal(first.adapters[0].deviceStatus, 'ready');
+  now = 100;
+  const changed = await sampler();
+  const identified = changed.adapters.filter(row => row.identified);
+  assert.equal(identified.length, 1);
+  assert.equal(identified[0].id, deviceId(nvidiaPnp));
+  assert.equal(identified[0].driverErrorCode, 43);
+  assert.equal(identified[0].deviceStatus, 'driver-error');
+  assert.equal(identified[0].percent, null);
+  assert.equal(identified[0].vramUsedBytes, null);
+  assert.equal(identified[0].vramTotalBytes, 8 * 1024 ** 3, 'previously verified capacity survives an exact-PNP transient read failure');
+  assert.equal(identified[0].capacitySource, 'dxgi');
+});
+
+test('a repaired installed GPU acquires its live LUID without a duplicate stale error row', async () => {
+  let now = 0, inventories = 0;
+  const healthy = { ...unavailableNvidia(), id: 'luid_0x0_0x1_phys_0', driverErrorCode: 0, deviceStatus: 'ready', capacitySource: 'dxgi' };
+  const sampler = feature('createGpuSampler')({ platform: 'win32', clock: () => now, inventoryRetryMs: 100,
+    run: async (_command, args) => {
+      if (!args.join(' ').includes('dxgi.dll')) return windows([], []);
+      inventories++;
+      return JSON.stringify({ adapters: inventories === 1 ? [unavailableNvidia()] : [healthy], complete: true });
+    } });
+  assert.equal((await sampler()).adapters[0].driverErrorCode, 43);
+  now = 100; const repaired = await sampler();
+  assert.equal(repaired.adapters.length, 1);
+  assert.equal(repaired.adapters[0].id, 'luid_0x00000000_0x00000001_phys_0');
+  assert.equal(repaired.adapters[0].driverErrorCode, 0);
+  assert.equal(repaired.adapters[0].capacitySource, 'dxgi');
+  now = 1000; await sampler(); assert.equal(inventories, 2, 'complete healthy inventory is cached');
+});
+
+test('installed-device fallback rejects a capacity record with another PNP instance hash', () => {
+  const result = feature('parseWindowsGpu')(windows([], []), undefined, [{ ...unavailableNvidia(), id: deviceId(nvidiaPnp + '_OTHER') }]);
+  assert.equal(result.adapters.length, 0);
+});
+
+test('Windows installed capacity follows the exact display-class instance and accepts only QWORD bytes', { skip: process.platform !== 'win32' }, async () => {
+  const run = feature('runPerformanceProbe');
+  const powershell = win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const displayDriver = '{4d36e968-e325-11ce-bfc1-08002be10318}\\0042';
+  async function readFixture(kind, driver = displayDriver) {
+    // Mock only read APIs in an isolated child; the production inventory script resolves identity and byte type.
+    const mocks = `
+function Get-CimInstance {
+  [CmdletBinding()] param([string]$ClassName)
+  if ($ClassName -ne 'Win32_VideoController') { throw 'Unexpected class' }
+  [pscustomobject]@{Name='Fixture installed GPU';PNPDeviceID='${nvidiaPnp}';ConfigManagerErrorCode=43;Status='Error'}
+}
+function Get-ItemProperty {
+  [CmdletBinding()] param([string]$LiteralPath)
+  if ($LiteralPath -cne 'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\${nvidiaPnp}') { throw 'Wrong PNP instance' }
+  [pscustomobject]@{Driver='${driver}'}
+}
+function Get-Item {
+  [CmdletBinding()] param([string]$LiteralPath)
+  if ($LiteralPath -cne 'Registry::HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\${displayDriver}') { throw 'Wrong driver key' }
+  $fixtureKey = [pscustomobject]@{Kind='${kind}';Size=[long]8589934592}
+  $fixtureKey | Add-Member -MemberType ScriptMethod -Name GetValueKind -Value {
+    param($name) if ($name -ne 'HardwareInformation.qwMemorySize') { throw 'Wrong capacity property' }
+    [Microsoft.Win32.RegistryValueKind][Enum]::Parse([Microsoft.Win32.RegistryValueKind], $this.Kind)
+  }
+  $fixtureKey | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($name,$default) $this.Size }
+  $fixtureKey | Add-Member -MemberType ScriptMethod -Name Close -Value { }
+  $fixtureKey
+}
+`;
+    const script = mocks + windowsGpuInventory.replace("Add-Type -TypeDefinition @'", "throw 'DXGI fixture unavailable'\nAdd-Type -TypeDefinition @'");
+    return JSON.parse(await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 4000, maxBytes: 32768 }));
+  }
+  const valid = await readFixture('QWord');
+  assert.equal(valid.complete, false, 'installed devices survive an independent DXGI failure');
+  assert.equal(valid.adapters.length, 1);
+  assert.equal(valid.adapters[0].id, deviceId(nvidiaPnp));
+  assert.equal(valid.adapters[0].pnpDeviceId, nvidiaPnp);
+  assert.equal(valid.adapters[0].dedicatedBytes, String(8 * 1024 ** 3));
+  assert.equal(valid.adapters[0].driverErrorCode, 43);
+  assert.equal(valid.adapters[0].capacitySource, 'windows-driver-registry-qword');
+  for (const unsupported of [await readFixture('DWord'), await readFixture('QWord', '{00000000-0000-0000-0000-000000000000}\\0042')]) {
+    assert.equal(unsupported.adapters.length, 1, 'unverified capacity does not erase installed inventory');
+    assert.equal(unsupported.adapters[0].dedicatedBytes, null);
+    assert.equal(unsupported.adapters[0].capacitySource, 'unavailable');
+  }
+});
+
+test('known shared-only adapters retain shared capacity independently of unknown usage', () => {
+  const result = feature('parseWindowsGpu')(windows([], []), undefined, [{ id: 'luid_0x0_0x1_phys_0', name: 'Integrated GPU', dedicatedBytes: 0, sharedBytes: 16 * 1024 ** 3 }]);
+  assert.equal(result.adapters.length, 1);
+  assert.equal(result.adapters[0].memoryKind, 'shared');
+  assert.equal(result.adapters[0].vramTotalBytes, 16 * 1024 ** 3);
+  assert.equal(result.adapters[0].sharedUsedBytes, null);
+  assert.equal(result.adapters[0].vramUsedBytes, null);
 });
 
 test('bounded probe strips credentials and refuses timeout, excess output and cancellation', async () => {

@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import { VERSION } from './version.mjs';
 import { ANTENNA_ROWS, renderAntenna, createAntennaClock, BACKGROUND_STYLE, FPS } from './antenna.mjs';
 import {createChatViewport} from './chat-viewport.mjs';
-import {performanceFields} from './performance-view.mjs';
+import {performanceDetails} from './performance-view.mjs';
 
 const LOGO = [
   ' ____  _   _ ____   ___      ____ _     ___ ',
@@ -34,6 +34,31 @@ function fit(value, columns) {
   let result = '', count = 0;
   for (const character of plain) { const cells = cellWidth(character); if (count + cells > Math.max(0, columns - 1)) break; result += character; count += cells; }
   return columns > 0 ? result + '~' : '';
+}
+function wrap(value,columns){
+  if(columns<=0)return [];
+  const lines=[];let line='';
+  for(const word of clean(value).split(/\s+/).filter(Boolean)){
+    const next=line?line+' '+word:word;
+    if(line&&width(next)>columns){lines.push(line);line=fit(word,columns);}
+    else line=fit(next,columns);
+  }
+  if(line)lines.push(line);
+  return lines;
+}
+
+function performanceLines(groups,columns,paint){
+  const lines=[];
+  for(const [index,group] of groups.entries()){
+    if(index)lines.push('');
+    if(group.title)lines.push(...wrap(group.title,columns).map(line=>paint(37,line)));
+    for(const item of group.fields){
+      const label=item.label+': ',value=clean(item.value),code=item.code??37;
+      if(width(label+value)<=columns)lines.push(paint(90,label)+paint(code,value));
+      else {lines.push(...wrap(item.label+':',columns).map(line=>paint(90,line)));lines.push(...wrap(value,Math.max(1,columns-2)).map(line=>'  '+paint(code,line)));}
+    }
+  }
+  return lines;
 }
 
 export function describeSystem({ platform = process.platform, arch = process.arch } = {}) {
@@ -75,6 +100,10 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
   const beside = columns >= leftWidth + 36;
   const performancePanel=!!state.performance&&beside&&columns>=leftWidth+3+58+3+28;
   const panelWidth=performancePanel?Math.min(40,Math.max(28,Math.floor((columns-leftWidth-6)*0.32))):0;
+  const details=state.performance?performanceDetails(state.performance):[];
+  // Unmatched live counters remain in /performance; the fixed header reserves
+  // its limited height for the identified physical cards when available.
+  const performance=details.some(group=>group.identified===true)?details.filter(group=>group.identified!==false):details;
   const available = beside ? columns - leftWidth - 3 - (performancePanel?panelWidth+3:0) : columns;
   const field = (label, value, code = 37) => paint(90, `${label}: `) + paint(code, fit(value, Math.max(0, available - label.length - 2)));
   const quality = state.health?.percent;
@@ -104,14 +133,13 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
     ...(state.verification?[field('Last Check',state.verification,state.verification==='Verified'?32:state.verification==='Failed'?31:'38;5;208')]:[]),
     field('Activity', activity),
     field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
-    ...(!performancePanel&&state.performance?['',field('Performance','This PC'),...performanceFields(state.performance).map(item=>field(item.label,item.value))]:[]),
   ];
   let lines;
   if (beside) {
     const antenna = renderAntenna({ elapsed: antennaElapsed, idle: antennaIdle, color });
     const left = big ? [...LOGO.map(line => paint(LOGO_COLOR, line)), '', ...antenna] : [paint(LOGO_COLOR, 'SUDO CLI'), ...antenna];
     const performanceStart=big?LOGO.length+1:1;
-    const panel=performancePanel?[paint(37,'Performance (This PC)'),'',...performanceFields(state.performance).flatMap((item,index)=>[...(index?['']:[]),paint(90,item.label+': ')+paint(37,fit(item.value,Math.max(0,panelWidth-item.label.length-2)))])]:[];
+    const panel=performancePanel?[paint(37,'Performance (This PC)'),'',...performanceLines(performance,panelWidth,paint)]:[];
     lines = Array.from({ length: Math.max(left.length, fields.length,performancePanel?performanceStart+panel.length:0) }, (_, index) => {
       const value = left[index] || '';
       const status=fields[index]||'';
@@ -119,6 +147,7 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
     });
     lines.push('');
   } else lines = [paint(LOGO_COLOR, 'SUDO CLI'), ...fields];
+  if(!performancePanel&&performance.length)lines.push('',paint(90,'Performance: ')+paint(37,'This PC'),'',...performanceLines(performance,columns,paint));
   lines.push(paint(90, fit(`v${VERSION} | / for commands | Live Traffic is usage | Context: reported`, columns)), paint(90, fit(columns >= CREDITS.length ? CREDITS : SHORT_CREDITS, columns)), paint(90, '-'.repeat(columns)));
   if (color) lines[0] = BACKGROUND_STYLE + lines[0];
   if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [(color?BACKGROUND_STYLE:'')+paint(LOGO_COLOR, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };

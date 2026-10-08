@@ -8,7 +8,7 @@ Use `/update check` to check manually, `/update on` or `/update off` to set star
 
 ## Publishing compatible releases
 
-Publish a stable GitHub Release with a tag such as `v0.6.5` (plain `0.6.5` is also accepted). The ZIP root must be `codexcli/` and the package version must exactly match the release tag. Attach a compatible package using one of these exact naming patterns:
+Publish a stable GitHub Release with a tag such as `v0.6.6` (plain `0.6.6` is also accepted). The ZIP root must be `codexcli/` and the package version must exactly match the release tag. Attach a compatible package using one of these exact naming patterns:
 
 - `codexcli-VERSION-windows-x64.zip` or `codexcli-VERSION-windows-arm64.zip`
 - `codexcli-VERSION-linux-x64.zip` or `codexcli-VERSION-linux-arm64.zip`
@@ -18,7 +18,7 @@ Publish a stable GitHub Release with a tag such as `v0.6.5` (plain `0.6.5` is al
 Also attach `codexcli-VERSION-SHA256SUMS.txt`, `SHA256SUMS.txt` or `SHA256SUMS` to that same release. Use ordinary SHA-256 sum lines, with two spaces (or a space and `*`) between the 64-character hash and a simple filename:
 
 ```text
-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  codexcli-0.6.5-windows-x64.zip
+0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  codexcli-0.6.6-windows-x64.zip
 ```
 
 That line is an illustrative hash; generate the real checksum from the final archive. Do not use paths or duplicate filenames in the sums file. Each supported platform selects its exact package first, then the source fallback. Other platform binaries are never chosen. Source packages require a suitable installed Node runtime and may install the pinned native runtime during the normal verification stage.

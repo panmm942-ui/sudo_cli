@@ -5,6 +5,29 @@ import { stripVTControlCharacters } from 'node:util';
 
 const example = { cwd: '/projects/demo', working: false, status: 'Offline', connectionState: 'pending', configuredModel: 'test-model', connectedAI: null, context: { used: null, limit: 200000, percent: null } };
 
+test('two named GPUs keep separate dedicated capacities, shared RAM and driver failure visible without stealing input space',async()=>{
+  const {renderDashboard}=await import('../src/dashboard.mjs');
+  const performance={cpu:{percent:12.5},ram:{usedBytes:8*1024**3,totalBytes:32*1024**3,percent:25},gpu:{adapters:[
+    {id:'unmatched',name:'Windows GPU unmatched counters',identified:false,percent:0,vramUsedBytes:0,vramTotalBytes:null,sharedUsedBytes:8192,sharedTotalBytes:null,memoryKind:'dedicated'},
+    {id:'amd',name:'AMD Radeon 780M',identified:true,percent:17.8,vramUsedBytes:400*1024**2,vramTotalBytes:512*1024**2,sharedUsedBytes:300*1024**2,sharedTotalBytes:16*1024**3,memoryKind:'dedicated'},
+    {id:'rtx',name:'NVIDIA GeForce RTX 5050 Laptop GPU',identified:true,status:'unavailable',percent:null,vramUsedBytes:null,vramTotalBytes:7.96*1024**3,memoryKind:'dedicated',driverErrorCode:43,deviceStatus:'driver-error'},
+  ]}};
+  for(const columns of [150,110,70,48]){
+    const view=renderDashboard({state:{...example,performance,scope:'project',chatTitle:'New chat',network:{wifi:'Yes',downloadBps:1024,uploadBps:2048}},columns,rows:44,color:true});
+    assert.equal(view.sticky,true,`Two-card layout should remain useful at ${columns} columns`);
+    const lines=view.lines.map(stripVTControlCharacters),start=columns===150?lines.findIndex(line=>line.includes('Performance (This PC)')):-1;
+    const panel=columns===150?lines.slice(start).map(line=>line.slice(lines[start].indexOf('Performance'))):lines;
+    const text=panel.join(' ').replace(/\s+/g,' ');
+    assert.match(text,/GPU 0: AMD Radeon 780M/);assert.match(text,/GPU 1: NVIDIA GeForce RTX 5050 Laptop GPU/);
+    assert.doesNotMatch(text,/Unidentified counters|Windows GPU unmatched counters/,'Unmatched counters belong in the full listing, leaving header space for physical GPUs');
+    for(const value of ['Dedicated VRAM:','400/512 MiB (78.1%)','Shared RAM:','0.3/16.0 GiB (1.8%)','Unavailable / 8.0 GiB','Driver error 43'])assert.ok(text.includes(value),`${columns} columns lost ${value}: ${text}`);
+    assert.ok(lines.every(line=>[...line].length<columns),`${columns} columns overflowed`);
+    assert.ok(44-view.height>=4,`${columns} columns left insufficient input space`);
+  }
+  const tiny=renderDashboard({state:{...example,performance},columns:35,rows:8,color:true});
+  assert.equal(tiny.sticky,false);assert.equal(tiny.height,1);assert.match(stripVTControlCharacters(tiny.lines[0]),/Enlarge terminal/);
+});
+
 test('local performance is readable beside the antenna on wide terminals and below status on smaller ones',async()=>{
   const {renderDashboard}=await import('../src/dashboard.mjs');
   const {ANTENNA_ROWS}=await import('../src/antenna.mjs');

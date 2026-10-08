@@ -1,6 +1,6 @@
 {
   "name": "codexcli",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "A separate terminal UI for the open-source Codex engine with runtime model setup",
   "type": "module",
   "private": true,

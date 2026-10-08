@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.5**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.6**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -128,7 +128,7 @@ Your text defaults to bright green (`#00FF00`); assistant replies and notices us
 
 `/bgcolor reset` restores the default background. `/txtcolor reset` restores green user text. `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
 
-**Performance (This PC)** appears beside the antenna: CPU, RAM, GPU and VRAM for the computer running the CLI. `/performance status` prints the readings; `/performance refresh` requests a new sample. They remain local when your AI runs in the cloud. GPU reports the busiest measured adapter/engine, and a known VRAM pair follows that adapter. Missing counters stay **Unavailable**; shared memory is labeled. See [local performance](docs/performance.md).
+**Performance (This PC)** appears beside the antenna: CPU, RAM and named GPU blocks for the computer running the CLI. Each card has its own usage, dedicated VRAM and available shared-memory readings. An integrated card's 512 MiB is separate from a discrete card's 8 GiB. Installed cards keep a known capacity visible even if live readings are unavailable; Windows device errors are labeled. `/performance status` prints the full details; `/performance refresh` requests a new sample. These readings remain local when your AI runs in the cloud. See [local performance](docs/performance.md).
 
 Every interactive launch checks stable public releases from `panmm942-ui/sudo_cli`, unless you choose `/update off`. A newer compatible ZIP is offered with **y/n**; downloads, checksum verification and installation happen after **y**. `/update check` checks now. The repository needs a published release with its ZIP and checksum assets. See [GitHub updates](docs/github-updates.md).
 
@@ -152,7 +152,7 @@ Version 0.6.2 added green input accents, the live command picker and local model
 
 Version 0.6.4 adds conversation scrolling, the canonical `/chat` command, fresh-chat display resets and signed source integrity. See [version 0.6.4 verification](docs/verification-v0.6.4.md) for the checks and their limits. Earlier release evidence remains in [version 0.6.3 verification](docs/verification-v0.6.3.md). Real model inference and physical macOS/ARM terminal behavior require separate validation.
 
-Version 0.6.5 adds live local performance, green user text with separate soft-white replies, direct color resets, a Search-line cursor and spaced command choices. It also applies the current reasoning selection at both provider boundaries. Windows and Linux host probes verified local counters; macOS performance parsing uses fixtures. Native tool-loop fixtures test transport and execution behavior, not a real model's decisions or every provider. Historical verification receipts remain evidence for their named releases.
+Version 0.6.6 fixes GPU identity and capacity display on computers with multiple graphics cards. It retains installed cards that have no live counters and shows Windows device errors without inventing idle readings. Version 0.6.5 introduced the local performance panel, consistent input colors, direct color resets, Search-line cursor, spaced choices and reasoning-policy fixes. Windows and Linux host probes verified local counters; macOS performance parsing uses fixtures. Native tool-loop fixtures test transport and execution behavior, not a real model's decisions or every provider. Historical verification receipts remain evidence for their named releases.
 
 ## Launch options, source and licenses
 
@@ -165,7 +165,7 @@ Other options include `--permissions ask|allow-everything`, `--scope read-only|p
 
 The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
 
-Official 0.6.5 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
+Official 0.6.6 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
 
 ## Credits
 

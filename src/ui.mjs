@@ -54,7 +54,7 @@ import {createToolLoopGuard} from './tool-loop-guard.mjs';
 import {createCommandWatchdog} from './command-watchdog.mjs';
 import {createChatScrollInput} from './chat-scroll-input.mjs';
 import {createSystemPerformance} from './system-performance.mjs';
-import {performanceFields} from './performance-view.mjs';
+import {performanceDetails} from './performance-view.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -178,9 +178,7 @@ export async function runUI(opts) {
     if(name==='/performance'){
       if(args.length>1||args.length&&!['status','refresh'].includes(args[0]))throw new Error('Use /performance [status|refresh].');
       if(args[0]==='refresh')await performanceMonitor.sample();
-      const current=performanceMonitor.snapshot();note('Performance (This PC)\n\n'+performanceFields(current).map(item=>`${item.label}: ${item.value}`).join('\n\n'));
-      if(current.gpu?.adapters?.length>1)note('GPU shows the busiest measured adapter. VRAM uses that adapter when its capacity is available; otherwise it shows the available combined counters.');
-      for(const adapter of current.gpu?.adapters||[])if(adapter.identified)note(`GPU: ${adapter.name}${Number.isFinite(adapter.sharedUsedBytes)?'; shared RAM '+(adapter.sharedUsedBytes/1024**2).toFixed(0)+' MiB used':''}`);return true;
+      const current=performanceMonitor.snapshot();note('Performance (This PC)\n\n'+performanceDetails(current).map(block=>[block.title,...block.fields.map(item=>`${item.label}: ${item.value}`),...(block.capacitySource==='windows-driver-registry-qword'?['Capacity: reported by the installed Windows driver']:[])].filter(Boolean).join('\n')).join('\n\n'));return true;
     }
     if(name==='/scroll'){
       const action=args[0]||'up';if(args.length>1||!['up','down','top','bottom','live'].includes(action))throw new Error('Use /scroll up|down|top|bottom.');

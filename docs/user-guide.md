@@ -1,4 +1,4 @@
-# Using sudocli 0.6.5
+# Using sudocli 0.6.6
 
 Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/txtcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
@@ -102,7 +102,7 @@ Prompts submitted during work queue in order. `/stop` or Ctrl+C interrupts model
 
 The first two print the cached **This PC** readings. `refresh` requests a fresh sample. Monitoring continues while the interactive CLI is idle, with no model request.
 
-CPU and RAM refresh every 1.5 seconds; GPU and graphics memory every 3 seconds. GPU reports the busiest measured adapter/engine. When its memory usage and capacity are known, the VRAM pair describes that same adapter.
+CPU and RAM refresh every 1.5 seconds; GPU and graphics memory every 3 seconds. Each detected graphics card has a named block with its own usage and dedicated VRAM. Shared RAM is separate. Installed cards with unavailable counters still show a known capacity; a Windows device error is displayed beside that card. For example, an integrated AMD card can have 512 MiB while a separate NVIDIA card has about 8 GiB. `/performance` prints the full names and details.
 
 **Measuring** means a delta needs another sample. **Unavailable** means the OS or driver has not supplied usable counters. A real idle reading can be 0%; unknown usage is never changed to zero. Shared/unified graphics memory is labeled **Shared**. A measured byte count may appear with **total unavailable**.
 
@@ -253,7 +253,7 @@ Training is under `/help advanced`. `/training export` creates a bounded JSONL d
 
 `/update stage PACKAGE_OR_HTTPS_URL TRUSTED_SHA256` verifies a supplied trusted hash and stages a bounded ZIP. `/update install` validates compatible paths/package/runtime metadata, installs beside the old release and changes the registered launcher. `/update rollback` points it to the retained prior release. Review the checksum through a trusted channel and restart after switching versions. This is explicit update/rollback, not an automatic downloaded-code startup step.
 
-Official 0.6.5 packages check an Ed25519-signed manifest before startup. Altered or missing signed files, including credits, licenses and upstream notices, refuse startup. A deliberate fork can replace the verifier, so signing cannot prevent someone modifying a fork. Preserve the included credits, license texts and upstream notices when distributing packages. See [signed release integrity](release-integrity.md) for the publishing process and limits.
+Official 0.6.6 packages check an Ed25519-signed manifest before startup. Altered or missing signed files, including credits, licenses and upstream notices, refuse startup. A deliberate fork can replace the verifier, so signing cannot prevent someone modifying a fork. Preserve the included credits, license texts and upstream notices when distributing packages. See [signed release integrity](release-integrity.md) for the publishing process and limits.
 
 ## What persists and what was tested
 
@@ -271,6 +271,6 @@ Official 0.6.5 packages check an Ed25519-signed manifest before startup. Altered
 
 Actual Linux x64 PTY acceptance used the native Codex engine and 22 loopback streamed model requests with isolated HOME/XDG/state/project; all four CLI children exited 0. Multiline input and bracketed paste reached the model literally without changing permissions. Local Windows/Linux automated checks and actual Windows browser CDP acceptance are distinct from the six-target CI definition. macOS/ARM CI jobs, physical audio, external desktop services, production providers and rented GPU billing remain unverified here. See [terminal evidence](v0.6-terminal-evidence.md), [22-area evidence](v0.6-feature-evidence.md) and [release verification](verification-v0.6.md).
 
-Those linked receipts describe their named earlier releases. For 0.6.5, focused tests cover the color defaults/resets, command Search cursor and spacing, reasoning request boundaries, and performance sampling/cleanup. Actual Windows and WSL/Linux probes read local counters; macOS GPU parsing uses fixtures. Deterministic native tool fixtures verify transport and command/edit execution, without loading real model weights or establishing a model's quality.
+Those linked receipts describe their named earlier releases. Version 0.6.6 adds checks for named GPU blocks, installed cards without counters, capacity above 4 GiB, and Windows device errors. Existing tests cover colors/resets, command Search cursor and spacing, reasoning request boundaries and performance sampling/cleanup. Actual Windows and WSL/Linux probes read local counters; macOS GPU parsing uses fixtures. Deterministic native tool fixtures verify transport and command/edit execution, without loading real model weights or establishing a model's quality.
 
 The frontend is MIT; bundled OpenAI Codex 0.160.1 and its matching source/notices retain Apache-2.0, and Node.js 24.19.0 retains its license/dependency notices. [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui). See [THIRD_PARTY.md](../THIRD_PARTY.md).

@@ -1,6 +1,7 @@
 import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { win32 } from 'node:path';
+import { createHash } from 'node:crypto';
 import { isolatedEnvironment } from './permission-scope.mjs';
 import { windowsGpuCounters, windowsGpuInventory } from './system-performance-windows.mjs';
 
@@ -16,6 +17,14 @@ const counter = value => {
 const cleanName = (value, fallback) => typeof value === 'string' ? value.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 128) || fallback : fallback;
 const output = result => typeof result === 'string' ? result : result?.stdout || '';
 const unavailableGpu = () => ({ source: 'unavailable', adapters: [] });
+const driverCode = value => { const code = bytes(value); return code !== null && code <= 65535 ? code : null; };
+const capacitySources = new Set(['dxgi', 'windows-driver-registry-qword', 'nvidia-smi', 'ioreg']);
+const capacitySource = value => capacitySources.has(value) ? value : 'unavailable';
+const deviceState = (value, code) => code !== null && code > 0 ? 'driver-error'
+  : ['ready', 'driver-error', 'unavailable', 'unknown'].includes(value) ? value : 'unknown';
+const gpuMessage = row => row.driverErrorCode > 0 ? `Windows reports GPU driver error ${row.driverErrorCode}.`
+  : row.status === 'warming-up' ? 'Waiting for another GPU sample.'
+  : row.status === 'unavailable' ? 'Live GPU readings are unavailable.' : null;
 
 /** Fixed executable/argument probes: no shell, profiles, inherited keys, or unbounded output. */
 export function runPerformanceProbe(command, args, { signal, timeoutMs = 2500, maxBytes = 512 * 1024, env = process.env } = {}) {
@@ -51,8 +60,11 @@ export function parseNvidiaGpu(text) {
     const absent = value => /^(?:\[?N\/A\]?|Not Supported)$/i.test(value);
     if (usage === null && !absent(values[2]) || used === null && !absent(values[3]) || total === null && !absent(values[4]) || used !== null && total !== null && used > total) continue;
     const usedBytes = used === null ? null : bytes(used * 1024 ** 2), totalBytes = total === null ? null : bytes(total * 1024 ** 2);
-    adapters.push({ id: `nvidia-${values[0]}`, name: cleanName(values[1], 'NVIDIA GPU'), identified: true, percent: usage,
-      vramUsedBytes: usedBytes, vramTotalBytes: totalBytes, sharedUsedBytes: null, memoryKind: 'dedicated' });
+    const row = { id: `nvidia-${values[0]}`, name: cleanName(values[1], 'NVIDIA GPU'), identified: true, percent: usage,
+      vramUsedBytes: usedBytes, vramTotalBytes: totalBytes, sharedUsedBytes: null, sharedTotalBytes: null, memoryKind: 'dedicated',
+      driverErrorCode: null, deviceStatus: 'ready', status: usage === null ? 'unavailable' : 'available',
+      capacitySource: totalBytes === null ? 'unavailable' : 'nvidia-smi' };
+    row.message = gpuMessage(row); adapters.push(row);
   }
   return { source: adapters.length ? 'nvidia-smi' : 'unavailable', adapters };
 }
@@ -62,28 +74,69 @@ function luid(value) {
   return match ? `luid_0x${match[1].toLowerCase().padStart(8, '0')}_0x${match[2].toLowerCase().padStart(8, '0')}_phys_${match[3]}` : null;
 }
 
+const pnpIdentity = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && /^[A-Za-z0-9_&\\#{}-]+$/.test(value) ? value.toLowerCase() : null;
+function inventoryId(row) {
+  const id = luid(row?.id); if (id) return id;
+  const pnp = pnpIdentity(row?.pnpDeviceId);
+  return pnp && row?.id === 'device_' + createHash('sha256').update(pnp).digest('hex') ? row.id : null;
+}
+function normalizeInventory(rows) {
+  if (!Array.isArray(rows) || rows.length > 128) return [];
+  const result = [], seen = new Set();
+  // A LUID record can attach live counters to the exact installed PNP instance.
+  const ordered = rows.map((row, index) => ({ row, index })).sort((a, b) => Number(Boolean(luid(b.row?.id))) - Number(Boolean(luid(a.row?.id))) || a.index - b.index);
+  for (const { row } of ordered) {
+    const id = inventoryId(row); if (!id) continue;
+    const pnp = pnpIdentity(row.pnpDeviceId), identity = pnp || id;
+    if (seen.has(identity) || seen.has(id)) continue;
+    seen.add(identity); seen.add(id);
+    result.push({ ...row, id, pnpDeviceId: pnp, dedicatedBytes: bytes(row.dedicatedBytes), sharedBytes: bytes(row.sharedBytes),
+      driverErrorCode: driverCode(row.driverErrorCode), capacitySource: capacitySource(row.capacitySource || (luid(id) ? 'dxgi' : undefined)) });
+    if (result.length === 64) break;
+  }
+  return result;
+}
+
+function mergeInventory(oldRows, newRows) {
+  const sameDevice = (left, right) => left.id === right.id || left.pnpDeviceId && left.pnpDeviceId === right.pnpDeviceId;
+  const updated = newRows.map(row => {
+    const old = oldRows.find(value => sameDevice(row, value));
+    if (!old || row.dedicatedBytes !== null || row.sharedBytes !== null) return row;
+    return { ...row, dedicatedBytes: old.dedicatedBytes, sharedBytes: old.sharedBytes, capacitySource: old.capacitySource };
+  });
+  // Fresh device state owns an exact identity even when a failed driver no longer has a LUID.
+  const retained = oldRows.filter(old => !updated.some(row => sameDevice(row, old)));
+  return normalizeInventory([...updated, ...retained]);
+}
+
 /** Windows GPU usage uses PERF_100NSEC_TIMER deltas, summed by engine across processes. */
 export function parseWindowsGpu(text, previous = new Map(), inventory = []) {
   const baseline = new Map(), adapters = new Map(), capacities = new Map();
+  const installed = normalizeInventory(inventory);
+  for (const row of installed) capacities.set(row.id, row);
   let value;
   try { value = typeof text === 'string' && text.length <= 512 * 1024 ? JSON.parse(text.replace(/^\uFEFF/, '')) : null; } catch { value = null; }
-  if (!Array.isArray(value?.engines) || !Array.isArray(value?.memory) || value.engines.length > 4096 || value.memory.length > 64) return { ...unavailableGpu(), baseline };
-  for (const row of inventory) {
-    const id = luid(row?.id); if (id) capacities.set(id, row);
-  }
+  const countersAvailable = Array.isArray(value?.engines) && Array.isArray(value?.memory) && value.engines.length <= 4096 && value.memory.length <= 64;
+  if (!countersAvailable) value = { engines: [], memory: [] };
   const adapter = id => {
     if (!adapters.has(id)) {
       const info = capacities.get(id), dedicated = bytes(info?.dedicatedBytes), shared = bytes(info?.sharedBytes);
-      adapters.set(id, { id, name: cleanName(info?.name, 'Windows GPU'), identified: typeof info?.name === 'string' && Boolean(info.name.trim()), percent: null, vramUsedBytes: null,
-        vramTotalBytes: dedicated && dedicated > 0 ? dedicated : null, sharedUsedBytes: null,
-        sharedTotalBytes: shared, memoryKind: dedicated === 0 && shared > 0 ? 'shared' : 'dedicated', engines: new Map() });
+      const code = driverCode(info?.driverErrorCode), memoryKind = dedicated === 0 && shared > 0 ? 'shared' : dedicated > 0 || !info ? 'dedicated' : 'unknown';
+      adapters.set(id, { id, pnpDeviceId: info?.pnpDeviceId || null, name: cleanName(info?.name, 'Windows GPU'),
+        identified: info?.identified !== false && typeof info?.name === 'string' && Boolean(info.name.trim()), percent: null, vramUsedBytes: null,
+        vramTotalBytes: memoryKind === 'shared' ? shared : dedicated !== null && dedicated > 0 ? dedicated : null, sharedUsedBytes: null,
+        sharedTotalBytes: shared, memoryKind, driverErrorCode: code, deviceStatus: deviceState(info?.deviceStatus || (info && luid(id) ? 'ready' : undefined), code),
+        capacitySource: info?.capacitySource || 'unavailable', status: 'unavailable', engines: new Map(), needsBaseline: false });
     }
     return adapters.get(id);
   };
+  // Installed cards are inventory, not an accidental by-product of busy counters.
+  for (const row of installed) adapter(row.id);
   for (const row of value.memory) {
     const id = luid(row?.Name), dedicated = bytes(row?.DedicatedUsage), shared = bytes(row?.SharedUsage);
     if (!id || dedicated === null && shared === null) continue;
     const target = adapter(id);
+    if (['driver-error', 'unavailable'].includes(target.deviceStatus)) continue;
     target.vramUsedBytes = target.memoryKind === 'shared' ? shared : dedicated;
     if (target.memoryKind === 'shared') target.vramTotalBytes = target.sharedTotalBytes;
     target.sharedUsedBytes = shared;
@@ -96,17 +149,19 @@ export function parseWindowsGpu(text, previous = new Map(), inventory = []) {
     if (!id || busy === null || time === null) continue;
     baseline.set(row.Name, { busy, time });
     const target = adapter(id), old = previous.get(row.Name);
-    if (!old || busy < old.busy || time <= old.time) continue;
+    if (['driver-error', 'unavailable'].includes(target.deviceStatus)) continue;
+    if (!old || busy < old.busy || time <= old.time) { target.needsBaseline = true; continue; }
     const usage = Number(busy - old.busy) / Number(time - old.time) * 100;
     if (!Number.isFinite(usage) || usage < 0) continue;
     target.engines.set(match[2], (target.engines.get(match[2]) || 0) + usage);
   }
   for (const row of adapters.values()) {
     if (row.engines.size) row.percent = Math.min(100, Math.max(...row.engines.values()));
-    delete row.engines;
+    row.status = row.percent !== null ? 'available' : row.needsBaseline ? 'warming-up' : 'unavailable';
+    row.message = gpuMessage(row); delete row.engines; delete row.needsBaseline;
   }
-  return { source: adapters.size ? 'windows-gpu-counters' : 'unavailable', adapters: [...adapters.values()], baseline,
-    warmingUp: baseline.size > 0 && ![...adapters.values()].some(row => row.percent !== null) };
+  return { source: adapters.size ? countersAvailable ? 'windows-gpu-counters' : 'windows-gpu-inventory' : 'unavailable', adapters: [...adapters.values()], baseline,
+    warmingUp: [...adapters.values()].some(row => row.status === 'warming-up') && ![...adapters.values()].some(row => row.percent !== null) };
 }
 
 /** IOAccelerator statistics are driver-dependent; only explicit utilization/byte fields qualify. */
@@ -121,25 +176,48 @@ export function parseMacGpu(text) {
     const usage = percent(field('Device Utilization %')), used = bytes(field('vramUsedBytes')), total = bytes(field('vramTotalBytes'));
     if (usage === null && used === null) continue;
     const name = cleanName(header[1].trim(), 'macOS GPU'), shared = /AGX|Apple.*(?:GPU|M\d)/i.test(name);
-    adapters.push({ id: `macos-${adapters.length}`, name, identified: false, percent: usage, vramUsedBytes: used,
+    const row = { id: `macos-${adapters.length}`, name, identified: false, percent: usage, vramUsedBytes: used,
       vramTotalBytes: shared || used !== null && total !== null && used > total ? null : total,
-      sharedUsedBytes: shared ? used : null, memoryKind: shared ? 'shared' : 'dedicated' });
+      sharedUsedBytes: shared ? used : null, sharedTotalBytes: null, memoryKind: shared ? 'shared' : 'dedicated',
+      driverErrorCode: null, deviceStatus: 'unknown', status: usage === null ? 'unavailable' : 'available', capacitySource: total === null || shared ? 'unavailable' : 'ioreg' };
+    row.message = gpuMessage(row); adapters.push(row);
   }
   return { source: adapters.length ? 'macos-ioreg' : 'unavailable', adapters };
 }
 
 /** OS-local measurements only. Missing drivers/tools/permission never become synthetic zeros. */
-export function createGpuSampler({ platform = process.platform, run = runPerformanceProbe, env = process.env } = {}) {
-  let baseline = new Map(), inventoryPromise;
+export function createGpuSampler({ platform = process.platform, run = runPerformanceProbe, env = process.env, clock = Date.now, inventoryRetryMs = 60000 } = {}) {
+  if (typeof clock !== 'function' || !Number.isSafeInteger(inventoryRetryMs) || inventoryRetryMs < 1 || inventoryRetryMs > 3600000) throw new Error('Invalid GPU inventory interval.');
+  let baseline = new Map(), inventoryPromise, inventoryRows = [], nextInventoryAt = 0;
   const powershell = win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const psArgs = script => ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script];
+  function getInventory(signal) {
+    if (inventoryPromise) return inventoryPromise;
+    const now = clock();
+    if (now < nextInventoryAt) return Promise.resolve(inventoryRows);
+    const pending = Promise.resolve().then(() => run(powershell, psArgs(windowsGpuInventory), { signal, env, timeoutMs: 4000, maxBytes: 32768 }))
+      .then(result => {
+        const text = output(result); if (text.length > 32768) throw new Error('Inventory limit');
+        const payload = JSON.parse(text.replace(/^\uFEFF/, ''));
+        const rawRows = Array.isArray(payload) ? payload : payload?.adapters;
+        if (!Array.isArray(rawRows) || rawRows.length > 64) throw new Error('Invalid inventory');
+        const rows = normalizeInventory(rawRows);
+        if (signal?.aborted) return inventoryRows;
+        const complete = (Array.isArray(payload) || payload.complete === true) && rows.length > 0
+          && !rows.some(row => row.driverErrorCode > 0 || !luid(row.id));
+        inventoryRows = complete ? rows : mergeInventory(inventoryRows, rows);
+        nextInventoryAt = complete ? Infinity : clock() + inventoryRetryMs;
+        return inventoryRows;
+      }).catch(() => { nextInventoryAt = signal?.aborted ? 0 : clock() + inventoryRetryMs; return inventoryRows; })
+      .finally(() => { if (inventoryPromise === pending) inventoryPromise = undefined; });
+    inventoryPromise = pending; return pending;
+  }
   const sample = async ({ signal } = {}) => {
     try {
       if (signal?.aborted) return unavailableGpu();
       if (platform === 'win32') {
-        if (!inventoryPromise) inventoryPromise = run(powershell, psArgs(windowsGpuInventory), { signal, env, timeoutMs: 4000, maxBytes: 32768 })
-          .then(result => { try { const rows = JSON.parse(output(result)); return Array.isArray(rows) && rows.length <= 64 ? rows : []; } catch { return []; } }, () => []);
-        const [text, inventory] = await Promise.all([run(powershell, psArgs(windowsGpuCounters), { signal, env }), inventoryPromise]);
+        const inventoryRead = getInventory(signal);
+        const [text, inventory] = await Promise.all([Promise.resolve().then(() => run(powershell, psArgs(windowsGpuCounters), { signal, env })).catch(() => null), inventoryRead]);
         if (signal?.aborted) return unavailableGpu();
         const result = parseWindowsGpu(output(text), baseline, inventory); baseline = result.baseline;
         const { baseline: _baseline, ...snapshot } = result; return snapshot;
@@ -206,11 +284,17 @@ export function createSystemPerformance({ platform = process.platform, system = 
       if (owner !== generation || abort.signal.aborted) return;
       const sampledAtMs = clock();
       if (!Number.isFinite(sampledAtMs) || !Array.isArray(value?.adapters) || value.adapters.length > 64) throw new Error('Invalid GPU data');
-      const adapters = value.adapters.map((row, index) => ({ id: cleanName(row?.id, `gpu-${index}`), name: cleanName(row?.name, 'GPU'),
+      const adapters = value.adapters.map((row, index) => {
+        const code = driverCode(row?.driverErrorCode), state = deviceState(row?.deviceStatus, code), blocked = ['driver-error', 'unavailable'].includes(state);
+        const usage = blocked ? null : percent(row?.percent), status = usage !== null ? 'available' : row?.status === 'warming-up' ? 'warming-up' : 'unavailable';
+        const result = { id: cleanName(row?.id, `gpu-${index}`), name: cleanName(row?.name, 'GPU'),
         identified: row?.identified === true,
-        percent: percent(row?.percent), vramUsedBytes: bytes(row?.vramUsedBytes), vramTotalBytes: bytes(row?.vramTotalBytes),
-        sharedUsedBytes: bytes(row?.sharedUsedBytes), sharedTotalBytes: bytes(row?.sharedTotalBytes),
-        memoryKind: ['dedicated', 'shared'].includes(row?.memoryKind) ? row.memoryKind : 'unknown' }));
+        pnpDeviceId: pnpIdentity(row?.pnpDeviceId), driverErrorCode: code, deviceStatus: state, status, capacitySource: capacitySource(row?.capacitySource),
+        percent: usage, vramUsedBytes: blocked ? null : bytes(row?.vramUsedBytes), vramTotalBytes: bytes(row?.vramTotalBytes),
+        sharedUsedBytes: blocked ? null : bytes(row?.sharedUsedBytes), sharedTotalBytes: bytes(row?.sharedTotalBytes),
+        memoryKind: ['dedicated', 'shared'].includes(row?.memoryKind) ? row.memoryKind : 'unknown' };
+        result.message = gpuMessage(result); return result;
+      });
       const usages = adapters.map(row => row.percent).filter(value => value !== null);
       const source = cleanName(value.source, 'unavailable');
       current.gpu = { status: usages.length ? 'available' : value.warmingUp ? 'warming-up' : 'unavailable',
@@ -222,7 +306,7 @@ export function createSystemPerformance({ platform = process.platform, system = 
       const usedBytes = usedKnown ? adapters.reduce((sum, row) => sum + row.vramUsedBytes, 0) : null;
       const totalBytes = totalKnown ? adapters.reduce((sum, row) => sum + row.vramTotalBytes, 0) : null;
       const usage = usedBytes !== null && totalBytes !== null && usedBytes <= totalBytes ? usedBytes / totalBytes * 100 : null;
-      current.vram = { status: usedBytes === null ? 'unavailable' : usage === null ? 'partial' : 'available',
+      current.vram = { status: usedBytes === null && totalBytes === null ? 'unavailable' : usage === null ? 'partial' : 'available',
         usedBytes, totalBytes: usedBytes !== null && totalBytes !== null && usedBytes > totalBytes ? null : totalBytes,
         percent: usage, memoryKind, sampledAtMs, source };
     }).catch(() => {
