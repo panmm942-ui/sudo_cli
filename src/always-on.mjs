@@ -2,6 +2,7 @@ import { watch } from 'node:fs';
 import { lstat, realpath, opendir } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {isSessionCleanupError} from './session-cleanup.mjs';
 
 const within = (root, path) => { const value = relative(root, path); return value === '' || (!value.startsWith('..' + sep) && value !== '..' && !isAbsolute(value)); };
 const interval = (value, name) => { if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new Error(`${name} must be a positive bounded number of milliseconds.`); return value; };
@@ -53,7 +54,7 @@ export function createAlwaysOn({
   if (standingGoal !== undefined && (typeof standingGoal !== 'string' || !standingGoal.trim() || Buffer.byteLength(standingGoal) > 1024 * 1024)) throw new Error('Standing goal must be nonempty bounded text.');
   if (!Array.isArray(watchPaths) || watchPaths.length > 32 || watchPaths.some(value => typeof value !== 'string' || !value || /[\u0000-\u001f\u007f]/.test(value))) throw new Error('Watch paths must be a bounded list of project directories.');
   let state = 'stopped', cloudState = 'unknown', cloudBilling = 'unknown', activeJobId = null, startedAt = null, lastActivityAt = null, nextHeartbeatAt = null;
-  let completed = 0, blocked = 0, failed = 0, lastError = null, controller, lease, loop, starting, stopping;
+  let completed = 0, blocked = 0, failed = 0, lastError = null, controller, lease, loop, starting, stopping,cleanupFailure;
   let lastCloudActivity = 0, sleepAttempted = false, nextHeartbeat = 0, watchTimer, watchGeneration = 0, watchController, pendingWatchReads = 0;
   let lastStandingPrompt;
   const watchers = [], watchBatch = new Map(), watchReads = new Map(), watchCanonicalReads = new Map();let watchVersions=new Map();
@@ -74,14 +75,22 @@ export function createAlwaysOn({
   }
   function report(error) {
     lastError = 'The coordinator could not complete an operation. Review its error log.';
-    const visible = new Error(clean(error?.message || 'Always-on operation failed.'));
+    const cleanup=isSessionCleanupError(error);
+    const cause=cleanup&&typeof error?.cause?.message==='string'?new Error(clean(error.cause.message)):undefined;
+    const visible = new Error(clean(error?.message || 'Always-on operation failed.'),cause?{cause}:undefined);
+    if(cleanup)visible.code=error.code;
     try { const result = onError(visible); result?.catch?.(() => {}); } catch { /* Reporting cannot start another execution. */ }
   }
   function emit() {
     try { const result = onState(snapshot()); result?.catch?.(report); } catch (error) { report(error); }
   }
   function setState(value) { state = value; emit(); }
-  async function closeTaskBudget(id) { try { await endTask?.(id); } catch (error) { report(error); } }
+  function haltForCleanup(error) {
+    if(cleanupFailure)return;
+    cleanupFailure=error;closeWatchers();controller?.abort(error);setState('stopping');report(error);
+  }
+  async function releaseWorkerLease(){const ownedLease=lease;lease=undefined;await ownedLease?.release().catch(report);}
+  async function closeTaskBudget(id) { try { await endTask?.(id); } catch (error) { if(isSessionCleanupError(error))haltForCleanup(error);else report(error); } }
   function budgetSignal(signal, limit) {
     if (limit?.timeoutMs === undefined) return signal;
     if (!Number.isSafeInteger(limit.timeoutMs) || limit.timeoutMs < 1 || limit.timeoutMs > 2147483647) throw new Error('Task duration budget returned an invalid timeout.');
@@ -219,7 +228,8 @@ export function createAlwaysOn({
     try { observedCloud(await sleep({ signal })); }
     catch (error) {
       cloudBilling = 'unknown';
-      if (signal?.aborted) { cloudState = 'unknown'; sleepAttempted = false; }
+      if(isSessionCleanupError(error)){cloudState='error';haltForCleanup(error);}
+      else if (signal?.aborted) { cloudState = 'unknown'; sleepAttempted = false; }
       else { cloudState = 'error'; report(error); }
     }
     emit();
@@ -246,6 +256,7 @@ export function createAlwaysOn({
       if (signal.aborted) throw signal.reason;
       sleepAttempted = false; emit();
     } catch (error) {
+      if(isSessionCleanupError(error))throw error;
       cloudState = 'error'; cloudBilling = 'unknown'; if (!signal.aborted) report(error);
       await finishJob(job, { status: 'blocked', reason: signal.aborted ? signal.reason?.name === 'TimeoutError' ? 'The task reached its duration budget before the cloud worker could start. Review and explicitly retry it after changing the limit if appropriate.' : 'Stopped before the cloud worker could start. Review and retry explicitly.' : `The cloud worker could not wake: ${clean(error?.message || 'wake failed')}` }); return;
     }
@@ -266,15 +277,17 @@ export function createAlwaysOn({
       let selected;
       try { selected = decision(preselected ?? await assess(job, { signal })); }
       catch (error) {
-        if (signal.aborted || error?.code === 'APPROVAL_REQUIRED') throw error;
+        if (isSessionCleanupError(error) || signal.aborted || error?.code === 'APPROVAL_REQUIRED') throw error;
         await finishJob(job, { status: 'blocked', reason: clean(error?.message || 'Local supervisor could not assess the task.') }); report(error); return;
       }
       if (signal.aborted) throw signal.reason;
       await execute(job, selected, signal);
     } catch (error) {
-      const isBlocked = signal.aborted || ['APPROVAL_REQUIRED', 'BUDGET_EXCEEDED', 'BUDGET_STORAGE_INVALID'].includes(error?.code);
-      await finishJob(job, { status: isBlocked ? 'blocked' : 'failed', reason: signal.aborted ? coordinatorSignal.aborted ? 'The worker was stopped during this task. Review and explicitly retry it if needed.' : 'The task reached its duration budget. Review its result and explicitly retry it after changing the limit if appropriate.' : clean(error?.message || 'The worker failed to complete the task.') }).catch(report);
-      if (!signal.aborted) report(error);
+      const cleanup=isSessionCleanupError(error);
+      if(cleanup)haltForCleanup(error);
+      const isBlocked = !cleanup&&(signal.aborted || ['APPROVAL_REQUIRED', 'BUDGET_EXCEEDED', 'BUDGET_STORAGE_INVALID'].includes(error?.code));
+      await finishJob(job, { status: isBlocked ? 'blocked' : 'failed', reason: !cleanup&&signal.aborted ? coordinatorSignal.aborted ? 'The worker was stopped during this task. Review and explicitly retry it if needed.' : 'The task reached its duration budget. Review its result and explicitly retry it after changing the limit if appropriate.' : clean(error?.message || 'The worker failed to complete the task.') }).catch(report);
+      if (!cleanup&&!signal.aborted) report(error);
     } finally {
       await closeTaskBudget(job.id);
       activeJobId = null; activity();
@@ -300,11 +313,12 @@ export function createAlwaysOn({
         lastStandingPrompt = selectedPrompt;
         await processJob(durable, signal, selected);
       } else lastStandingPrompt = undefined;
-    } catch (error) { if (!signal.aborted) report(error); }
+    } catch (error) { if(isSessionCleanupError(error))haltForCleanup(error);else if (!signal.aborted) report(error); }
     finally { if (job) await closeTaskBudget(job.id); if (!signal.aborted) { await resumeWatchers(signal); if (!signal.aborted) setState('idle'); } }
   }
   async function main(signal) {
     setState('idle');
+    try {
     while (!signal.aborted) {
       try {
         await scheduler?.tick();
@@ -313,8 +327,14 @@ export function createAlwaysOn({
         if (job) { await processJob(job, signal); continue; }
         if (standingGoal && Date.now() >= nextHeartbeat) { await heartbeat(signal); continue; }
         if (Date.now() - lastCloudActivity >= idleSleepMs) await sleepCloud(signal);
-      } catch (error) { if (!signal.aborted) report(error); }
+      } catch (error) { if(isSessionCleanupError(error))haltForCleanup(error);else if (!signal.aborted) report(error); }
       await pause(pollMs, signal);
+    }
+    } finally {
+      // A duration abort can leave the coordinator's own signal live. Exact
+      // cleanup failures abort it and release through this loop's exit, never
+      // by awaiting stop() from the loop that stop() itself must await.
+      if(cleanupFailure){closeWatchers();await releaseWorkerLease();controller=undefined;loop=undefined;activeJobId=null;if(!stopping)setState('stopped');}
     }
   }
   async function start() {
@@ -329,7 +349,7 @@ export function createAlwaysOn({
         lastStandingPrompt = (await inbox.list()).filter(job => job.source === 'standing-goal').at(-1)?.prompt;
         controller.signal.throwIfAborted();
         startedAt = new Date().toISOString(); activity(); lastCloudActivity = Date.now(); sleepAttempted = false;
-        cloudState = 'unknown'; cloudBilling = 'unknown'; lastError = null; nextHeartbeat = standingGoal ? Date.now() : 0;
+        cloudState = 'unknown'; cloudBilling = 'unknown'; lastError = null;cleanupFailure=undefined; nextHeartbeat = standingGoal ? Date.now() : 0;
         nextHeartbeatAt = standingGoal ? new Date(nextHeartbeat).toISOString() : null;
         installWatchers(roots,versions); loop = main(controller.signal);
         return snapshot();
@@ -345,9 +365,9 @@ export function createAlwaysOn({
     if (state === 'stopped') return snapshot();
     stopping = (async () => {
       setState('stopping'); closeWatchers(); controller?.abort(new Error('Always-on mode stopped.'));
-      try { await loop; await sleepCloud(AbortSignal.timeout(10000)); }
+      try { await loop; if(!cleanupFailure)await sleepCloud(AbortSignal.timeout(10000)); }
       finally {
-        await lease?.release().catch(report); lease = undefined; controller = undefined; loop = undefined; activeJobId = null;
+        await releaseWorkerLease(); controller = undefined; loop = undefined; activeJobId = null;
         setState('stopped'); stopping = undefined;
       }
       return snapshot();

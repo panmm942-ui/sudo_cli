@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { setTimeout as nativeSetTimeout, clearTimeout as nativeClearTimeout } from 'node:timers';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startBridge } from '../src/bridge.mjs';
 
@@ -72,9 +73,11 @@ test('bridge forwards explicit reasoning effort and preserves provider default w
 });
 test('a declared non-streaming Chat provider receives JSON generation while native SSE still works',async t=>{const {requests,post}=await setup(t,()=>messageResult(),{streaming:false});const response=await post({input:'Hello',stream:true});assert.equal(response.status,200);const text=await response.text();assert.match(text,/response.completed/);assert.match(text,/Hello from the model/);assert.equal(requests[0].body.stream,false);assert.equal(requests[0].body.stream_options,undefined);});
 
-async function setup(t, handler = () => messageResult(), options = {}) {
+async function setup(t, handler = () => messageResult(), options = {}, observeResponse = () => {}) {
   const requests = [];
   const upstream = createServer(async (req, res) => {
+    // Cancellation can close this response while request-body consumption is pending.
+    observeResponse(req,res);
     let raw = '';
     for await (const chunk of req) raw += chunk;
     requests.push({ path: req.url, headers: req.headers, body: JSON.parse(raw) });
@@ -96,6 +99,29 @@ async function setup(t, handler = () => messageResult(), options = {}) {
     body: typeof body === 'string' ? body : JSON.stringify({ stream: true, ...body }), ...extra,
   });
   return { bridge, requests, post };
+}
+
+async function withinNativeDeadline(pending, message) {
+  let timer;
+  try {
+    return await Promise.race([pending, new Promise((_, reject) => {
+      timer = nativeSetTimeout(() => reject(new Error(message)), 1500);
+    })]);
+  } finally { nativeClearTimeout(timer); }
+}
+
+async function expireBridgeDeadline(t, start, ready, readinessMessage) {
+  let pending;
+  // Freeze only the unchanged bridge deadline until the intended network phase.
+  // Captured native timers keep readiness and cancellation failures bounded.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    pending = start();
+    pending.catch(() => {});
+    await withinNativeDeadline(ready, readinessMessage);
+    t.mock.timers.tick(60);
+  } finally { t.mock.timers.reset(); }
+  return { pending };
 }
 
 function events(source) {
@@ -425,26 +451,74 @@ for (const failure of ['truncated generations', 'filtered generations', 'undecla
 }
 
 test('upstream timeout yields 504 and cancels the model connection', async (t) => {
-  let closed;
+  let reached, closed, modelSocket;
+  const didReach = new Promise((resolve) => { reached = resolve; });
   const didClose = new Promise((resolve) => { closed = resolve; });
-  const { post } = await setup(t, (_req, res) => { res.on('close', closed); }, { timeoutMs: 60 });
-  const res = await post({ input: 'Hi' });
+  const { post, requests } = await setup(t, () => { reached(); }, { timeoutMs: 60 }, (req, res) => {
+    modelSocket = req.socket; res.once('close', closed);
+  });
+  const { pending } = await expireBridgeDeadline(t, () => post({ input: 'Hi' }), didReach, 'model request was not dispatched');
+  const res = await withinNativeDeadline(pending, 'bridge timeout did not return HTTP 504');
   assert.equal(res.status, 504);
   assert.match((await res.json()).error.message, /timed out/i);
-  await Promise.race([didClose, delay(1500).then(() => assert.fail('model connection was not cancelled'))]);
+  await withinNativeDeadline(didClose, 'model connection was not cancelled');
+  assert.equal(requests.length, 1);
+  assert.equal(modelSocket.destroyed, true);
+});
+
+test('timeout cancellation is observed before a delayed fixture handler can miss the close event', async t => {
+  let reached, closed, handled, release, modelSocket, lateDestroyed = false, lateCloseEvents = 0;
+  const didReach = new Promise(resolve => { reached = resolve; });
+  const didClose = new Promise(resolve => { closed = resolve; });
+  const didHandle = new Promise(resolve => { handled = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const { post, requests } = await setup(t, async (_req, res) => {
+    reached(); await held;
+    lateDestroyed = res.destroyed; res.once('close', () => { lateCloseEvents++; }); handled();
+  }, { timeoutMs: 60 }, (req, res) => { modelSocket = req.socket; res.once('close', closed); });
+  const { pending } = await expireBridgeDeadline(t, () => post({ input: 'Hi' }), didReach, 'model request was not dispatched');
+  const response = await withinNativeDeadline(pending, 'bridge timeout did not return HTTP 504');
+  assert.equal(response.status, 504);
+  assert.match((await response.json()).error.message, /timed out/i);
+  await withinNativeDeadline(didClose, 'model connection was not cancelled');
+  release();
+  await withinNativeDeadline(didHandle, 'delayed fixture handler did not settle');
+  assert.equal(requests.length, 1);
+  assert.equal(modelSocket.destroyed, true);
+  assert.equal(lateDestroyed, true);
+  assert.equal(lateCloseEvents, 0);
+});
+
+test('timeout before dispatch returns 504 without a model request', async t => {
+  let reached, release, observed = 0;
+  const didReach = new Promise(resolve => { reached = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const { post, requests } = await setup(t, () => messageResult(), {
+    timeoutMs: 60, requestHooks: { beforeRequest: () => { reached(); return held; } },
+  }, () => { observed++; });
+  const { pending } = await expireBridgeDeadline(t, () => post({ input: 'Hi' }), didReach, 'request admission was not reached');
+  release();
+  const response = await withinNativeDeadline(pending, 'bridge timeout did not return HTTP 504');
+  assert.equal(response.status, 504);
+  assert.match((await response.json()).error.message, /timed out/i);
+  assert.equal(requests.length, 0);
+  assert.equal(observed, 0);
 });
 
 test('client cancellation aborts its model request and close is repeatable', async (t) => {
-  let reached, closed;
+  let reached, closed,modelSocket;
   const didReach = new Promise((resolve) => { reached = resolve; });
   const didClose = new Promise((resolve) => { closed = resolve; });
-  const { post, bridge } = await setup(t, (_req, res) => { reached(); res.on('close', closed); });
+  const { post, bridge } = await setup(t,()=>{reached();},{},(req,res)=>{modelSocket=req.socket;res.once('close',closed);});
   const controller = new AbortController();
   const pending = post({ input: 'Hi' }, { signal: controller.signal });
   await didReach;
   controller.abort();
   await assert.rejects(pending, { name: 'AbortError' });
-  await Promise.race([didClose, delay(1500).then(() => assert.fail('client cancellation did not abort model'))]);
+  await withinNativeDeadline(didClose, 'client cancellation did not abort model');
+  assert.equal(modelSocket.destroyed,true);
   await bridge.close();
   await bridge.close();
   await assert.rejects(fetch(`${bridge.baseUrl}/responses`));

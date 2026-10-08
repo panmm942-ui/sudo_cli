@@ -4,6 +4,8 @@
 
 This release preserves signed bytes during Windows Git checkout and accepts real Windows folder aliases while still refusing linked state directories. It handles default macOS home aliases and supports the native Linux sandbox through private home paths. Stopped and timed-out workspace checks verify that their descendants are no longer running, including correct handling of macOS zombie processes. Windows session cleanup retries brief file locks within a fixed bound and reports persistent failures. Background task sounds also work in detached mode and respect the saved notification preference. Folder watches restart around AI tasks so delayed events from the worker's own edits do not create another job.
 
+Native session shutdown also checks owned engine helpers, including plugin-catalog Git processes. Unverified cleanup reports an error and prevents a replacement AI session. See [session shutdown](docs/native-session-lifecycle.md) for platform limits.
+
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
 The CLI is separate from the Codex desktop app. It uses a private temporary engine home and its own persistent state. Interactive launches require administrator/root; agent access still defaults to **Ask, project scope, Web Off**. API keys stay in memory unless you explicitly choose OS-protected storage.

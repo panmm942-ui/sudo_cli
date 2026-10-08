@@ -55,7 +55,7 @@ OUTPUT = arguments.output_directory.resolve() if arguments.output_directory else
 OUTPUT.mkdir(parents=True, exist_ok=True)
 SECRET = '/V062-hidden-local-credential'
 CLOUD_SECRET = 'V062-unrelated-inherited-cloud-credential'
-ANSI = re.compile(rb'\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
+ANSI = re.compile(rb'\x1b(?:\][^\x07]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
 SGR = re.compile(rb'\x1b\[[0-9;]*m')
 requests, catalogs, fixture_errors, terminals, isolation_roots = [], [], [], [], []
 request_lock = threading.Lock()
@@ -67,6 +67,13 @@ def plain(raw):
     # Dashboard refreshes use save/restore; leave the meaningful initial frame.
     body = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
     return ANSI.sub(b'', body).decode('utf-8', errors='replace')
+
+
+def ready_prompt_visible(raw):
+    # Retained user messages and Working echoes reuse the input label. Only
+    # the final empty editable line proves that the submitted operation ended.
+    # Standalone notification BELs change neither cells nor cursor position.
+    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -208,7 +215,7 @@ class Terminal:
         return marker
 
     def ready(self, marker=0):
-        self.read_until(lambda raw: re.search(r'(?:\r?\n|^)  you › ', plain(raw[marker:])), expectation='ready prompt')
+        self.read_until(lambda raw: ready_prompt_visible(raw[marker:]), expectation='ready prompt')
 
     def command(self, text):
         marker = self.send(text+'\n')
@@ -280,6 +287,27 @@ def wait_answer(terminal, marker, baseline):
 
 def progress(label):
     print(f'Observed: {label} ({len(requests)} native requests)', flush=True)
+
+
+def verify_ready_prompt_regression():
+    cases = [
+        ('\n  you › /permissions allow-everything\n  · Working · Ctrl+C to interrupt\n', False),
+        ('\n  you › /permissions\n  · Queued prompt 1; current work continues.\n', False),
+        ('\n  you › \n  · Working · Ctrl+C to interrupt\n', False),
+        ('\n  you › \n  · Working · Ctrl+C to interrupt\n\x07\x07', False),
+        ('\n  you › /permissions', False),
+        ('\n  you › \n', False),
+        ('\n  · Permissions: ask\n\n  you › ', True),
+        ('\n  · Permissions: ask\n\n  you › \x07\x07', True),
+        ('\n  you › \x1b]0;Working\x07\x07', True),
+        ('\n  you › \x1b]0;Working\x1b\\VISIBLE\x07', False),
+    ]
+    for text, expected in cases:
+        assert ready_prompt_visible(text.encode()) is expected, repr(text)
+    results['readyPromptExcludesRetainedUserEchoAndIgnoresOnlyNonprintingBell'] = True
+
+
+verify_ready_prompt_regression()
 
 
 try:
@@ -376,8 +404,9 @@ try:
         assert '/permissions allow-everything' in latest_prompt()
         assert_no_menu(bytes(terminal.transcript[marker:]), 'bracketed paste')
         permissions = terminal.command('/permissions')
-        assert re.search(r'Permissions:\s*ask\b', permissions, flags=re.IGNORECASE)
+        assert re.search(r'(?:^|\n)  · Permissions:\s*ask\b', permissions, flags=re.IGNORECASE)
         assert 'allow-everything' not in permissions.lower() and 'allow everything' not in permissions.lower()
+        assert_no_requests(baseline+1, 'literal paste permissions inspection')
         baseline = len(requests)
         marker = terminal.send('/prompt\n')
         marker = terminal.answer(marker, '  | ', '/permissions allow-everything')

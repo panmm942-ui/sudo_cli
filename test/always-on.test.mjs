@@ -15,10 +15,11 @@ async function until(predicate, ms = 4000) {
   assert.fail('Coordinator did not reach its expected state in time.');
 }
 async function fixture(t, options = {}) {
+  const {inboxSecrets,...coordinatorOptions}=options;
   const root = await mkdtemp(join(tmpdir(), 'codexcli-always-on-'));
   const cwd = join(root, 'project'); await mkdir(cwd);
-  const inbox = await createTaskInbox({ cwd, stateDir: join(root, 'state') });
-  const agent = createAlwaysOn({ inbox, pollMs: 10, idleSleepMs: 40, ...options });
+  const inbox = await createTaskInbox({ cwd, stateDir: join(root, 'state'), ...(inboxSecrets?{secrets:inboxSecrets}:{}) });
+  const agent = createAlwaysOn({ inbox, pollMs: 10, idleSleepMs: 40, ...coordinatorOptions });
   t.after(async () => { await agent.stop(); await rm(root, { recursive: true, force: true }); });
   return { root, cwd, inbox, agent };
 }
@@ -443,4 +444,60 @@ test('cancelled and timed out wake operations emit only their terminal attention
     assert.deepEqual(tones,[mode==='stop'?'interrupted':'error']);assert.equal(outcomes.length,1);assert.equal(outcomes[0].notificationSuppressed,false);
     assert.match(result.reason,mode==='stop'?/Stopped before/:/duration budget/);
   });
+});
+
+test('unverified cleanup outranks stop and duration aborts, releases the lease and preserves pending work',{timeout:20000},async t=>{
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED'])for(const stage of ['assess','wake','worker'])for(const mode of ['stop','duration'])await t.test(`${code} ${stage} ${mode}`,async t=>{
+    const watches=interceptedWatches(t),errors=[],outcomes=[];let reached,dispatches=0,releases=0,ended=0,schedulerTicks=0,firstId,wakeFailed=false;
+    const ready=new Promise(resolve=>reached=resolve),secret='synthetic-cleanup-cause-secret';
+    const failAfterAbort=signal=>new Promise((resolve,reject)=>{const fail=()=>reject(Object.assign(new Error('Native session cleanup needs review.'),{code,cause:new Error(`Safe primary failure ${secret}`)}));reached();if(signal.aborted)fail();else signal.addEventListener('abort',fail,{once:true});});
+    const created=await fixture(t,{inboxSecrets:()=>[secret],watchPaths:['.'],idleSleepMs:10000,scheduler:{tick:async()=>{schedulerTicks++;}},beginTask:async()=>mode==='duration'?{timeoutMs:200}:{},endTask:async()=>{ended++;},
+      onError:error=>errors.push(error),onTaskResult:async(job,patch)=>{outcomes.push({id:job.id,status:patch.status});return patch;},
+      assess:async(job,{signal})=>job.id===firstId&&stage==='assess'?failAfterAbort(signal):{action:'cloud'},
+      wake:async({signal})=>{if(stage==='wake'&&!wakeFailed){wakeFailed=true;return failAfterAbort(signal);}},
+      runCloud:async(job,{signal})=>{dispatches++;if(job.id===firstId&&stage==='worker')return failAfterAbort(signal);return 'Explicit later task completed';}});
+    t.after(()=>watches.restore());
+    const originalAcquire=created.inbox.acquireWorker;created.inbox.acquireWorker=async()=>{const lease=await originalAcquire();return{release:async()=>{releases++;await lease.release();}};};
+    const first=await created.inbox.submit({prompt:'First explicit task'});firstId=first.id;await delay(10);const pending=await created.inbox.submit({prompt:'Pending explicit task'});
+    await created.agent.start();await ready;
+    if(mode==='stop')await created.agent.stop();else await until(async()=>['failed','blocked'].includes((await created.inbox.get(first.id)).status));
+    const record=await created.inbox.get(first.id);assert.equal(record.status,'failed');assert.match(record.reason,/cleanup needs review/);assert.doesNotMatch(record.reason,/stopped|duration budget/i);
+    await until(()=>created.agent.snapshot().state==='stopped');assert.equal(releases,1);assert.equal(ended,1);
+    assert.equal((await created.inbox.get(pending.id)).status,'pending');assert.equal(errors.length,1);assert.equal(errors[0].code,code);assert.match(errors[0].cause.message,/Safe primary failure/);assert.equal(errors[0].cause.message.includes(secret),false);
+    assert.deepEqual(outcomes,[{id:first.id,status:'failed'}]);assert.ok(watches.streams.every(stream=>stream.closed));const ticks=schedulerTicks,streams=watches.streams.length;
+    await writeFile(join(created.cwd,'later.txt'),'Later external edit');watches.streams[0].callback('change','later.txt');await delay(40);
+    assert.equal(schedulerTicks,ticks);assert.equal(watches.streams.length,streams);assert.equal((await created.inbox.list()).length,2);
+    // The real durable lease is released, but only explicit restart admits
+    // pending work. The failed task remains failed and is never retried.
+    const otherLease=await originalAcquire();await otherLease.release();
+    await created.agent.start();await until(async()=>(await created.inbox.get(pending.id)).status==='completed');assert.equal((await created.inbox.get(first.id)).status,'failed');
+  });
+});
+
+test('heartbeat cleanup attention survives cancellation and duration limits without scheduling new work',{timeout:10000},async t=>{
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED'])for(const mode of ['stop','duration'])await t.test(`${code} ${mode}`,async t=>{
+    const errors=[];let reached,assessments=0,releases=0;const ready=new Promise(resolve=>reached=resolve);
+    const created=await fixture(t,{standingGoal:'Explicit standing goal',heartbeatMs:10,beginTask:async()=>mode==='duration'?{timeoutMs:100}:{},assess:async(_job,{signal})=>{assessments++;return new Promise((resolve,reject)=>{const fail=()=>reject(Object.assign(new Error('Heartbeat session cleanup needs review.'),{code}));reached();if(signal.aborted)fail();else signal.addEventListener('abort',fail,{once:true});});},runCloud:async()=>assert.fail('Unverified heartbeat cannot launch cloud work.'),onError:error=>errors.push(error)});
+    const originalAcquire=created.inbox.acquireWorker;created.inbox.acquireWorker=async()=>{const lease=await originalAcquire();return{release:async()=>{releases++;await lease.release();}};};
+    await created.agent.start();await ready;if(mode==='stop')await created.agent.stop();else await until(()=>errors.length>0);
+    assert.equal(errors.length,1);assert.equal(errors[0].code,code);await until(()=>created.agent.snapshot().state==='stopped');assert.equal(releases,1);assert.ok(created.agent.snapshot().lastError);
+    await delay(40);assert.equal(assessments,1);assert.deepEqual(await created.inbox.list(),[]);
+  });
+});
+
+test('cancelled sleep cleanup is reported once and never retried during stop',async t=>{
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED'])await t.test(code,async t=>{
+    let reached,sleepCalls=0;const ready=new Promise(resolve=>reached=resolve),errors=[];
+    const {agent}=await fixture(t,{idleSleepMs:1,assess:async()=>({action:'wait'}),runCloud:async()=>assert.fail('Idle cleanup cannot launch work.'),onError:error=>errors.push(error),sleep:async({signal})=>{sleepCalls++;return new Promise((resolve,reject)=>{reached();const fail=()=>reject(Object.assign(new Error('Sleep session cleanup needs review.'),{code}));if(signal.aborted)fail();else signal.addEventListener('abort',fail,{once:true});});}});
+    await agent.start();await ready;await agent.stop();assert.equal(agent.snapshot().state,'stopped');assert.equal(errors.length,1);assert.equal(errors[0].code,code);assert.equal(sleepCalls,1);
+  });
+});
+
+test('cleanup stop publishes a restartable state only after its own teardown is finished',{timeout:5000},async t=>{
+  let agent,firstId,reached,restart,allowRestart=false;const ready=new Promise(resolve=>reached=resolve);
+  const created=await fixture(t,{assess:async()=>({action:'cloud'}),runCloud:async(job,{signal})=>job.id===firstId?new Promise((resolve,reject)=>{reached();signal.addEventListener('abort',()=>reject(Object.assign(new Error('Native cleanup needs review.'),{code:'ENGINE_CLEANUP_UNVERIFIED'})),{once:true});}):'Explicit restart completed',onState:snapshot=>{if(allowRestart&&snapshot.state==='stopped'&&!restart)restart=agent.start();}});
+  agent=created.agent;const first=await agent.submit('First task');firstId=first.id;await delay(10);const pending=await agent.submit('Pending task');await agent.start();await ready;
+  allowRestart=true;await agent.stop();assert.ok(restart);await restart;
+  await until(async()=>(await created.inbox.get(pending.id)).status==='completed');assert.equal((await created.inbox.get(first.id)).status,'failed');
+  allowRestart=false;
 });

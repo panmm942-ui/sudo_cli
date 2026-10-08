@@ -127,6 +127,26 @@ test('background attention classification uses structured outcomes and never cal
   const {backgroundNotificationEvent}=await import('../src/assistant-features.mjs');assert.equal(typeof backgroundNotificationEvent,'function');
   for(const [outcome,event] of [[{status:'completed'},'done'],[{status:'failed'},'error'],[{status:'cancelled'},'interrupted'],[{status:'blocked',code:'APPROVAL_REQUIRED'},'approval'],[{status:'blocked',reason:'The worker was stopped during this task. Review and explicitly retry it if needed.'},'interrupted'],[{status:'blocked',reason:'The task reached its duration budget.'},'error'],[{status:'blocked',reason:'Selected checks could not verify this source state.'},'error']])assert.equal(backgroundNotificationEvent(outcome),event);
 });
+
+test('background cleanup errors override cancellation and approval while retaining one error per attempt',async()=>{
+  const {createBackgroundResultReporter,backgroundNotificationEvent}=await import('../src/assistant-features.mjs');
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED']){
+    for(const outcome of [{status:'cancelled',interrupted:true},{status:'blocked',reason:'Approval required.'},{status:'completed'}])assert.equal(backgroundNotificationEvent({...outcome,code}),'error');
+    for(const order of ['error-first','result-first','signal-first','approval-first','interruption-first']){
+      const notices=[],tones=[],reason=new Error('Redacted primary task failure.'),job={id:code+order};
+      const record=outcome=>{notices.push(outcome);if(!outcome.notificationSuppressed)tones.push(backgroundNotificationEvent(outcome));};
+      const reporter=createBackgroundResultReporter({work:{result:async(_job,patch)=>patch},onResult:record,onAttention:record});reporter.begin(job.id);
+      const error=Object.assign(new Error('Cleanup needs attention.',{cause:reason}),{code});
+      if(order==='result-first')await reporter.result(job,{status:'failed',code,cause:reason,reason:'Cleanup failed.'});
+      if(order==='signal-first'){const controller=new AbortController();controller.abort(error);await reporter.result(job,{status:'cancelled',reason:'Stopped during task.'},{signal:controller.signal});}
+      if(order==='approval-first')await reporter.result(job,{status:'blocked',reason:'Approval is required.'});
+      if(order==='interruption-first')await reporter.result(job,{status:'cancelled',reason:'Stopped during task.'});
+      await reporter.error(error,job.id);await reporter.error(error,job.id);
+      if(order==='error-first')await reporter.result(job,{status:'failed',reason:'Cleanup failed.'});
+      const cleanups=notices.filter(value=>value.code===code);assert.ok(cleanups.length);assert.ok(cleanups.every(value=>value.cause?.message===reason.message));assert.equal(tones.filter(value=>value==='error').length,1);assert.ok(cleanups.every(value=>value.notificationId===notices[0].notificationId));
+    }
+  }
+});
 test('background notification callback failures cannot fail or retry completed AI work',async()=>{
   const {createBackgroundResultReporter}=await import('../src/assistant-features.mjs');let reports=0;const errors=[];
   const reporter=createBackgroundResultReporter({work:{result:async(_job,patch)=>patch},onResult:async()=>{reports++;throw new Error('Fixture audio failed');},onReportError:error=>errors.push(error.message)});

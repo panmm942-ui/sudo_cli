@@ -12,6 +12,7 @@ import { parseMcpEntry } from './commands.mjs';
 import { createRedactor } from './redactor.mjs';
 import { isolatedEnvironment, permissionPolicy } from './permission-scope.mjs';
 import { gpuCommand } from './gpu-control.mjs';
+import {closeNativeSession,isSessionCleanupError} from './session-cleanup.mjs';
 
 const abortError = () => new DOMException('Agent task was cancelled.', 'AbortError');
 const checkAbort = signal => { if (signal?.aborted) throw abortError(); };
@@ -70,7 +71,7 @@ export async function runAgentTask({ connection: inputConnection, cwd = process.
   if (!Number.isSafeInteger(modelTimeoutMs) || modelTimeoutMs < 1 || modelTimeoutMs > 2147483647) throw new Error('Agent model timeout must be a positive bounded integer.');
   const secrets = [connection.apiKey].filter(Boolean);
   const safe = text => { const redactor = createRedactor({ secrets: () => secrets }); return redactor.write(text) + redactor.flush(); };
-  let engine, bridge, home, collectionError, accountingError, permissionError;
+  let engine, bridge, home, collectionError, accountingError, permissionError, taskError;
   const requestHooks = runtime.requestHooks ? Object.fromEntries(['beforeRequest', 'onUsage', 'afterRequest'].filter(name => typeof runtime.requestHooks[name] === 'function').map(name => [name, async value => { try { return await runtime.requestHooks[name](value); } catch (error) { accountingError = error; rejectAborted?.(error); void engine?.interrupt().catch(() => {}); throw error; } }])) : undefined;
   const messages = new Map();
   const rejectPermission = message => {
@@ -142,16 +143,14 @@ export async function runAgentTask({ connection: inputConnection, cwd = process.
     if (collectionError) throw collectionError;
     return { text: safe([...messages.values()].filter(Boolean).join('\n\n')), threadId: engine.threadId };
   } catch (error) {
-    if (signal?.aborted) throw abortError();
-    if (accountingError) error = accountingError;
-    else if (permissionError) error = permissionError;
-    const visible = new Error(safe(error?.message || 'Agent task failed.')); if (typeof error?.code === 'string' && /^(BUDGET_EXCEEDED|BUDGET_STORAGE_INVALID|APPROVAL_REQUIRED)$/.test(error.code)) visible.code = error.code; throw visible;
+    if (signal?.aborted&&!isSessionCleanupError(error)) {taskError=abortError();throw taskError;}
+    if(!isSessionCleanupError(error)){if(accountingError)error=accountingError;else if(permissionError)error=permissionError;}
+    const visible = new Error(safe(error?.message || 'Agent task failed.')); if (typeof error?.code === 'string' && /^(BUDGET_EXCEEDED|BUDGET_STORAGE_INVALID|APPROVAL_REQUIRED|ENGINE_CLEANUP_UNVERIFIED|SESSION_CLEANUP_FAILED)$/.test(error.code)) visible.code = error.code;
+    taskError=visible;throw visible;
   } finally {
     try { onControl?.(undefined); } catch { /* Control display cannot prevent cleanup. */ }
     signal?.removeEventListener('abort', abort);
-    await engine?.close().catch(() => {});
-    await bridge?.close().catch(() => {});
-    await home?.cleanup().catch(() => {});
+    await closeNativeSession({engine,bridge,home},{cause:taskError});
   }
 }
 

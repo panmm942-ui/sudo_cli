@@ -49,7 +49,7 @@ if not ENGINE or not Path(ENGINE).is_file():
 OUTPUT = args.output_directory.resolve() if args.output_directory else Path(tempfile.mkdtemp(prefix='sudocli-model-loop-proof-'))
 OUTPUT.mkdir(parents=True, exist_ok=True)
 KEY = 'V063-private-loopback-test-key'
-ANSI = re.compile(rb'\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
+ANSI = re.compile(rb'\x1b(?:\][^\x07]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
 records, errors, terminals, roots, results = [], [], [], [], {}
 scenarios = {}
 print(f'Sanitized native model-loop evidence: {OUTPUT}', flush=True)
@@ -58,6 +58,12 @@ print(f'Sanitized native model-loop evidence: {OUTPUT}', flush=True)
 def plain(raw):
     raw = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
     return ANSI.sub(b'', raw).decode('utf-8', errors='replace')
+
+
+def ready_prompt_visible(raw):
+    # Match the final empty editable input, not an earlier retained user line.
+    # OSC removal happens before standalone nonprinting notification BELs.
+    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -387,7 +393,7 @@ class Terminal:
         return marker
 
     def ready(self, marker=0):
-        self.until(lambda: re.search(r'(?:\r?\n|^)  you › ', plain(bytes(self.transcript[marker:]))), label='CLI ready prompt')
+        self.until(lambda: ready_prompt_visible(bytes(self.transcript[marker:])), label='CLI ready prompt')
 
     def task(self, text, response):
         marker = self.send(text+'\n')

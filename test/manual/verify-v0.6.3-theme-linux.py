@@ -36,7 +36,7 @@ PROJECT=Path(__file__).resolve().parents[2]
 OUTPUT=args.output_directory.resolve() if args.output_directory else Path(tempfile.mkdtemp(prefix='sudocli-theme-proof-'))
 OUTPUT.mkdir(parents=True,exist_ok=True)
 HEADER='#0b0f14'
-ANSI=re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])')
+ANSI=re.compile(r'\x1b(?:\][^\x07]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
 CSI=re.compile(r'\x1b\[([0-?]*)([ -/]*)([@-~])')
 STANDARD=['#000000','#800000','#008000','#808000','#000080','#800080','#008080','#c0c0c0','#808080','#ff0000','#00ff00','#ffff00','#0000ff','#ff00ff','#00ffff','#ffffff']
 
@@ -44,6 +44,13 @@ def plain(raw):
     value=raw.decode('utf-8',errors='replace')
     value=re.sub(r'\x1b7.*?\x1b8','',value,flags=re.S)
     return ANSI.sub('',value)
+
+
+def ready_prompt_visible(raw):
+    # OSC controls are removed before standalone notification BELs; the final
+    # empty input line must remain the last visible text.
+    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
+
 
 class Screen:
     def __init__(self,rows=44,columns=150):
@@ -168,7 +175,7 @@ class Terminal:
         end=time.monotonic()+timeout;declined=False
         while time.monotonic()<end:
             recent=plain(bytes(self.raw[marker:]))
-            if re.search(r'(?:^|\n)  you › $',recent):self.drain(.1);return
+            if ready_prompt_visible(bytes(self.raw[marker:])):self.drain(.1);return
             if not declined and re.search(r'(?:update|install).*\[[yYnN/]+\]',recent,re.I):self.send('n\n');declined=True
             if self.child.poll() is not None:break
             self.drain(.1)
@@ -224,13 +231,13 @@ try:
     assert all(cell[2]==HEADER for cell in second.screen.grid[0]),'Tiny upper header inherited lower chat background'
     assert all(cell[2]=='#ffffff' for row in second.screen.grid[1:] for cell in row),'Tiny chat did not retain its saved background'
     second.resize(44,150);second.screen.assert_regions('#ffffff');results['tinyResizePreservesSeparateBackgrounds']=True
-    second.command('/reset txtcolor');assert second.saved()['txtcolor']=='#dce3eb' and second.saved()['bgcolor']=='#ffffff'
+    second.command('/reset txtcolor');assert second.saved()['txtcolor']=='#00ff00' and second.saved()['bgcolor']=='#ffffff'
     second.command('/reset bgcolor');second.screen.assert_regions(HEADER)
     second.command('/bgcolor navy');second.command('/txtcolor yellow');second.command('/reset colors');second.screen.assert_regions(HEADER)
-    assert second.saved()['bgcolor']==HEADER and second.saved()['txtcolor']=='#dce3eb'
+    assert second.saved()['bgcolor']==HEADER and second.saved()['txtcolor']=='#00ff00'
     marker=second.send('/reset\n');end=time.monotonic()+4
     while 'Reset target (number/name; Enter cancels): ' not in plain(bytes(second.raw[marker:])) and time.monotonic()<end:second.drain(.1)
-    listing=plain(bytes(second.raw[marker:]));assert 'txtcolor' in listing and 'bgcolor' in listing,'Reset targets are not discoverable'
+    listing=plain(bytes(second.raw[marker:]));assert 'textcolor' in listing and 'bgcolor' in listing,'Reset targets are not discoverable'
     assert 'Reset target (number/name; Enter cancels): ' in listing,'Interactive reset selection was not offered'
     second.send('\n');second.ready(marker)
     second.finish();results['savedRestartAndIndependentReset']=True;results['resetColorsAndTargetMenu']=True

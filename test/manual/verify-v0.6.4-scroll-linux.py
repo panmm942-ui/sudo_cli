@@ -38,7 +38,7 @@ PROJECT = Path(__file__).resolve().parents[2]
 OUTPUT = args.output_directory.resolve() if args.output_directory else Path(tempfile.mkdtemp(prefix='sudocli-scroll-proof-'))
 OUTPUT.mkdir(parents=True, exist_ok=True)
 CSI = re.compile(r'\x1b\[([0-?]*)([ -/]*)([@-~])')
-ANSI = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])')
+ANSI = re.compile(r'\x1b(?:\][^\x07]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
 HEADER = '#0b0f14'
 STANDARD = ['#000000','#800000','#008000','#808000','#000080','#800080','#008080','#c0c0c0','#808080','#ff0000','#00ff00','#ffff00','#0000ff','#ff00ff','#00ffff','#ffffff']
 PAGE_UP, PAGE_DOWN = '\x1b[5~', '\x1b[6~'
@@ -50,6 +50,13 @@ def plain(raw):
     text = raw.decode('utf-8', errors='replace')
     text = re.sub(r'\x1b7.*?\x1b8', '', text, flags=re.S)
     return ANSI.sub('', text)
+
+
+def ready_prompt_visible(raw):
+    # Remove OSC controls before standalone BELs, keeping every visible cell.
+    # Require the final empty editable prompt rather than an earlier line.
+    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
+
 
 class Screen:
     def __init__(self, rows=44, columns=150):
@@ -186,7 +193,7 @@ class Terminal:
     def ready(self, marker=0, timeout=15):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
-            if re.search(r'(?:^|\n)  you › $',plain(bytes(self.raw[marker:]))): self.drain(.1);return
+            if ready_prompt_visible(bytes(self.raw[marker:])): self.drain(.1);return
             if self.child.poll() is not None: break
             self.drain(.1)
         raise AssertionError('CLI input prompt missing: '+plain(bytes(self.raw[-3000:])))

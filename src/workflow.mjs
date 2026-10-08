@@ -1,6 +1,7 @@
 import { runAgentTask } from './agent-runtime.mjs';
 import { createWorkspaceSnapshot, redactWorkspaceText } from './workspace-tools.mjs';
 import { AGENT_ROLES, validateAgentDefinition } from './agent-presets.mjs';
+import { isSessionCleanupError } from './session-cleanup.mjs';
 
 const modes = {
   plan: 'Workflow: plan. Inspect the request and produce a concrete, bounded plan with acceptance checks. Do not change files or execute side effects. State assumptions and any missing information.',
@@ -57,7 +58,7 @@ export function createWorkflow({ cwd = process.cwd(), workspace, connectionProvi
     const timeout = AbortSignal.timeout(timeoutMs), combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const limitController = new AbortController();let taskSignal = AbortSignal.any([combined, limitController.signal]);
     const roleSecrets = () => [...(secrets() ?? []), ...(connection.apiKey ? [connection.apiKey] : [])];
-    const messages = new Map(); let outputBytes = 0, source, outputLimit = false, nativeRuntime, outcome, taskEndStatus = 'failed';
+    const messages = new Map(); let outputBytes = 0, source, outputLimit = false, nativeRuntime, outcome, cleanupFailure, taskEndStatus = 'failed';
     const noteMessage = (id, text, append = false) => {
       if (typeof id !== 'string' || typeof text !== 'string') return;
       const before = messages.get(id) ?? '', after = append ? before + text : text;
@@ -108,23 +109,34 @@ export function createWorkflow({ cwd = process.cwd(), workspace, connectionProvi
       return outcome = { name, role, mode: agentMode, status: 'completed', advisory: true, verified: false, model: connection.model, text, threadId: result.threadId, files: source.files.length, partial: source.partial || review?.partial || review?.truncated || changes?.partial || inputChanges?.partial || false,
         ...(changes ? { changes } : {}), limitations: agentMode === 'edit' ? 'Proposed changes affect a disposable source copy only. Explicit review, application and recorded acceptance checks remain required. External services and omitted files were not inspected.' : 'Advisory source review; no checks were executed or work accepted. Excluded files, external services and vulnerability databases were not inspected.' };
     } catch (error) {
-      if (signal?.aborted) { taskEndStatus = 'cancelled'; throw abortError(); }
-      if (outputLimit) throw new Error('Independent workflow output limit exceeded.');
-      if (timeout.aborted) throw new Error('Independent workflow timed out.');
-      const visible = new Error(redactWorkspaceText(error?.message || 'Independent workflow failed.', roleSecrets));
+      const cleanupAttention=isSessionCleanupError(error);
+      if (!cleanupAttention) {
+        if (signal?.aborted) { taskEndStatus = 'cancelled'; throw abortError(); }
+        if (outputLimit) throw new Error('Independent workflow output limit exceeded.');
+        if (timeout.aborted) throw new Error('Independent workflow timed out.');
+      }
+      const cause=cleanupAttention&&typeof error?.cause?.message==='string'?new Error(redactWorkspaceText(error.cause.message,roleSecrets)):undefined;
+      const visible = new Error(redactWorkspaceText(error?.message || 'Independent workflow failed.', roleSecrets),cause?{cause}:undefined);
       if (typeof error?.code === 'string' && /^[A-Z_]{1,64}$/.test(error.code)) visible.code = error.code;
+      if(cleanupAttention)cleanupFailure=visible;
       throw visible;
     } finally {
       const agent = activeAgents.get(name); if (agent) agent.control = undefined;
       try {
         try { await source?.cleanup(); }
         catch (error) {
-          if (!outcome) throw error;
-          outcome.partial = true;
-          outcome.error = redactWorkspaceText(`Snapshot cleanup requires review; copy ownership changed or cleanup failed. Captured proposals are preserved. Inspect the remaining copy: ${source.cwd}`, roleSecrets);
+          if(cleanupFailure)cleanupFailure.message+=' Source snapshot cleanup also needs attention.';
+          else {
+            if (!outcome) throw error;
+            outcome.partial = true;
+            outcome.error = redactWorkspaceText(`Snapshot cleanup requires review; copy ownership changed or cleanup failed. Captured proposals are preserved. Inspect the remaining copy: ${source.cwd}`, roleSecrets);
+          }
         }
       }
-      finally { if (nativeRuntime?.onTaskEnd) await nativeRuntime.onTaskEnd({ name, role, status: taskEndStatus }); }
+      finally {
+        try {if (nativeRuntime?.onTaskEnd) await nativeRuntime.onTaskEnd({ name, role, status: taskEndStatus });}
+        catch(error){if(!cleanupFailure)throw error;cleanupFailure.message+=' Task accounting cleanup also needs attention.';}
+      }
     }
   }
   async function runReviewer(options = {}) {
@@ -169,10 +181,10 @@ export function createWorkflow({ cwd = process.cwd(), workspace, connectionProvi
           results[index] = await independent(item.role, { ...options, ...item, task, signal: combined });
           status(agent, 'completed');
         } catch (error) {
-          const cancelled = combined.aborted || error?.name === 'AbortError', failedStatus = cancelled ? 'cancelled' : 'failed';
+          const cancelled = !isSessionCleanupError(error)&&(combined.aborted || error?.name === 'AbortError'), failedStatus = cancelled ? 'cancelled' : 'failed';
           const itemSecrets = () => [...(secrets() ?? []), ...(item.connection?.apiKey ? [item.connection.apiKey] : [])];
           const message = redactWorkspaceText(error?.message || 'Agent task failed.', itemSecrets);
-          results[index] = { name: item.name, role: item.role, mode: item.mode, model: item.connection?.model ?? '', status: failedStatus, text: '', error: new TextDecoder().decode(Buffer.from(message).subarray(0, 4096), { stream: true }), advisory: true, verified: false };
+          results[index] = { name: item.name, role: item.role, mode: item.mode, model: item.connection?.model ?? '', status: failedStatus, text: '', error: new TextDecoder().decode(Buffer.from(message).subarray(0, 4096), { stream: true }), ...(isSessionCleanupError(error)?{code:error.code}:{}), advisory: true, verified: false };
           status(agent, failedStatus);
         }
       }

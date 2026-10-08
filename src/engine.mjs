@@ -3,6 +3,7 @@ import { VERSION } from './version.mjs';
 import { validateRuntimeOptions, validateReasoningEffort, validateSupportedEfforts,grantSessionHomeOwner } from './runtime.mjs';
 import {permissionPolicy,approvalWithinScope,prepareSandboxRuntime,sandboxExecutionIdentity,sandboxChildEnvironment,createSandboxScratch} from './permission-scope.mjs';
 import { prepareCustomModelCatalog } from './model-catalog.mjs';
+import {ownProcess} from './owned-process.mjs';
 
 const MAX_LINE_CHARS = 8 * 1024 * 1024;
 const isTurn = (turn) => typeof turn?.id === 'string' && turn.id.length > 0 && Array.isArray(turn.items)
@@ -84,8 +85,13 @@ export async function createEngine({
   let instructionSources = [];
   let child;
   try{child=spawn(sandboxRuntime.path, [...command.slice(1), '--no-daemon', 'app-server', '--listen', 'stdio://', ...providerArgs], {
-    cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false,...identity,
+    cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false,detached:process.platform!=='win32',...identity,
   });}catch(error){await Promise.all([nativeCatalog?.cleanup(),sandboxRuntime.cleanup(),scratch?.cleanup()]);throw error;}
+  const owned=ownProcess(child);
+  // Unix establishes its lifetime group anchor before protocol initialization.
+  // Windows captures ancestry on demand while the original child is alive.
+  const ownershipReady=process.platform==='win32'?Promise.resolve():owned.capture();
+  ownershipReady.catch(()=>{});
   const pending = new Map();
   let nextId = 1;
   let buffer = '';
@@ -96,7 +102,6 @@ export async function createEngine({
   let terminalError;
   let closing;
   let exited = false;
-  const ended = new Promise((resolve) => child.once('close', () => { exited = true; resolve(); }));
 
   function finish(record, turn, error) {
     if (record.done) return;
@@ -142,7 +147,7 @@ export async function createEngine({
       const id = nextId++;
       const timer = setTimeout(() => {
         fail(new Error(`Codex app-server request timed out (${method}).`));
-        child.kill();
+        void close().catch(()=>{});
       }, requestTimeoutMs);
       pending.set(id, { resolve, reject, timer });
       try { send({ id, method, params }); } catch (error) { fail(error); }
@@ -183,7 +188,7 @@ export async function createEngine({
       if (line.length > MAX_LINE_CHARS) {
         fail(new Error('Codex app-server output exceeded the message limit.'));
         buffer = '';
-        child.kill();
+        void close().catch(()=>{});
         return;
       }
       let message;
@@ -214,13 +219,13 @@ export async function createEngine({
     if (buffer.length > MAX_LINE_CHARS) {
       fail(new Error('Codex app-server output exceeded the message limit.'));
       buffer = '';
-      child.kill();
+      void close().catch(()=>{});
     }
   });
   // Drain stderr so diagnostic output cannot block the process. Never echo raw diagnostics.
   child.stderr.resume();
   child.on('error', () => fail(new Error('Unable to start Codex app-server. Check the codex executable.')));
-  child.on('exit', () => fail(new Error('Codex app-server exited.')));
+  child.on('exit', () => {exited=true;fail(new Error('Codex app-server exited.'));void close().catch(()=>{});});
   child.stdin.on('error', () => fail(new Error('Codex app-server input stream failed.')));
   child.stdout.on('error', () => fail(new Error('Codex app-server output stream failed.')));
   child.stdout.on('end', () => { if (!closed) fail(new Error('Codex app-server output stream closed.')); });
@@ -230,7 +235,9 @@ export async function createEngine({
     if (closing) return closing;
     signal?.removeEventListener('abort',aborted);
     closing = (async () => {
+      let cleanupFailed=false;
       try {
+      try {await ownershipReady;} catch {cleanupFailed=true;}
       // Turn interruption does not necessarily close unified-exec sessions.
       // Ask the native engine to terminate its own commands before shutdown.
       if (threadId && !terminalError && !exited) {
@@ -241,26 +248,25 @@ export async function createEngine({
       }
       closed = true;
       fail(new Error('Codex engine is closed.'));
-      if (exited) return;
-      child.stdin.end();
-      let timeout;
-      await Promise.race([ended, new Promise((resolve) => { timeout = setTimeout(() => { child.kill(); resolve(); }, 1000); })]);
-      clearTimeout(timeout);
-      if (!exited) {
-        let forceTimeout;
-        await Promise.race([ended, new Promise((resolve) => { forceTimeout = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 250); })]);
-        clearTimeout(forceTimeout);
+      // Include helpers outside the native background-terminal RPC. In
+      // particular, curated plugin Git startup runs outside those sessions.
+      await owned.close();
+      } catch {cleanupFailed=true;}
+      finally {
+        const results=await Promise.allSettled([nativeCatalog?.cleanup(),sandboxRuntime.cleanup(),scratch?.cleanup()]);
+        if(results.some(result=>result.status==='rejected'))cleanupFailed=true;
       }
-      } finally { await Promise.all([nativeCatalog?.cleanup(),sandboxRuntime.cleanup(),scratch?.cleanup()]); }
+      if(cleanupFailed)throw Object.assign(new Error('Codex engine process cleanup could not be verified.'),{code:'ENGINE_CLEANUP_UNVERIFIED'});
     })();
     return closing;
   }
 
-  const aborted=()=>{fail(new DOMException('The model task was aborted.','AbortError'));void close();};
+  const aborted=()=>{fail(new DOMException('The model task was aborted.','AbortError'));void close().catch(()=>{});};
   signal?.addEventListener('abort',aborted,{once:true});
   if(signal?.aborted)aborted();
 
   try {
+    await ownershipReady;
     await request('initialize', {
       clientInfo: { name: 'sudo_cli', title: 'sudo', version: VERSION },
       capabilities: { experimentalApi: true, explicitGatewayOauth: true },
@@ -287,7 +293,16 @@ export async function createEngine({
     runtimePolicy = { ...choices,scope:policy.scope,networkEnforced:!policy.unrestricted,approvalPolicy: result.approvalPolicy, sandbox: { ...actual } };
     instructionSources = Array.isArray(result.instructionSources) ? result.instructionSources.filter(identifier) : [];
     threadId = result.thread.id;
-  } catch (error) { await close(); throw error; }
+  } catch (error) {
+    try {await close();}
+    catch (cleanupError) {
+      // Keep the safe startup/transport reason visible alongside the cleanup
+      // failure. A failed verification must not become successful teardown.
+      cleanupError.message=`${error.message} ${cleanupError.message}`;
+      throw cleanupError;
+    }
+    throw error;
+  }
 
   function operation(kind, params, effort) {
     if (terminalError || closed || closing) return Promise.reject(terminalError ?? new Error('Codex engine is closed.'));
@@ -309,7 +324,7 @@ export async function createEngine({
           if (record.id && record.early.has(record.id)) finish(record, record.early.get(record.id));
           else if (!record.id) record.startTimer = setTimeout(() => {
             fail(new Error('Codex compaction start notification timed out.'));
-            child.kill();
+            void close().catch(()=>{});
           }, requestTimeoutMs);
           return;
         }

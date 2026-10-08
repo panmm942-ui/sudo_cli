@@ -87,7 +87,7 @@ async function initialize(message) {
         error.code = 'APPROVAL_REQUIRED'; return error;
       };
       try { result = await runAgentTask({ ...options, onApproval: () => { approvalNeeded = true; return false; } }); }
-      catch (error) { if (approvalNeeded) throw blocked(); throw error; }
+      catch (error) { if (approvalNeeded&&!['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED'].includes(error?.code)) throw blocked(); throw error; }
       if (approvalNeeded) throw blocked();
       return result;
     }

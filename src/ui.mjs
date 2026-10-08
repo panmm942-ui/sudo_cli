@@ -57,6 +57,7 @@ import {createSystemPerformance} from './system-performance.mjs';
 import {performanceDetails} from './performance-view.mjs';
 import {createAiActivity} from './ai-activity.mjs';
 import {createNotifications} from './notifications.mjs';
+import {closeNativeSession,isSessionCleanupError} from './session-cleanup.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -96,8 +97,21 @@ export async function runUI(opts) {
   const performanceMonitor=createSystemPerformance();
   const notifications=createNotifications({directory:join(stateOptions.stateDir,'preferences'),interactive,output:process.stdout});
   const notifiedErrors=new WeakSet();
-  const notify=(event,id)=>{if(!quitting)void notifications.notify(event,{id}).catch(()=>{});};
+  const notificationDeliveries=new Set();
+  const backgroundNotifications=new Set();let backgroundCleanupFailure;
+  const deliverNotification=(event,id)=>{const delivery=Promise.resolve().then(()=>notifications.notify(event,{id})).catch(()=>{});notificationDeliveries.add(delivery);void delivery.finally(()=>notificationDeliveries.delete(delivery));return delivery;};
+  const notify=(event,id)=>{if(!quitting)void deliverNotification(event,id);};
   const notifyError=error=>{if(error&&typeof error==='object'){if(notifiedErrors.has(error))return;notifiedErrors.add(error);}notify('error',randomUUID());};
+  const notifyBackground=outcome=>{
+    const cleanup=isSessionCleanupError(outcome),event=backgroundNotificationEvent(outcome),key=event+'\0'+outcome.notificationId;
+    if(cleanup&&!backgroundCleanupFailure){
+      const cause=typeof outcome.cause?.message==='string'?new Error(safe(outcome.cause.message)):undefined;
+      backgroundCleanupFailure=Object.assign(new Error(outcome.code==='ENGINE_CLEANUP_UNVERIFIED'?'Codex engine process cleanup could not be verified. Close this session and inspect its remaining processes before reconnecting.':'Session resource cleanup could not be completed. Close this session before reconnecting.',cause?{cause}:undefined),{code:outcome.code});
+    }
+    if(backgroundNotifications.has(key)||!cleanup&&(quitting||outcome.notificationSuppressed))return;
+    backgroundNotifications.add(key);while(backgroundNotifications.size>128)backgroundNotifications.delete(backgroundNotifications.values().next().value);
+    if(cleanup)void deliverNotification('error',outcome.notificationId);else notify(event,outcome.notificationId);
+  };
   const aiActivity=createAiActivity({onChange:state=>{session.setWorking(state.working);if(state.working)workMeter?.start();else workMeter?.pause();dashboard?.refresh();}});
   const snapshot = () => ({ ...session.snapshot(),working:aiActivity.snapshot().working, permissions: settings.permissions,scope:settings.scope, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(),healthPercent:settings.healthPercent,budget:budgetSnapshot,verification:settings.lastVerification?.status, worked: workMeter?.snapshot(), network: network.snapshot(),performance:performanceMonitor.snapshot(),...assistantFeatures?.snapshot(),chatTitle:chatSession?.current()?.title });
   let activity = 'Offline shell', currentPrompt = null;
@@ -128,7 +142,7 @@ export async function runUI(opts) {
   } });
   const ask = (prompt, hidden = false, metadata) => prompts.ask(green(prompt), hidden, metadata);
 
-  let engine, bridge, home, connection, busy = false, quitting = false, hasText = false,nativeMessages=[],nativeInstructions='';
+  let engine, bridge, home, connection, busy = false, quitting = false, hasText = false,nativeMessages=[],nativeInstructions='',cleanupFailure,cleanupRunning,pendingConnect,primaryFailure,cleanupCause;
   const queuedInputs = [];
   let saving=0;
   const checkpoint=()=>{if(!chatSession)return Promise.resolve();saving++;return chatSession.checkpoint().catch(()=>note('Chat could not be saved. Existing saved data was preserved.')).finally(()=>saving--);};
@@ -164,7 +178,7 @@ export async function runUI(opts) {
   };
   const operationTasks=[];
   const runOperation=async(label,fn)=>{const controller=new AbortController();const state={id:randomUUID(),aiPerformed:false,failed:false,cancelled:false};operationState=state;settings.serviceController=controller;busy=true;activity=label;dashboard?.refresh();
-    try{return await fn(controller.signal);}catch(error){state.failed=true;state.cancelled=controller.signal.aborted;if(state.aiPerformed&&!state.cancelled&&error&&typeof error==='object')notifiedErrors.add(error);throw error;}
+    try{return await fn(controller.signal);}catch(error){state.failed=true;state.cancelled=controller.signal.aborted&&!isSessionCleanupError(error);if(state.aiPerformed&&!state.cancelled&&error&&typeof error==='object')notifiedErrors.add(error);throw error;}
     finally{const remaining=operationTasks.splice(0);await Promise.allSettled(remaining.map(id=>ledger?.endTask(id)));for(const id of remaining)aiActivity.end(id);if(settings.serviceController===controller)settings.serviceController=undefined;if(operationState===state)operationState=undefined;busy=false;activity=engine?'Ready':'Offline shell';dashboard?.refresh();if(state.aiPerformed)notify(state.cancelled?'interrupted':state.failed?'error':'done',state.id);}};
   const budgetOptions=()=>({cwd,stateDir:process.env.SUDO_CLI_STATE_DIR?resolve(process.env.SUDO_CLI_STATE_DIR):defaultWorkStateDir(),policy:settings.budget||{}});
   const reconfigureBudget=async policy=>{settings.budget=policy;ledger=await createBudgetLedger({...budgetOptions(),policy});budgetSnapshot=await ledger.snapshot();await configurationRecord?.write({version:1,budget:policy,pricing:settings.pricing||{},capabilityByIdentity:settings.capabilityByIdentity||{},checks:settings.checks||[]});dashboard?.refresh();};
@@ -269,12 +283,27 @@ export async function runUI(opts) {
     if(method==='item/completed'&&['commandExecution','fileChange','mcpToolCall'].includes(params.item?.type))settings.observedCapabilities={...settings.observedCapabilities,tools:true};
   };
 
-  const cleanup = async () => {
+  const cleanup = cause => {
+    if(cause&&!isSessionCleanupError(cause))cleanupCause??=cause;
+    if(cleanupFailure)return Promise.reject(cleanupFailure);
+    if(cleanupRunning)return cleanupRunning;
     if(session.snapshot().connectionState==='online')notify('disconnected',engine?.threadId);
-    await commandWatchdog?.stop();commandWatchdog=undefined;
-    await engine?.close().catch(() => {}); engine = undefined;
-    await bridge?.close().catch(() => {}); bridge = undefined;
-    await home?.cleanup().catch(() => {}); home = undefined;
+    const pending=pendingConnect;
+    cleanupRunning=(async()=>{
+      let startupError;
+      try{await pending;}catch(error){if(isSessionCleanupError(error))startupError=error;}
+      const resources={watchdog:commandWatchdog,engine,bridge,home};
+      commandWatchdog=undefined;engine=undefined;bridge=undefined;home=undefined;
+      try{await closeNativeSession(resources,{cause:cleanupCause||cause||startupError});}
+      catch(error){throw backgroundCleanupFailure||error;}
+      if(backgroundCleanupFailure)throw backgroundCleanupFailure;
+    })().catch(async error=>{
+      if(cleanupCause&&!error.cause)error=Object.assign(new Error(error.message,{cause:cleanupCause}),{code:error.code});
+      cleanupFailure=error;connection=undefined;session.updateConnection(undefined);activity='Cleanup needs attention';dashboard?.refresh();
+      if(!backgroundCleanupFailure&&!notifiedErrors.has(error)){notifiedErrors.add(error);await deliverNotification('error',randomUUID());}
+      throw error;
+    }).finally(()=>{cleanupRunning=undefined;});
+    return cleanupRunning;
   };
 
   const connect = async (selected, {carryHistory = false} = {}) => {
@@ -286,6 +315,9 @@ export async function runUI(opts) {
     if(nextEffort!==settings.effort){settings.effort=nextEffort;note('Previous reasoning setting is unavailable for this AI; using provider default.');}
     const transfer = carryHistory && history.snapshot().messages.length ? history.toPrompt() : '';
     await cleanup();
+    const checkStartup=()=>{if(cleanupFailure||backgroundCleanupFailure)throw cleanupFailure||backgroundCleanupFailure;if(quitting)throw new DOMException('Session startup was cancelled.','AbortError');};
+    checkStartup();
+    const startup=(async()=>{
     connection=undefined;
     health = createConnectionHealth();
     session.updateConnection(selected);
@@ -294,6 +326,7 @@ export async function runUI(opts) {
     nativeMessages=[];
     settings.pendingAgentContext='';
     home = await createSessionHome();
+    checkStartup();
     const env = isolatedEnvironment(process.env,{ CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' });
     let baseUrl = selected.baseUrl;
     if (selected.transport === 'chat-completions') {
@@ -305,6 +338,7 @@ export async function runUI(opts) {
       bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
       baseUrl = bridge.baseUrl; env.SUDO_CLI_SESSION_KEY = bridge.token; secrets.push(bridge.token);
     }
+    checkStartup();
     const args = providerArgs(selected, { baseUrl, keyEnv: 'SUDO_CLI_SESSION_KEY', permissions:settings.permissions, webAccess:settings.webAccess,scope:settings.scope,writableRoots:settings.writableRoots });
     if(settings.capabilities.hostedSearch===false)args.push('-c','web_search="disabled"');
     for (const [name,url] of enabledMcpEntries(settings)) {
@@ -316,6 +350,7 @@ export async function runUI(opts) {
       }
     }
     nativeInstructions=[personalizationInstructions(await personalization?.get(selected)),await memory?.instructions(),upgrades?.instructions(),workflow?.promptInstructions()].filter(Boolean).join('\n\n');
+    checkStartup();
     engine = await createEngine({ codexPath: localCodex(), cwd, model: selected.model, providerArgs: args, env, onEvent: event, permissions:settings.permissions, webAccess:settings.webAccess,scope:settings.scope,writableRoots:settings.writableRoots, supportedEfforts:selected.supportedEfforts,capabilities:settings.capabilities,developerInstructions:nativeInstructions,
       onApproval: async ({ method, params }) => {
         if (!interactive) return false;
@@ -332,6 +367,7 @@ export async function runUI(opts) {
         finally { if (busy && !quitting)aiActivity.resume(taskId);activity = 'Working'; dashboard?.refresh(); }
       },
     });
+    checkStartup();
     connection = selected;
     const watchedEngine=engine;
     commandWatchdog=createCommandWatchdog({getCommands:()=>watchedEngine.listBackgroundCommands(),terminate:processId=>watchedEngine.terminateBackgroundCommand(processId),...loopSettings,
@@ -349,6 +385,11 @@ export async function runUI(opts) {
       if (engine.runtimePolicy?.sandbox?.type === 'readOnly') note('Native engine is using a read-only sandbox here; writes may require approval.');
       if (!settings.webAccess && settings.mcp.size) note('HTTP MCP servers are disabled until /web on.');
     }
+    })();
+    pendingConnect=startup;
+    let startupError;
+    try{await startup;}catch(error){startupError=error;}finally{if(pendingConnect===startup)pendingConnect=undefined;}
+    if(startupError){if(isSessionCleanupError(startupError))await cleanup(startupError);throw startupError;}
   };
 
   const turn = async (text, {recorded = false} = {}) => {
@@ -412,7 +453,7 @@ export async function runUI(opts) {
     else if(assistantFeatures?.snapshot().voice?.running){void assistantFeatures.stopVoice();note('Live voice stopped.');}
     else { quitting = true; prompts.close(); rl?.close(); }
   };
-  const terminate = () => { quitting = true;settings.serviceController?.abort(); prompts.close(); rl?.close(); engine?.close().catch(() => {}); };
+  const terminate = () => { quitting = true;settings.serviceController?.abort(); prompts.close(); rl?.close();void cleanup().catch(()=>{}); };
   process.on('SIGINT', signal);
   process.on('SIGTERM', terminate);
   process.on('SIGHUP', terminate);
@@ -459,8 +500,8 @@ export async function runUI(opts) {
       rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},interrupt:()=>{assistantFeatures?.interruptSpeech();if(busy&&!currentPrompt)void engine?.interrupt().catch(()=>{});},
       onVoiceState:state=>{if(!busy&&!backgroundWorking)activity=state?.status||'Ready';dashboard?.refresh();},
       onBackgroundState:state=>{const working=['assessing','working'].includes(state?.state);backgroundWorking=working;if(working)aiActivity.begin('background','background');else aiActivity.end('background');dashboard?.refresh();},
-      onBackgroundResult:async outcome=>{const {job,text,reason,model,status,notificationId}=outcome;history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});if(text)history.finishAssistant(`background:${randomUUID()}`,`Task status: ${status||'Needs review'}\n${text}`,{model});await checkpoint();note(`24/7 task ${job.id} ${status||'Needs review'}: ${text||reason||'Inspect /247 result for details.'}`);if(!outcome.notificationSuppressed)notify(backgroundNotificationEvent(outcome),notificationId);},
-      onBackgroundError:outcome=>notify('error',outcome.notificationId),
+      onBackgroundResult:async outcome=>{notifyBackground(outcome);const {job,text,reason,model,status}=outcome;history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});if(text)history.finishAssistant(`background:${randomUUID()}`,`Task status: ${status||'Needs review'}\n${text}`,{model});await checkpoint();note(`24/7 task ${job.id} ${status||'Needs review'}: ${text||reason||'Inspect /247 result for details.'}`);},
+      onBackgroundError:notifyBackground,
       onApproval:async({method,params})=>{if(!interactive||quitting)return false;if(currentPrompt?.input)prompts.cancel();aiActivity.pause('background');dashboard?.refresh();notify('approval',`background:${params.itemId||params.callId||randomUUID()}`);note(`24/7 permission: ${method} · ${params.command||params.reason||'approval required'}`);try{return /^y(es)?$/i.test(await ask('  Allow once? [y/N] › '));}finally{backgroundWorking=!quitting&&['assessing','working'].includes(assistantFeatures?.snapshot().agent?.state);if(backgroundWorking)aiActivity.resume('background');else aiActivity.end('background');dashboard?.refresh();}},
     });
     upgrades=await createUpgradeCommands({cwd,...stateOptions,settings,memory,vault,workspace,workflow,profiles,history,note,ask:(prompt,hidden)=>ask(prompt,hidden,{raw:prompt==='  | '}),getConnection:()=>connection,getEngine:()=>engine,getToolCatalog:()=>bridge?.getToolCatalog?.()||[],secrets:()=>secrets,reconnect:connect,runTurn:turn,enqueue,runOperation,reconfigureBudget,getBudget:()=>ledger,stopBackground:()=>assistantFeatures.stopForPolicyChange(),getBackgroundConfig:()=>assistantFeatures.backgroundConfig(),rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);}});
@@ -533,10 +574,10 @@ export async function runUI(opts) {
       } catch (error) { if (!quitting){notifyError(error);note(error.message);} }
     }
   } catch (error) {
-    if (!quitting) throw new Error(safe(error.message));
+    if (!quitting||isSessionCleanupError(error)) {const visible=new Error(safe(error.message));if(isSessionCleanupError(error))visible.code=error.code;primaryFailure=visible;throw visible;}
   } finally {
     quitting=true;clearInterval(saveTimer);
-    await notifications.close().catch(()=>note('Notification sound cleanup needs review.'));aiActivity.clear();
+    aiActivity.clear();
     process.removeListener('SIGINT', signal);
     process.removeListener('SIGTERM', terminate);
     process.removeListener('SIGHUP', terminate);
@@ -546,12 +587,17 @@ export async function runUI(opts) {
     await assistantFeatures?.stop().catch(error=>note(error.message));
     await upgrades?.close().catch(error=>note(error.message));
     agents?.close();
-    await cleanup();
+    let finalCleanupError;
+    try{await cleanup(primaryFailure);}catch(error){finalCleanupError=error;}
     await checkpoint();await chatSession?.flush().catch(()=>note('The final chat checkpoint could not be saved.'));
     network.stop();
     await performanceMonitor.stop();
     await workMeter?.close().catch(() => note('Worked-time totals could not be saved.'));
     session.setWorking(false); session.markOffline(); activity = 'Session closed'; dashboard?.refresh(); dashboard?.stop();
+    await Promise.allSettled([...notificationDeliveries]);
+    await notifications.close().catch(()=>note('Notification sound cleanup needs review.'));
     liveKeys.clear();secrets = [];
+    finalCleanupError??=backgroundCleanupFailure;
+    if(finalCleanupError){process.exitCode=1;throw finalCleanupError;}
   }
 }

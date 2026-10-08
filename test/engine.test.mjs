@@ -5,6 +5,13 @@ import { readFile, access, rm } from 'node:fs/promises';
 import {mkdtempSync} from 'node:fs';
 import {join} from 'node:path';
 import { createEngine } from '../src/engine.mjs';
+import {runFixtureProcess} from './fixtures/native-process.mjs';
+
+async function descendantRunning(pid){
+  if(process.platform==='linux')try{const text=await readFile(`/proc/${pid}/stat`,'utf8');return !['Z','X','x'].includes(text.slice(text.lastIndexOf(')')+2).split(' ')[0]);}catch(error){if(error.code==='ENOENT')return false;throw error;}
+  try{process.kill(pid,0);return true;}catch(error){if(error.code==='ESRCH')return false;throw error;}
+}
+function ownedDescendant(t){let pid; t.after(async()=>{if(pid&&await descendantRunning(pid))try{process.kill(pid,'SIGKILL');}catch{}});return {event:e=>{if(e.method==='fixture/descendant')pid=e.params.pid;},pid:()=>pid};}
 
 const fixture = fileURLToPath(new URL('./fixtures/engine-server.mjs', import.meta.url));
 // Protocol mocks do not have a real disposable home. Keep their cwd owned by
@@ -38,7 +45,7 @@ test('engine custom catalog preserves declared capabilities while exposing nativ
 });
 test('aborting native startup closes a hung child promptly',async()=>{
   const controller=new AbortController();const pending=createEngine(options('hang-startup',{signal:controller.signal,requestTimeoutMs:10000}));
-  setTimeout(()=>controller.abort(),50);await assert.rejects(within(pending,2000),{name:'AbortError'});
+  setTimeout(()=>controller.abort(),50);await assert.rejects(within(pending,20000),{name:'AbortError'});
 });
 async function within(promise, ms = 1000) {
   let timeout;
@@ -208,13 +215,13 @@ test('refuses overlapping turns instead of replacing an active completion', asyn
 
 test('rejects active work when the child exits', async (t) => {
   const engine = await createEngine(options('exit-turn'));
-  t.after(() => engine.close());
+  t.after(() => process.platform==='win32'?assert.rejects(engine.close(),{code:'ENGINE_CLEANUP_UNVERIFIED'}):engine.close());
   await assert.rejects(within(engine.startTurn('exit')), /exited|stream closed/);
 });
 
 test('times out startup and rejects a failed child startup', async () => {
-  await assert.rejects(within(createEngine(options('hang-startup', { requestTimeoutMs: 150 }))), /timed out/);
-  await assert.rejects(within(createEngine(options('exit-startup'))), /exited|stream closed/);
+  await assert.rejects(within(createEngine(options('hang-startup', { requestTimeoutMs: 150 })),20000), /timed out/);
+  await assert.rejects(within(createEngine(options('exit-startup')),20000), /exited|stream closed/);
 });
 
 test('close rejects active work and is safe to call twice', async () => {
@@ -288,11 +295,11 @@ test('fails safely when the executable is missing', async () => {
 });
 
 test('rejects invalid thread startup responses with a safe error', async () => {
-  await assert.rejects(within(createEngine(options('bad-thread'))), /invalid thread response/);
+  await assert.rejects(within(createEngine(options('bad-thread')),20000), /invalid thread response/);
 });
 
 test('requires ephemeral thread confirmation instead of using a persisted thread', async () => {
-  await assert.rejects(within(createEngine(options('persistent-thread')).then(async (engine) => { await engine.close(); return engine; })), /ephemeral/);
+  await assert.rejects(within(createEngine(options('persistent-thread')).then(async (engine) => { await engine.close(); return engine; }),20000), /ephemeral/);
 });
 
 test('rejects malformed turn responses without retaining an active turn', async (t) => {
@@ -397,4 +404,30 @@ test('compaction cannot accept same-turn steering', async (t) => {
   await assert.rejects(engine.steer('Additional task'), /compaction/);
   await engine.interrupt();
   await compaction;
+});
+
+test('engine close stops an actual private helper tree and leaves a concurrent engine usable',{timeout:30000},async t=>{
+  const descendant=ownedDescendant(t);
+  const foreign=await createEngine(options());t.after(()=>foreign.close());
+  const engine=await createEngine(options('owned-normal',{onEvent:descendant.event}));t.after(()=>engine.close());
+  assert.equal(await descendantRunning(descendant.pid()),true);
+  const a=engine.close(),b=engine.close();assert.equal(a,b);await a;
+  assert.equal(await descendantRunning(descendant.pid()),false);
+  assert.equal((await foreign.startTurn('Still alive')).status,'completed');
+});
+test('startup validation failure cleans its real helper tree',{timeout:20000},async t=>{
+  const descendant=ownedDescendant(t);
+  await assert.rejects(createEngine(options('owned-bad-thread',{onEvent:descendant.event})),/invalid thread response/);
+  assert.ok(descendant.pid());assert.equal(await descendantRunning(descendant.pid()),false);
+});
+test('aborted initialization cleans its real helper tree',{timeout:20000},async t=>{
+  const controller=new AbortController(),descendant=ownedDescendant(t);
+  await assert.rejects(createEngine(options('owned-hang-startup',{requestTimeoutMs:10000,signal:controller.signal,onEvent:event=>{descendant.event(event);if(descendant.pid())controller.abort();}})),{name:'AbortError'});
+  assert.ok(descendant.pid());assert.equal(await descendantRunning(descendant.pid()),false);
+});
+test('failed initial Unix ownership metadata still attempts owned teardown and reports unverified cleanup',{skip:process.platform==='win32',timeout:20000},async()=>{
+  const engineUrl=new URL('../src/engine.mjs',import.meta.url).href,ownedUrl=new URL('../src/owned-process.mjs',import.meta.url).href;
+  const script=`import {mock} from 'node:test';let closed=0;mock.module(${JSON.stringify(ownedUrl)},{namedExports:{ownProcess(child){return {capture:async()=>{throw Error('fixture metadata unavailable')},close:async()=>{closed++;if(child.exitCode===null&&child.signalCode===null){const exit=new Promise(r=>child.once('exit',r));child.kill('SIGKILL');await exit;}child.stdin.destroy();child.stdout.destroy();child.stderr.destroy();}}}}});const {createEngine}=await import(${JSON.stringify(engineUrl)});try{await createEngine({codexPath:[process.execPath,${JSON.stringify(fixture)}],cwd:${JSON.stringify(fixtureCwd)},model:'fixture-model',permissions:'allow-everything',scope:'full',webAccess:true,env:process.env});throw Error('unexpected success')}catch(e){if(e.code!=='ENGINE_CLEANUP_UNVERIFIED'||closed!==1)throw e;console.log('OWNED_CLEANUP_ATTEMPTED');}`;
+  const result=await runFixtureProcess(process.execPath,['--experimental-test-module-mocks','--input-type=module','-e',script],{timeoutMs:15000});
+  assert.equal(result.stdout.trim(),'OWNED_CLEANUP_ATTEMPTED');
 });

@@ -1,4 +1,5 @@
 import { createInterface } from 'node:readline';
+import {spawn} from 'node:child_process';
 
 // node --test discovers helper files under test/; serve only when spawned as the fake Codex command.
 if (!process.argv.slice(2).includes('app-server')) process.exit(0);
@@ -23,9 +24,12 @@ const turn = (status = 'completed', items = []) => ({
   durationMs: status === 'inProgress' ? null : 1000, error: status === 'failed' ? { message: 'fixture failure', codexErrorInfo: 'other', additionalDetails: null } : null,
 });
 if (scenario === 'exit-startup') process.exit(7);
-if (scenario === 'hang-startup') setTimeout(() => process.exit(0), 700);
+const descendantReady = scenario.startsWith('owned-') ? new Promise(resolve => {
+  const worker=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.send({ready:true});setInterval(()=>{},1000);"],{detached:process.platform==='win32',stdio:['ignore','ignore','ignore','ipc']});
+  worker.once('message',()=>{event('fixture/descendant',{pid:worker.pid});resolve();});
+}) : Promise.resolve();
 
-input.on('line', (line) => {
+input.on('line', async (line) => {
   const message = JSON.parse(line);
   if (!message.method && approvalMethods.includes(message.id)) {
     approvalResponses[message.id] = message.result ?? { error: message.error };
@@ -35,7 +39,8 @@ input.on('line', (line) => {
     return;
   }
   if (message.method === 'initialize') {
-    if (scenario === 'hang-startup') return;
+    await descendantReady;
+    if (scenario === 'hang-startup' || scenario==='owned-hang-startup') return;
     if (scenario === 'wrong-id') response(String(message.id), { misleading: true });
     response(message.id, { userAgent: 'fixture/1', codexHome: process.env.CODEX_HOME, platformFamily: 'windows', platformOs: 'windows' });
   } else if (message.method === 'initialized') {
@@ -44,7 +49,7 @@ input.on('line', (line) => {
     if (!initialized) return process.exit(9);
     threadParams = message.params;
     if (scenario === 'persistent-thread') return response(message.id, { thread: { id: 'thread-1', ephemeral: false } });
-    if (scenario === 'bad-thread') return response(message.id, { thread: null });
+    if (scenario === 'bad-thread' || scenario==='owned-bad-thread') return response(message.id, { thread: null });
     let sandbox = message.params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } :message.params.sandbox==='read-only'?{type:'readOnly',networkAccess:false}: { type: 'workspaceWrite', networkAccess: message.params.config?.['sandbox_workspace_write.network_access'] === true,excludeTmpdirEnvVar:message.params.config?.['sandbox_workspace_write.exclude_tmpdir_env_var']===true,excludeSlashTmp:message.params.config?.['sandbox_workspace_write.exclude_slash_tmp']===true };
     if(scenario==='wrong-temp')sandbox={...sandbox,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
     if (scenario === 'wrong-permissions') sandbox = { type: 'dangerFullAccess' };

@@ -264,3 +264,67 @@ test('native reviewer requests obey runtimeProvider accounting hooks before cont
   await assert.rejects(workflow.runReviewer({ timeoutMs: 30000, runtime: { codexPath, baseDir: homes, requestTimeoutMs: 10000 } }), /Budget sentinel/);
   assert.equal(requests, 0); assert.deepEqual(await readdir(homes), []);
 });
+
+test('workflow preserves cleanup attention over cancellation, output limits and deadlines', { timeout: 30000 }, async t => {
+  const {cwd,homes}=await fixture(t), {createWorkflow}=await import('../src/workflow.mjs');
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED']) for(const interruption of ['cancel','output','deadline']) {
+    await t.test(code+' after '+interruption,async()=>{
+      const controller=new AbortController(),ends=[],copies=[];
+      const secret='workflow-cleanup-credential-fixture';
+      const workflow=createWorkflow({cwd,snapshotBaseDir:join(homes,'copies'),connectionProvider:()=>({...connection,apiKey:secret}),
+        runtimeProvider:()=>({onTaskEnd:result=>ends.push(result)}),runTask:async options=>{
+          copies.push(options.cwd);
+          if(interruption==='cancel')controller.abort();
+          if(interruption==='output')options.onEvent({method:'item/agentMessage/delta',params:{itemId:'bounded-output',delta:'too much output'}});
+          if(interruption==='deadline')await new Promise(resolve=>options.signal.aborted?resolve():options.signal.addEventListener('abort',resolve,{once:true}));
+          throw Object.assign(new Error('Cleanup needs attention '+secret),{code});
+        }});
+      await assert.rejects(workflow.runReviewer({signal:controller.signal,maxOutputBytes:1,timeoutMs:interruption==='deadline'?2000:10000}),error=>{
+        assert.equal(error.code,code);assert.doesNotMatch(error.message,/workflow-cleanup-credential-fixture/);return true;
+      });
+      assert.equal(copies.length,1);assert.deepEqual(ends.map(value=>value.status),['failed']);
+      for(const copy of copies)await assert.rejects(readFile(copy),error=>error.code==='ENOENT');
+    });
+  }
+});
+
+test('named agents classify unverified cleanup as failed even when the agent was cancelled',async t=>{
+  const {cwd,homes}=await fixture(t),{createWorkflow}=await import('../src/workflow.mjs');
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED']) {
+    const controller=new AbortController();let calls=0;
+    const workflow=createWorkflow({cwd,snapshotBaseDir:join(homes,'copies'),connectionProvider:()=>connection,runTask:async()=>{
+      calls++;controller.abort();throw Object.assign(new Error('Cleanup needs attention'),{code});
+    }});
+    const result=await workflow.runAgents({task:'Review source',signal:controller.signal,concurrency:1,agents:[{name:'active',role:'reviewer'},{name:'queued',role:'tester'}]});
+    assert.equal(calls,1);assert.equal(result.status,'failed');
+    assert.deepEqual(result.results.map(value=>value.status),['failed','cancelled']);
+    assert.equal(result.results[0].code,code);assert.match(result.results[0].error,/Cleanup needs attention/);
+  }
+});
+
+test('workflow snapshot and accounting failures cannot hide an existing engine cleanup failure',async t=>{
+  const {cwd,homes}=await fixture(t),{createWorkflow}=await import('../src/workflow.mjs');
+  for(const code of ['ENGINE_CLEANUP_UNVERIFIED','SESSION_CLEANUP_FAILED']) {
+    let accounted=false,copy;
+    const workflow=createWorkflow({cwd,snapshotBaseDir:join(homes,'copies'),connectionProvider:()=>connection,
+      runtimeProvider:()=>({onTaskEnd:()=>{accounted=true;throw new Error('Accounting completion failed');}}),runTask:async options=>{
+        copy=options.cwd;await unlink(join(copy,'.snapshot-owner'));
+        throw Object.assign(new Error('Native cleanup needs attention'),{code});
+      }});
+    await assert.rejects(workflow.runReviewer(),error=>{assert.equal(error.code,code);assert.match(error.message,/Native cleanup needs attention/);return true;});
+    assert.equal(accounted,true);await readdir(copy);
+    await assert.rejects(readFile(join(copy,'.snapshot-owner')),error=>error.code==='ENOENT');
+  }
+});
+
+test('workflow retains the redacted task cause of a cleanup failure',async t=>{
+  const {cwd,homes}=await fixture(t),{createWorkflow}=await import('../src/workflow.mjs');
+  const secret='workflow-primary-credential-fixture';
+  const workflow=createWorkflow({cwd,snapshotBaseDir:join(homes,'copies'),connectionProvider:()=>({...connection,apiKey:secret}),runTask:async()=>{
+    throw Object.assign(new Error('Cleanup needs attention'),{code:'ENGINE_CLEANUP_UNVERIFIED',cause:new Error('Original task failed '+secret)});
+  }});
+  await assert.rejects(workflow.runReviewer(),error=>{
+    assert.equal(error.code,'ENGINE_CLEANUP_UNVERIFIED');assert.match(error.cause?.message||'',/Original task failed/);
+    assert.doesNotMatch(error.cause.message,/workflow-primary-credential-fixture/);return true;
+  });
+});

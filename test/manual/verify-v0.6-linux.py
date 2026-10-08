@@ -52,7 +52,7 @@ if not ENGINE or not Path(ENGINE).is_file():
 OUTPUT = arguments.output_directory.resolve() if arguments.output_directory else Path(tempfile.mkdtemp(prefix='sudocli-v6-proof-'))
 OUTPUT.mkdir(parents=True, exist_ok=True)
 KEY = 'v6-loopback-only-private-acceptance-key'
-ANSI = re.compile(rb'\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
+ANSI = re.compile(rb'\x1b(?:\][^\x07]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
 requests = []
 fixture_errors = []
 terminals = []
@@ -76,7 +76,7 @@ def ready_prompt_visible(raw):
     # not evidence that the submitted operation has returned.
     # Notification BELs do not change cells or cursor position. Ignore only
     # standalone BELs left after ANSI/OSC removal, including delayed rhythms.
-    return bool(re.search(r'(?:\r?\n|^)  you › $', plain(raw).replace('\x07', '')))
+    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -392,6 +392,8 @@ def verify_ready_prompt_regression():
         ('\n  you › \n  · Working · Ctrl+C to interrupt\n', False),
         ('\n  you › /status\x07\x07', False),
         ('\n  you › \n  · Working · Ctrl+C to interrupt\n\x07\x07', False),
+        ('\n  you › \n', False),
+        ('\n  you › \x1b]0;Working\x1b\\VISIBLE\x07', False),
         ('\n  you › \x1b[39m', True),
         ('\n  you › \x1b7header redraw\x1b8', True),
         ('\n  you › \x1b[39m\x07\x07', True),

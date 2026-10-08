@@ -49,7 +49,7 @@ if not ENGINE or not Path(ENGINE).is_file():
 OUTPUT = arguments.output_directory.resolve() if arguments.output_directory else Path(tempfile.mkdtemp(prefix='sudocli-v061-proof-'))
 OUTPUT.mkdir(parents=True, exist_ok=True)
 CLOUD_SECRET = 'v061-unrelated-inherited-cloud-credential'
-ANSI = re.compile(rb'\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
+ANSI = re.compile(rb'\x1b(?:\][^\x07]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])')
 requests, headers, catalogs, fixture_errors, terminals, isolation_roots = [], [], [], [], [], []
 request_lock = threading.Lock()
 results = {}
@@ -59,6 +59,12 @@ print(f'Sanitized native acceptance evidence: {OUTPUT}', flush=True)
 def plain(raw):
     body = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
     return ANSI.sub(b'', body).decode('utf-8', errors='replace')
+
+
+def ready_prompt_visible(raw):
+    # A retained user line is not the final empty editable prompt. Remove OSC
+    # controls in plain() before ignoring standalone notification BELs.
+    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -226,7 +232,7 @@ class Terminal:
         return marker
 
     def ready(self, marker=0):
-        self.read_until(lambda raw: re.search(r'(?:\r?\n|^)  you › ', plain(raw[marker:])), expectation='ready prompt')
+        self.read_until(lambda raw: ready_prompt_visible(raw[marker:]), expectation='ready prompt')
 
     def command(self, text):
         marker = self.send(text+'\n')
