@@ -1,4 +1,10 @@
-# Using sudocli 0.6.2
+# Using sudocli 0.6.3
+
+Use `/bgcolor COLOR` and `/txtcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability. `/reset` lets you choose settings to restore.
+
+`/update check` checks stable releases from `panmm942-ui/sudo_cli`. Launch checks are enabled by default; installation requires your **y/n** answer and a verified compatible package. `/update off` disables launch checks.
+
+`/loopguard` controls repeated tool action protection and native command timeouts. [Color examples](terminal-colors.md), [reset targets](reset-settings.md), [update setup](github-updates.md), [model connection and coding tests](model-compatibility.md).
 
 Complete [first setup](platforms.md), then launch from the project you want to work on. Windows requires an Administrator terminal; Unix uses `sudo "$HOME/.local/bin/sudocli"` or the full local launcher path. Setup, help, version and doctor work normally without elevation. The CLI never elevates itself.
 

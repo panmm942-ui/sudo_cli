@@ -177,7 +177,8 @@ async function switchCommand(register,next,previous,record,value,oldValue){
     throw new Error('Update command registration failed. The verified previous command was restored.');
   }
 }
-export async function installStagedUpdate({stateDir=defaultWorkStateDir(),currentRoot=projectRoot,register,nodePath=process.execPath,runtimePath,commandRunner=execute,signal}={}){
+export async function installStagedUpdate({stateDir=defaultWorkStateDir(),currentRoot=projectRoot,register,nodePath=process.execPath,runtimePath,commandRunner=execute,signal,expectedVersion}={}){
+  if(expectedVersion!==undefined&&!semver.test(expectedVersion))throw new Error('Expected update version is invalid.');
   if(runtimePath&&!register)throw new Error('An external runtime path requires explicit command registration.');
   return operation(stateDir,async directory=>{
     const staged=await updateStatus({stateDir});if(!staged||!/^[a-f0-9]{64}$/.test(staged.sha256||''))throw new Error('Stage a verified update first.');
@@ -186,9 +187,10 @@ export async function installStagedUpdate({stateDir=defaultWorkStateDir(),curren
     const record=await createPrivateRecord({directory,filename:'installation.json'}),old=validateInstallation(await record.read(),stateDir);
     if(old?.currentRuntimePath&&!inside(old.current,old.currentRuntimePath)&&!register)throw new Error('An external runtime path requires explicit command registration.');
     const originalRoot=old?.originalRoot||resolve(currentRoot),previous=await verifyRelease(old?.current||originalRoot,{nodePath:old?.currentNodePath||nodePath,runtimePath:old?.currentRuntimePath||runtimePath,commandRunner,signal});
-    if(old?.sha256===staged.sha256)return{installed:previous.projectRoot,version:previous.version,rollback:old.previous,alreadyInstalled:true,restart:'Run the registered sudocli command.'};
+    if(old?.sha256===staged.sha256){if(expectedVersion!==undefined&&previous.version!==expectedVersion)throw new Error('Retained update version does not match the offered release.');return{installed:previous.projectRoot,version:previous.version,rollback:old.previous,alreadyInstalled:true,restart:'Run the registered sudocli command.'};}
     const releases=await privateDirectory(join(stateDir,'releases')),release=await mkdtemp(join(releases,'verified-'));let keep=false;
     try{await extractZip(bytes,release,signal);const next=await verifyRelease(join(release,'codexcli'),{nodePath,runtimePath,commandRunner,signal,allowRuntimeSetup:true});
+      if(expectedVersion!==undefined&&next.version!==expectedVersion)throw new Error('Update package version does not match the offered release.');
       const registerFn=register||(await import('./command-setup.mjs')).registerCommand;
       signal?.throwIfAborted();await switchCommand(registerFn,next,previous,record,{version:1,originalRoot,current:next.projectRoot,previous:previous.projectRoot,currentNodePath:next.nodePath,currentRuntimePath:next.runtimePath,previousNodePath:previous.nodePath,previousRuntimePath:previous.runtimePath,releaseVersion:next.version,sha256:staged.sha256,previousSha256:old?.sha256},old);
       keep=true;return{installed:next.projectRoot,version:next.version,rollback:previous.projectRoot,restart:'Close this session and run the registered sudocli command.'};

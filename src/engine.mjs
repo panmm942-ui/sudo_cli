@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { VERSION } from './version.mjs';
 import { validateRuntimeOptions, validateReasoningEffort, validateSupportedEfforts } from './runtime.mjs';
 import {permissionPolicy,approvalWithinScope} from './permission-scope.mjs';
+import { prepareCustomModelCatalog } from './model-catalog.mjs';
 
 const MAX_LINE_CHARS = 8 * 1024 * 1024;
 const isTurn = (turn) => typeof turn?.id === 'string' && turn.id.length > 0 && Array.isArray(turn.items)
@@ -62,7 +63,7 @@ function pageOptions({ cursor, limit } = {}) {
 export async function createEngine({
   codexPath = 'codex', cwd = process.cwd(), model, providerArgs = [],
   env = process.env, onEvent = () => {}, onApproval = async () => false,
-  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false, scope,writableRoots=[], supportedEfforts, developerInstructions, signal,
+  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false, scope,writableRoots=[], supportedEfforts, capabilities: declaredCapabilities, developerInstructions, signal,
 } = {}) {
   signal?.throwIfAborted();
   if(developerInstructions !== undefined && (typeof developerInstructions!=='string' || Buffer.byteLength(developerInstructions)>65536 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(developerInstructions)))throw new Error('Developer instructions must be text within 64 KiB.');
@@ -70,6 +71,8 @@ export async function createEngine({
   const modelEfforts = validateSupportedEfforts(supportedEfforts);
   const policy=permissionPolicy({...choices,scope:scope|| (permissions==='allow-everything'?'full':'project'),writableRoots});
   const {approvalPolicy,sandbox}=policy;
+  const nativeCatalog = await prepareCustomModelCatalog({ model, providerArgs, supportedEfforts: modelEfforts, capabilities: declaredCapabilities });
+  if (nativeCatalog) providerArgs = [...providerArgs, '-c', `model_catalog_json=${JSON.stringify(nativeCatalog.path)}`];
   let runtimePolicy;
   let instructionSources = [];
   const command = Array.isArray(codexPath) ? codexPath : [codexPath];
@@ -81,6 +84,7 @@ export async function createEngine({
   let buffer = '';
   let threadId;
   let active;
+  let interruptCleanup;
   let closed = false;
   let terminalError;
   let closing;
@@ -218,9 +222,18 @@ export async function createEngine({
   function close() {
     if (closing) return closing;
     signal?.removeEventListener('abort',aborted);
-    closed = true;
-    fail(new Error('Codex engine is closed.'));
     closing = (async () => {
+      try {
+      // Turn interruption does not necessarily close unified-exec sessions.
+      // Ask the native engine to terminate its own commands before shutdown.
+      if (threadId && !terminalError && !exited) {
+        let deadline;
+        try { await Promise.race([terminateBackgroundCommands(), new Promise(resolve => { deadline = setTimeout(resolve, 500); })]); }
+        catch { /* Closing the private app-server is the final cleanup fallback. */ }
+        finally { clearTimeout(deadline); }
+      }
+      closed = true;
+      fail(new Error('Codex engine is closed.'));
       if (exited) return;
       child.stdin.end();
       let timeout;
@@ -231,6 +244,7 @@ export async function createEngine({
         await Promise.race([ended, new Promise((resolve) => { forceTimeout = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 250); })]);
         clearTimeout(forceTimeout);
       }
+      } finally { await nativeCatalog?.cleanup(); }
     })();
     return closing;
   }
@@ -268,7 +282,8 @@ export async function createEngine({
   } catch (error) { await close(); throw error; }
 
   function operation(kind, params, effort) {
-    if (terminalError || closed) return Promise.reject(terminalError ?? new Error('Codex engine is closed.'));
+    if (terminalError || closed || closing) return Promise.reject(terminalError ?? new Error('Codex engine is closed.'));
+    if (interruptCleanup) return interruptCleanup.then(() => operation(kind, params, effort));
     if (active) return Promise.reject(new Error('A Codex turn is already active.'));
     let resolve;
     let reject;
@@ -350,12 +365,47 @@ export async function createEngine({
     return result;
   }
 
-  async function interrupt() {
-    const record = active;
-    if (!record) return;
-    await record.started;
-    await record.identified;
-    if (active === record && record.id) await request('turn/interrupt', { threadId, turnId: record.id });
+  function interrupt() {
+    if (interruptCleanup) return interruptCleanup;
+    const pending = (async () => {
+      const record = active;
+      if (record) {
+        await record.started;
+        await record.identified;
+        if (active === record && record.id) await request('turn/interrupt', { threadId, turnId: record.id });
+      }
+      await terminateBackgroundCommands();
+    })();
+    interruptCleanup = pending;
+    pending.finally(() => { if (interruptCleanup === pending) interruptCleanup = undefined; }).catch(() => {});
+    return pending;
+  }
+
+  async function listBackgroundCommands() {
+    const commands = [], cursors = new Set();
+    let cursor;
+    for (let page = 0; page < 32; page++) {
+      const result = await request('thread/backgroundTerminals/list', { threadId, limit: 100, ...(cursor ? { cursor } : {}) });
+      if (!object(result) || !Array.isArray(result.data) || result.data.length > 100 || result.data.some(item => !object(item) || !identifier(item.processId) || !identifier(item.itemId))) throw new Error('Codex returned invalid background command metadata.');
+      commands.push(...result.data);
+      if (!result.nextCursor) return commands;
+      if (!identifier(result.nextCursor) || cursors.has(result.nextCursor)) throw new Error('Codex returned an invalid background command cursor.');
+      cursors.add(result.nextCursor); cursor = result.nextCursor;
+    }
+    throw new Error('Codex background command catalog exceeded its page limit.');
+  }
+
+  async function terminateBackgroundCommand(processId) {
+    if (!identifier(processId) || !/^\d{1,16}$/.test(processId)) throw new Error('A native background process ID is required.');
+    const result = await request('thread/backgroundTerminals/terminate', { threadId, processId });
+    if (!object(result) || typeof result.terminated !== 'boolean') throw new Error('Codex returned an invalid background command termination result.');
+    return result.terminated;
+  }
+
+  async function terminateBackgroundCommands() {
+    let terminated = 0;
+    for (const command of await listBackgroundCommands()) if (await terminateBackgroundCommand(command.processId)) terminated++;
+    return { terminated };
   }
   async function steer(input) {
     const normalized = normalizeTurnInput(input);
@@ -369,5 +419,5 @@ export async function createEngine({
     if (result?.turnId !== record.id) throw new Error('Codex app-server returned an invalid steering response.');
     return result;
   }
-  return { threadId, runtimePolicy, instructionSources, startTurn, compact, steer, listModels, listSkills, listMcpServers, listMcpTools, capabilities, interrupt, close };
+  return { threadId, runtimePolicy, instructionSources, startTurn, compact, steer, listModels, listSkills, listMcpServers, listMcpTools, listBackgroundCommands, terminateBackgroundCommand, terminateBackgroundCommands, capabilities, interrupt, close };
 }

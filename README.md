@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.2**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.3**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -118,6 +118,12 @@ Background jobs and results persist. Interrupted jobs require review/retry, and 
 
 ## Dashboard, updates and verification
 
+Use `/bgcolor #141414` for the lower chat background and `/txtcolor green` for your text. The upper dashboard keeps its original palette. Similar text and background colors are corrected automatically. `/reset txtcolor` restores your text; `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
+
+Every interactive launch checks stable public releases from `panmm942-ui/sudo_cli`, unless you choose `/update off`. A newer compatible ZIP is offered with **y/n**; downloads, checksum verification and installation happen after **y**. `/update check` checks now. The repository needs a published release with its ZIP and checksum assets. See [GitHub updates](docs/github-updates.md).
+
+Custom model IDs now receive the native editing tool catalog. Chat Completions is translated into Responses for the Codex engine; native Responses endpoints can also connect. MiMo-shaped streaming null fields and reasoning replay are supported. `/stop` cancels the turn and terminates its native background commands. `/loopguard` controls repeated tool action protection and the default 120-second command timeout. See [model compatibility](docs/model-compatibility.md) and [loop protection](docs/tool-loop-guard.md). Endpoint compatibility still requires a real test with your selected model.
+
 The supplied antenna characters, spacing and timing remain unchanged: 30 FPS, a 1.5-second pulse and 0.20-second wave delay. Only the six red waves animate; the tower/tip remain soft white on near-black. Animation freezes between tasks and resumes from the same phase. Narrow windows use a compact layout; very small windows show **Enlarge terminal**.
 
 The dashboard shows local time/timezone, OS/architecture, working state, configured/confirmed AI, context, permissions, budget/verification, activity/project and active-work timers. AI measurements are first-response latency, recent errors and reported generation speed. Connection percentage is an optional heuristic via `/status percent on`. **Live Traffic** is OS interface receive/transmit traffic, including other programs; it is not a speed test. WSL cannot establish the host's WiFi state. Unknown measurements stay unknown. `NO_COLOR=1` removes colors; `TERM=dumb` uses plain output. Normal exit restores the previous screen.
@@ -130,7 +136,9 @@ The previous 0.6.0 complete suites passed: Windows 487 tests with 23 platform sk
 
 Version 0.6.1 complete suites passed: Windows 537 tests with 24 platform skips; root Linux 552 tests with 9 platform skips; zero failures or cancellations. Its native terminal acceptance passed with 25 streamed requests and the retained broad regression passed with 22. See [previous verification](docs/verification-v0.6.1.md).
 
-Version 0.6.2 adds green input accents, the live command picker and local model file inspection/import. Complete suites passed on Windows (580 passed, 24 platform skips) and root Linux (595 passed, 9 platform skips), with zero failures or cancellations. New native acceptance selected all 59 commands, made 3 fixture requests and exited cleanly in four terminal variants. See [current verification](docs/verification-v0.6.2.md) and [terminal evidence](docs/v0.6.2-terminal-evidence.md).
+Version 0.6.2 added green input accents, the live command picker and local model file inspection/import. Complete suites passed on Windows (580 passed, 24 platform skips) and root Linux (595 passed, 9 platform skips), with zero failures or cancellations. Its native acceptance selected all 59 commands, made 3 fixture requests and exited cleanly in four terminal variants. See [previous verification](docs/verification-v0.6.2.md) and [terminal evidence](docs/v0.6.2-terminal-evidence.md).
+
+Current release checks are recorded in [version 0.6.3 verification](docs/verification-v0.6.3.md). Real model inference and physical macOS/ARM terminal behavior require separate validation.
 
 ## Launch options, source and licenses
 

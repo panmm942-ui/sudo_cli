@@ -155,3 +155,78 @@ test('the idle clock resumes after enlarging an initially tiny terminal', async 
   dashboard.stop();
   assert.match(out.text, /11:09:11/);
 });
+
+test('custom lower backgrounds paint empty chat rows while dashboard keeps its original background',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','white');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();const top=dashboard.inputArea().top;
+  assert.match(out.text,/\x1b\[48;2;11;15;20m.*Software System/s);
+  assert.ok(out.text.includes(`\x1b[${top};1H${theme.bodyStyle}\x1b[J`),'new lower background must clear every empty lower row');
+  dashboard.stop();
+});
+
+test('color redraw recolors previous user text and preserves readable system output',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('txtcolor','cyan');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();dashboard.write('user asks\n',{user:true});dashboard.write('\x1b[90mworking\x1b[0m\n');
+  await theme.set('bgcolor','white');await theme.set('txtcolor','#800000');out.text='';dashboard.redraw();
+  const lower=out.text.slice(out.text.indexOf(`\x1b[${dashboard.inputArea().top};1H`));
+  assert.match(lower,/\x1b\[38;2;128;0;0muser asks/);
+  assert.match(lower,/\x1b\[38;2;0;0;0mworking/);
+  assert.doesNotMatch(lower,/48;2;11;15;20/);
+  dashboard.stop();
+});
+
+test('header animation restores lower theme after the saved cursor without repeating chat',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','navy');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  let date=new Date('2026-10-07T08:09:10Z');
+  const dashboard=createDashboard({output:out,snapshot:()=>example,now:()=>date,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();dashboard.write('private question\n',{user:true});out.text='';date=new Date('2026-10-07T08:09:11Z');dashboard.refresh();
+  assert.ok(out.text.endsWith('\x1b8'+theme.bodyStyle+'\x1b[?25h'));
+  assert.doesNotMatch(out.text,/private question/);dashboard.stop();
+});
+
+test('NO_COLOR disables header and body color even when a theme remains saved',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','red');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm',NO_COLOR:'1'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();dashboard.write('message');dashboard.stop();
+  assert.doesNotMatch(out.text,/\x1b\[(?:3[0-9]|4[0-9]|9[0-9]|10[0-7])(?:;[0-9]+)*m/);
+});
+
+test('recording readline user echo recolors it on resize without echoing it twice',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','black');await theme.set('txtcolor','cyan');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();out.text='';dashboard.remember('  you › previously typed\n',{user:true});assert.equal(out.text,'');
+  await theme.set('txtcolor','yellow');dashboard.redraw();
+  assert.match(out.text,/\x1b\[38;2;255;255;0m  you › previously typed/);dashboard.stop();
+});
+
+test('tiny fallback keeps header cells nearblack when resizing a white chat background',async()=>{
+  const {createDashboard,renderDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','white');
+  const fallback=renderDashboard({state:example,columns:35,rows:8,color:true});
+  assert.ok(fallback.lines[0].startsWith('\x1b[48;2;11;15;20m'),'Fallback header must set its own background before any visible character');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();out.text='';out.columns=35;out.rows=8;out.emit('resize');
+  assert.match(out.text,/\x1b\[48;2;11;15;20m\x1b\[2J/,'Shrinking must clear upper blank cells under the fixed header color');
+  assert.match(out.text,/Enlarge terminal\x1b\[0m\x1b\[48;2;11;15;20m\x1b\[K/,'Fallback padding must retain header background');
+  assert.ok(out.text.includes('\x1b[2;1H'+theme.bodyStyle+'\x1b[J'));
+  dashboard.stop();
+});

@@ -76,7 +76,7 @@ export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 12000
       model = request.model;
       requestId = randomUUID(); started = performance.now();
       let reservation;
-      try { reservation = await beforeRequest?.({ id: requestId, model, transport: 'responses', inputTokensEstimate: Math.ceil(outgoing.length / 3), maxOutputTokens: request.max_output_tokens, estimated: true }); }
+      try { reservation = await beforeRequest?.({ id: requestId, model, transport: 'responses', input: request.input, inputTokensEstimate: Math.ceil(outgoing.length / 3), maxOutputTokens: request.max_output_tokens, estimated: true }); }
       catch (error) { hookFailure = true; throw error; }
       admitted = true;
       if (reservation?.maxOutputTokens !== undefined) {

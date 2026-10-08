@@ -101,6 +101,12 @@ test('native monitor applies budget caps and accounts reported usage without cha
   assert.ok(metrics.at(-1).totalLatencyMs >= 0);
 });
 
+test('native beforeRequest exposes tool history transiently without altering the provider request',async t=>{
+  const input=[{role:'user',content:'Read'},{type:'function_call',call_id:'native-guard',name:'read',arguments:'{}'},{type:'function_call_output',call_id:'native-guard',output:'unchanged'}];let captured,received;
+  const {post}=await fixture(t,async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;received=JSON.parse(raw);res.writeHead(200,{'content-type':'application/json'});res.end('{"status":"completed"}');},{requestHooks:{beforeRequest:request=>{captured=request;}}});
+  await(await post({body:JSON.stringify({model:'fixture',stream:false,input})})).text();assert.deepEqual(captured.input,input);assert.deepEqual(received.input,input);
+});
+
 test('native budget failure prevents model work and duration caps abort outbound requests', async t => {
   let calls = 0;
   const blocked = await fixture(t, () => { calls++; }, { timeoutMs: 80, requestHooks: { beforeRequest: () => { const error = new Error('private-secret'); error.code = 'BUDGET_EXCEEDED'; throw error; } } });

@@ -75,6 +75,16 @@ test('real stage install and rollback run the selected Node, pinned native engin
   const rolled=await rollbackUpdate(value);assert.equal(rolled.version,'0.6.0');assert.equal(rolled.installed,value.currentRoot);assert.equal(value.registered.length,2);
   assert.equal(JSON.parse(await readFile(join(installed.installed,'package.json'),'utf8')).version,'0.6.1');assert.equal(JSON.parse(await readFile(value.registrationPath,'utf8')).projectRoot,value.currentRoot);
 });
+
+test('an offered version must match the new archive and an already installed release before registration',async t=>{
+  const value=await installedFixture(t);if(!value)return;await stage(value,zip(application('0.6.1')));
+  await assert.rejects(installStagedUpdate({...value,expectedVersion:'0.6.2'}),/expected|offered|version/i);
+  assert.equal(value.registered.length,0);assert.deepEqual(await readdir(join(value.stateDir,'releases')),[]);
+  const installed=await installStagedUpdate({...value,expectedVersion:'0.6.1'});assert.equal(installed.version,'0.6.1');
+  await assert.rejects(installStagedUpdate({...value,expectedVersion:'0.6.2'}),/expected|offered|version/i);
+  assert.equal(value.registered.length,1);
+  assert.equal((await installStagedUpdate({...value,expectedVersion:'0.6.1'})).alreadyInstalled,true);
+});
 test('deflated packages fail before registration when doctor or payload integrity fails and clean their release',async t=>{
   const value=await installedFixture(t);if(!value)return;await stage(value,zip(application('0.6.1',{doctorFailure:true}),{deflate:true}));
   await assert.rejects(installStagedUpdate(value),/doctor/i);assert.equal(value.registered.length,0);assert.deepEqual(await readdir(join(value.stateDir,'releases')),[]);

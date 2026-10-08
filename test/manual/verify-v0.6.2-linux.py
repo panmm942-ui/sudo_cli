@@ -289,7 +289,7 @@ try:
         terminal = Terminal(root/'main')
         terminal.ready()
         startup = bytes(terminal.transcript)
-        assert b'\x1b[92m' in startup, 'Prompts did not use bright green'
+        assert b'\x1b[92m' in startup or b'\x1b[38;2;0;255;0m' in startup, 'Prompts did not use bright green'
         assert b'\x1b[96m' not in startup, 'Old cyan prompt remains'
         assert b'\x1b[38;2;239;41;41m' in startup, 'Red SUDO CLI logo changed'
         assert b'\x1b[38;2;220;227;235m' in startup, 'Soft-white antenna changed'

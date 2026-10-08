@@ -1,6 +1,8 @@
 # sudo cli progress
 
-Current release: **0.6.2**. Green prompt accents, an immediate selectable slash menu and local model file inspection/import are available. Any extension can be inspected; actual loading depends on the model format, installed runner and hardware. See [local model files](local-model-files.md), [terminal acceptance](v0.6.2-terminal-evidence.md) and [current verification](verification-v0.6.2.md). Version 0.6.1 added keyless local setup, per-AI personalization and saved specialists: [local AI and agents](local-ai-and-agents.md), [previous verification](verification-v0.6.1.md). Version 0.6.0 implemented the 22 approved roadmap areas: [feature evidence](v0.6-feature-evidence.md), [user guide](user-guide.md) and [previous verification](verification-v0.6.md).
+Current release: **0.6.3**. Saved lower chat colors with contrast correction, runtime reset targets, GitHub release checks with confirmed verified updates, custom model editing tools, MiMo-shaped stream parsing, native command termination and loop/timeout protection are implemented. See [terminal colors](terminal-colors.md), [GitHub updates](github-updates.md), [model compatibility](model-compatibility.md), [reset settings](reset-settings.md) and [current verification](verification-v0.6.3.md).
+
+Version 0.6.2 added green prompt accents, a selectable slash menu and local model file inspection/import. Any extension can be inspected; actual loading depends on the model format, installed runner and hardware. See [local model files](local-model-files.md) and [previous verification](verification-v0.6.2.md). Version 0.6.1 added local setup, per-AI personalization and saved specialists: [local AI and agents](local-ai-and-agents.md). Version 0.6.0 implemented the 22 approved roadmap areas: [feature evidence](v0.6-feature-evidence.md) and [user guide](user-guide.md).
 
 The notes below describe the historical 0.2 build, not the current feature set.
 

@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "checks": {
+    "lowerBackgroundPreservesUpperPalette": true,
+    "liveUserContrastAndHistoryRecolor": true,
+    "slashMenuUsesLowerBackground": true,
+    "tinyResizePreservesSeparateBackgrounds": true,
+    "savedRestartAndIndependentReset": true,
+    "resetColorsAndTargetMenu": true,
+    "noColorAndDumbPreservePlainOutput": true
+  },
+  "limitation": "PTY plus ANSI cell decoder; Windows ConsoleHost still requires separate visual acceptance."
+}

@@ -113,19 +113,42 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
   } else lines = [paint(LOGO_COLOR, 'SUDO CLI'), ...fields];
   lines.push(paint(90, fit(`v${VERSION} | / for commands | Live Traffic is usage | Context: reported`, columns)), paint(90, fit(columns >= CREDITS.length ? CREDITS : SHORT_CREDITS, columns)), paint(90, '-'.repeat(columns)));
   if (color) lines[0] = BACKGROUND_STYLE + lines[0];
-  if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [paint(LOGO_COLOR, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
+  if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [(color?BACKGROUND_STYLE:'')+paint(LOGO_COLOR, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
   return { lines, height: lines.length, sticky: true };
 }
 
 /** A terminal-only header. It never reads or redraws secret input. */
-export function createDashboard({ output = process.stdout, snapshot, now = () => new Date(), monotonic = () => performance.now(), timeZone, platform, arch, activity = () => 'Idle', color = output.isTTY && !process.env.NO_COLOR, env = process.env, tickMs = 1000/FPS, onResize = () => {} }) {
-  let started = false, sticky = false, alternate = false, height = 0, last = '', timer, body = '';
+export function createDashboard({ output = process.stdout, snapshot, now = () => new Date(), monotonic = () => performance.now(), timeZone, platform, arch, activity = () => 'Idle', color = output.isTTY && !process.env.NO_COLOR, env = process.env, tickMs = 1000/FPS, onResize = () => {}, theme }) {
+  let started = false, sticky = false, alternate = false, height = 0, last = '', timer, bodySize = 0;
+  const body = [];
+  const colorsEnabled=()=>color&&!!output.isTTY&&!env.NO_COLOR&&env.TERM!=='dumb';
+  const bodyTheme=()=>colorsEnabled()?(typeof theme==='function'?theme():theme):undefined;
+  const bodyStyle=()=>bodyTheme()?.bodyStyle||(colorsEnabled()?BACKGROUND_STYLE:'');
+  const headerStyle=()=>colorsEnabled()?BACKGROUND_STYLE:'';
+  const style=(text,user=false)=>{const current=bodyTheme();return current?(user?current.styleUserText(text):current.styleBodyText(text)):text;};
   const antennaClock = createAntennaClock({ now: monotonic });
   const view = () => {
     const state = snapshot(), elapsed = antennaClock.elapsed(!!state.working);
-    return renderDashboard({ state, columns: output.columns || 80, rows: output.rows || 24, color: color && !!output.isTTY && env.TERM !== 'dumb', now: now(), timeZone, platform, arch, activity: activity(), antennaElapsed: elapsed, antennaIdle: !antennaClock.hasWorked() });
+    return renderDashboard({ state, columns: output.columns || 80, rows: output.rows || 24, color: colorsEnabled(), now: now(), timeZone, platform, arch, activity: activity(), antennaElapsed: elapsed, antennaIdle: !antennaClock.hasWorked() });
   };
-  const draw = (lines) => '\x1b[H' + lines.map(line => line + '\x1b[K').join('\r\n');
+  const draw = (lines) => '\x1b[H' + (colorsEnabled()?BACKGROUND_STYLE:'') + lines.map(line => line + '\x1b[K').join('\r\n');
+  const clearBody=()=>`\x1b[${height + 1};1H${bodyStyle()}\x1b[J`;
+  function remember(value,user){
+    const text=stripVTControlCharacters(value);if(!text)return;
+    if(body.at(-1)?.user===user)body.at(-1).text+=text;else body.push({text,user});bodySize+=text.length;
+    while(bodySize>65536&&body.length){const excess=bodySize-65536;if(body[0].text.length<=excess){bodySize-=body.shift().text.length;}else{body[0].text=body[0].text.slice(excess);bodySize-=excess;}}
+  }
+  function replayBody(){
+    const rows=[[]];let size=0;
+    for(const chunk of body)for(const character of chunk.text){
+      if(character==='\r')continue;
+      if(character==='\n'){rows.push([]);size=0;continue;}
+      const cells=cellWidth(character);if(size+cells>=(output.columns||80)){rows.push([]);size=0;}
+      const row=rows.at(-1);if(row.at(-1)?.user===chunk.user)row.at(-1).text+=character;else row.push({text:character,user:chunk.user});size+=cells;
+    }
+    const visible=rows.slice(-Math.max(1,(output.rows||24)-height-3));
+    if(visible.some(row=>row.length))output.write(visible.map(row=>row.map(segment=>style(segment.text,segment.user)).join('')).join('\r\n')+'\r\n');
+  }
   function resize() {
     if (!started) return;
     const previousSticky = sticky;
@@ -133,18 +156,10 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
     sticky = !!output.isTTY && env.TERM !== 'dumb' && current.sticky;
     height = current.height; last = current.lines.join('\n');
     if (sticky) {
-      output.write(`\x1b[r\x1b[2J\x1b[H${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r\x1b[${height + 1};1H`);
-      const lines = stripVTControlCharacters(body).split('\n');
-      const tail = [];
-      for (const line of lines) {
-        let piece = '', size = 0;
-        for (const character of line) { const cells = cellWidth(character); if (size + cells >= (output.columns || 80)) { tail.push(piece); piece = ''; size = 0; } piece += character; size += cells; }
-        tail.push(piece);
-      }
-      const visible = tail.slice(-Math.max(1, (output.rows || 24) - height - 3)).join('\n');
-      if (visible) output.write(visible + '\n');
+      output.write(`\x1b[r${headerStyle()}\x1b[2J\x1b[H${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r${clearBody()}`);
+      replayBody();
       onResize();
-    } else { output.write((alternate ? '\x1b[r\x1b[2J\x1b[H' : previousSticky ? '\x1b[r' : '') + last + '\r\n'); onResize(); }
+    } else { output.write((alternate ? '\x1b[r'+headerStyle()+'\x1b[2J\x1b[H' : previousSticky ? '\x1b[r' : '') + last + (alternate?'\x1b[K':'') + '\r\n'+bodyStyle());if(alternate&&bodyTheme()){output.write(clearBody());replayBody();}onResize(); }
   }
   function refresh() {
     if (!started) return;
@@ -152,13 +167,13 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
     if (!sticky) {
       // Legacy/tiny terminals get state changes without per-second output spam.
       const withoutTime = lines => lines.split('\n').filter(line => !/^(Time|Worked|Connection|Download):/.test(stripVTControlCharacters(line))).join('\n');
-      if (withoutTime(next) !== withoutTime(last)) { last = next; output.write('\n' + next + '\n'); }
+      if (withoutTime(next) !== withoutTime(last)) { last = next; output.write('\n' + next + '\n'+bodyStyle()); }
       return;
     }
     if (current.height !== height) return resize();
     if (next === last) return;
     last = next;
-    output.write(`\x1b7\x1b[?25l${draw(current.lines)}\x1b8\x1b[?25h`);
+    output.write(`\x1b7\x1b[?25l${draw(current.lines)}\x1b8${bodyStyle()}\x1b[?25h`);
   }
   return {
     start() {
@@ -168,8 +183,8 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
       sticky = !!output.isTTY && env.TERM !== 'dumb' && current.sticky;
       alternate = !!output.isTTY && env.TERM !== 'dumb';
       if (alternate) output.write('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H');
-      if (sticky) output.write(`${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r\x1b[${height + 1};1H`);
-      else output.write(last + '\n');
+      if (sticky) output.write(`${draw(current.lines)}\x1b[${height + 1};${output.rows || 24}r${clearBody()}`);
+      else {output.write(last + (alternate?'\x1b[K':'') + '\n'+bodyStyle());if(alternate&&bodyTheme())output.write(clearBody());}
       if (alternate) output.write('\x1b[?25h');
       output.on?.('resize', resize);
       if (output.isTTY && env.TERM !== 'dumb' && tickMs > 0) {
@@ -184,7 +199,8 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
     refresh,
     inputArea() { const bottom=Math.max(1,output.rows||24),top=Math.min(bottom,height+1);return {top,bottom,rows:Math.max(1,bottom-top+1),columns:Math.max(1,(output.columns||80)-1)}; },
     redraw:resize,
-    write(text) { const value = String(text); body = (body + value).slice(-65536); output.write(value); },
+    remember(text,{user=false}={}){remember(String(text),!!user);},
+    write(text,{user=false}={}) { const value = String(text);remember(value,!!user);output.write(style(value,!!user)); },
     stop() {
       if (!started) return;
       started = false; clearTimeout(timer); output.removeListener?.('resize', resize);

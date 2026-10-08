@@ -8,6 +8,8 @@ const input = createInterface({ input: process.stdin });
 let initialized = false;
 let threadParams;
 let turnsStarted = 0;
+const background = new Set(['background-commands', 'background-race'].includes(scenario) ? ['23', '24'] : []);
+const commandTerminations = [];
 const approvalResponses = {};
 const approvalMethods = [
   'item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval',
@@ -51,6 +53,13 @@ input.on('line', (line) => {
     response(message.id, { thread: { id: 'thread-1', turns: [], ephemeral: true }, model: message.params.model, modelProvider: 'fixture', cwd: message.params.cwd, approvalPolicy: message.params.approvalPolicy, sandbox });
   } else if (message.method === 'model/list') {
     response(message.id, { data: [{ id: 'fixture-model', model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }], nextCursor: null, received: message.params });
+  } else if (message.method === 'thread/backgroundTerminals/list') {
+    const data = [...background].map(processId => ({ itemId: 'command-'+processId, processId, command: 'fixture sleep', cwd: process.cwd(), osPid: null }));
+    if (scenario === 'background-race') setTimeout(() => response(message.id, { data, nextCursor: null }), 80);
+    else response(message.id, { data, nextCursor: null });
+  } else if (message.method === 'thread/backgroundTerminals/terminate') {
+    commandTerminations.push(message.params);
+    response(message.id, { terminated: background.delete(message.params.processId) });
   } else if (message.method === 'skills/list') {
     response(message.id, { data: [{ cwd: message.params.cwds[0], skills: [], errors: [] }], received: message.params });
   } else if (message.method === 'mcpServerStatus/list') {
@@ -71,7 +80,7 @@ input.on('line', (line) => {
     setTimeout(completed, 30);
   } else if (message.method === 'turn/start') {
     turnsStarted++;
-    const audit = { argv: process.argv.slice(2), home: process.env.CODEX_HOME, keyPresent: process.env.SUDO_CLI_SESSION_KEY === 'fixture-only', thread: threadParams, params: message.params };
+    const audit = { argv: process.argv.slice(2), home: process.env.CODEX_HOME, keyPresent: process.env.SUDO_CLI_SESSION_KEY === 'fixture-only', thread: threadParams, params: message.params, commandTerminations };
     const completed = turn('completed', [{ id: 'assistant-1', type: 'agentMessage', text: JSON.stringify(audit), phase: 'final_answer' }]);
     if (scenario === 'exit-turn') return process.exit(6);
     if (scenario === 'oversized-line') return process.stdout.write('x'.repeat(8 * 1024 * 1024 + 1));
@@ -85,6 +94,7 @@ input.on('line', (line) => {
     }
     response(message.id, { turn: turn('inProgress') });
     event('turn/started', { threadId: 'thread-1', turn: turn('inProgress') });
+    if (['background-commands', 'background-race'].includes(scenario) && turnsStarted === 1) return;
     if (scenario === 'approvals') {
       const common = { threadId: 'thread-1', turnId: 'turn-1', itemId: 'approval-item', startedAtMs: 1000 };
       const permissions = { network: { enabled: true }, fileSystem: { read: [process.cwd()], write: [process.cwd()] } };

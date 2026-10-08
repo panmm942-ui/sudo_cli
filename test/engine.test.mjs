@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { readFile, access } from 'node:fs/promises';
 import { createEngine } from '../src/engine.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/engine-server.mjs', import.meta.url));
@@ -14,6 +15,20 @@ test('per-AI personalization is passed as native developer instructions',async t
   const engine=await createEngine(options('normal',{developerInstructions:'Reply concisely in English.'}));t.after(()=>engine.close());
   const audit=JSON.parse((await engine.startTurn('test personalization')).items[0].text);
   assert.equal(audit.thread.developerInstructions,'Reply concisely in English.');
+});
+
+test('engine custom catalog preserves declared capabilities while exposing native capability lookup', async t => {
+  const engine = await createEngine(options('normal', { providerArgs: ['-c', 'model_provider="sudo_session"'], capabilities: { vision: false }, supportedEfforts: ['high'] }));
+  t.after(() => engine.close());
+  const audit = JSON.parse((await engine.startTurn('Inspect exact model metadata')).items[0].text);
+  const path = JSON.parse(audit.argv.find(argument => argument.startsWith('model_catalog_json=')).slice('model_catalog_json='.length));
+  const entry = JSON.parse(await readFile(path, 'utf8')).models[0];
+  assert.equal(entry.slug, 'fixture-model');
+  assert.deepEqual(entry.input_modalities, ['text']);
+  assert.deepEqual(entry.supported_reasoning_levels.map(item => item.effort), ['high']);
+  assert.equal(typeof engine.capabilities, 'function');
+  await engine.close();
+  await assert.rejects(access(path));
 });
 test('aborting native startup closes a hung child promptly',async()=>{
   const controller=new AbortController();const pending=createEngine(options('hang-startup',{signal:controller.signal,requestTimeoutMs:10000}));
@@ -135,6 +150,40 @@ test('interrupts an active turn while its completion is pending', async (t) => {
   const completed = engine.startTurn('long running');
   await within(engine.interrupt());
   assert.equal((await within(completed)).status, 'interrupted');
+});
+
+test('interrupt terminates native background commands and the same thread can continue', async t => {
+  const engine = await createEngine(options('background-commands'));
+  t.after(() => engine.close());
+  assert.equal((await engine.listBackgroundCommands()).length, 2);
+  const active = engine.startTurn('run the fixture command');
+  await engine.interrupt();
+  assert.equal((await active).status, 'interrupted');
+  assert.deepEqual(await engine.listBackgroundCommands(), []);
+  const next = await engine.startTurn('continue');
+  const audit = JSON.parse(next.items[0].text);
+  assert.deepEqual(audit.commandTerminations, [{ threadId: 'thread-1', processId: '23' }, { threadId: 'thread-1', processId: '24' }]);
+});
+
+test('idle interrupt still terminates a previously yielded native command', async t => {
+  const engine = await createEngine(options('background-commands'));
+  t.after(() => engine.close());
+  const result = await engine.terminateBackgroundCommands();
+  assert.equal(result.terminated, 2);
+  await engine.interrupt();
+  assert.deepEqual(await engine.listBackgroundCommands(), []);
+});
+
+test('a follow-up turn waits until interrupt command cleanup has finished', async t => {
+  const engine = await createEngine(options('background-race'));
+  t.after(() => engine.close());
+  const first = engine.startTurn('run fixture');
+  const stopping = engine.interrupt();
+  assert.equal((await first).status, 'interrupted');
+  const next = await engine.startTurn('continue immediately');
+  const audit = JSON.parse(next.items[0].text);
+  assert.equal(audit.commandTerminations.length, 2, 'Continuation must not race command termination');
+  await stopping;
 });
 
 test('refuses overlapping turns instead of replacing an active completion', async (t) => {

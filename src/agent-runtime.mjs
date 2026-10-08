@@ -129,7 +129,7 @@ export async function runAgentTask({ connection: inputConnection, cwd = process.
     }
     engine = await createEngine({ codexPath: runtime.codexPath ?? localCodex({ env: runtime.env ?? process.env }), cwd, model: connection.model, providerArgs: args, env, signal, developerInstructions,
       ...(runtime.requestTimeoutMs !== undefined ? { requestTimeoutMs: runtime.requestTimeoutMs } : {}),
-      permissions: choices.permissions, webAccess: choices.webAccess, scope: choices.scope, writableRoots: choices.writableRoots, supportedEfforts: connection.supportedEfforts, onEvent: event,
+      permissions: choices.permissions, webAccess: choices.webAccess, scope: choices.scope, writableRoots: choices.writableRoots, supportedEfforts: connection.supportedEfforts, capabilities: choices.capabilities, onEvent: event,
       onApproval: async request => { if (signal?.aborted || !onApproval) return false; try { return await Promise.race([Promise.resolve(onApproval(request)), aborted]) === true; } catch { return false; } },
     });
     onControl?.({steer:message=>engine.steer(message)});

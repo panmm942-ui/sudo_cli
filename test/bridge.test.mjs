@@ -6,6 +6,33 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { startBridge } from '../src/bridge.mjs';
 
 const SECRET = 'sk-fake-boundary-secret';
+
+test('MiMo-shaped streaming chunks accept null role and tool_calls and replay reasoning', async t => {
+  const {post,requests}=await setup(t,(_request,res)=>{
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    for(const delta of [{role:null,tool_calls:null,content:null,reasoning_content:'Check the file.'},{role:null,tool_calls:[{index:0,id:'mimo-call',type:'function',function:{name:'read',arguments:'{}'}}],content:null}])res.write('data: '+JSON.stringify({choices:[{index:0,delta,finish_reason:null}]})+'\n\n');
+    res.end('data: '+JSON.stringify({choices:[{index:0,delta:{role:null,tool_calls:null},finish_reason:'tool_calls'}]})+'\n\ndata: [DONE]\n\n');
+  });
+  const tools=[{type:'function',name:'read',parameters:{type:'object',properties:{}}}];
+  const response=await post({input:'Read',tools});assert.equal(response.status,200);
+  const emitted=events(await response.text());assert.ok(emitted.some(event=>event.type==='response.completed'));
+  const call=emitted.find(event=>event.type==='response.output_item.done'&&event.item.type==='function_call').item;
+  const follow=await post({input:[{role:'user',content:'Read'},call,{type:'function_call_output',call_id:call.call_id,output:'file content'}],tools});
+  await follow.text();assert.equal(requests[1].body.messages.find(message=>message.tool_calls)?.reasoning_content,'Check the file.');
+});
+
+test('bridge beforeRequest receives native tool history transiently',async t=>{
+  let captured;const input=[{role:'user',content:'Read'},{type:'function_call',name:'read',call_id:'guard-1',arguments:'{}'},{type:'function_call_output',call_id:'guard-1',output:'done'}];
+  const {post}=await setup(t,()=>messageResult(),{requestHooks:{beforeRequest:request=>{captured=request;}}});
+  await(await post({input,tools:[{type:'function',name:'read'}]})).text();assert.deepEqual(captured.input,input);
+});
+
+test('JSON fallback and declared non-streaming replies accept null tool_calls',async t=>{
+  for(const streaming of [true,false]){
+    const {post}=await setup(t,()=>messageResult({role:'assistant',content:'Valid no-tool reply.',tool_calls:null}),{streaming});
+    const response=await post({input:'Answer'});assert.equal(response.status,200);const emitted=events(await response.text());assert.ok(emitted.some(event=>event.type==='response.completed'));assert.ok(emitted.some(event=>event.delta==='Valid no-tool reply.'));
+  }
+});
 const messageResult = (message = { role: 'assistant', content: 'Hello from the model.' }) => ({
   id: 'chatcmpl-fixture', object: 'chat.completion', model: 'fixture-model',
   choices: [{ index: 0, message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }],

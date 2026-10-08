@@ -1,0 +1,44 @@
+{
+  "chat-completions": {
+    "readEditFailRepairPass": true,
+    "interleavedFragmentedToolCalls": true,
+    "reasoningContentReplayed": true,
+    "allWorkflowCallIDsReturned": true,
+    "patchRoute": "declared native apply_patch",
+    "actualLongCommandInterrupted": true,
+    "cancelledProcessGone": true,
+    "nextTurnCompleted": true,
+    "yieldedProcessStoppedWhileIdle": true,
+    "yieldedLifecycleCompletedWhileProcessRunning": false,
+    "commandTimeoutKilledActualProcess": true,
+    "timeoutContinuationCompleted": true,
+    "repeatedActionGuard": true,
+    "repeatRequests": 4,
+    "nativeRequests": 18,
+    "cliExitCode": 0
+  },
+  "responses": {
+    "readEditFailRepairPass": true,
+    "interleavedFragmentedToolCalls": false,
+    "reasoningContentReplayed": false,
+    "allWorkflowCallIDsReturned": true,
+    "patchRoute": "declared native apply_patch",
+    "actualLongCommandInterrupted": true,
+    "cancelledProcessGone": true,
+    "nextTurnCompleted": true,
+    "yieldedProcessStoppedWhileIdle": true,
+    "yieldedLifecycleCompletedWhileProcessRunning": false,
+    "commandTimeoutKilledActualProcess": true,
+    "timeoutContinuationCompleted": true,
+    "repeatedActionGuard": true,
+    "repeatRequests": 4,
+    "nativeRequests": 18,
+    "cliExitCode": 0
+  },
+  "status": "passed",
+  "model": "deterministic loopback fixtures; no actual MiMo inference",
+  "fixtureErrors": [],
+  "limitations": [
+    "Does not certify model quality, real MiMo server configuration, or physical Windows/macOS terminal behavior."
+  ]
+}

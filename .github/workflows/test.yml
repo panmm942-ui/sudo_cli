@@ -67,3 +67,9 @@ jobs:
       - name: Exercise live slash picker and local model file inspection
         if: runner.os == 'Linux'
         run: sudo -E python3 -B test/manual/verify-v0.6.2-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.2-terminal-proof"
+      - name: Exercise saved terminal colors and readable contrast
+        if: runner.os == 'Linux'
+        run: sudo -E python3 -B test/manual/verify-v0.6.3-theme-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.3-theme-proof"
+      - name: Exercise custom model tools, interruption, timeouts and repetition protection
+        if: runner.os == 'Linux'
+        run: sudo -E python3 -B test/manual/verify-v0.6.3-model-loop-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.3-model-proof"

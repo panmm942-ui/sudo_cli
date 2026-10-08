@@ -57,7 +57,11 @@ export const COMMANDS = [
   {name:'/search-chat',usage:'TEXT',description:'Literal search of the complete saved conversation'},
   {name:'/search',usage:'QUERY',description:'Guided source-linked search through supported web/MCP tools'},
   {name:'/browser',usage:'[start|stop|status|executable PATH]',description:'Dedicated scoped Chromium browser MCP adapter'},
-  {name:'/update',usage:'[stage PACKAGE_OR_URL SHA256|install|rollback|status]',description:'Verify an update, install alongside the old release and keep rollback'},
+  {name:'/bgcolor',usage:'[COLOR|status]',description:'Saved chat background; keep the upper dashboard palette'},
+  {name:'/txtcolor',usage:'[COLOR|status]',description:'Saved user text color with automatic readable contrast'},
+  {name:'/reset',usage:'[TARGET|list|all]',description:'Choose settings to restore; keep saved chats and AI profiles'},
+  {name:'/loopguard',usage:'[status|on|off|timeout SECONDS|repeats COUNT]',description:'Stop repeated tool actions and bound native terminal command lifetimes'},
+  {name:'/update',usage:'[check|repo OWNER/REPO|on|off|stage PACKAGE_OR_URL SHA256|install|rollback|status]',description:'GitHub launch check, confirmed verified updates and rollback'},
 ];
 const groups={
   'Chat':['/help','/chatt','/new','/history','/handoff','/prompt','/search-chat','/compact','/clear','/readability','/details','/quit'],
@@ -66,7 +70,7 @@ const groups={
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
   'Voice':['/voice','/microphone','/live'],
   'Background':['/247','/schedule','/startup','/budget','/gpu'],
-  'Advanced':['/training','/update','/doctor','/status'],
+  'Advanced':['/training','/update','/doctor','/status','/bgcolor','/txtcolor','/reset','/loopguard'],
 };
 export function commandMenu(query='',{compact=false}={}) {
   if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chatt  Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');

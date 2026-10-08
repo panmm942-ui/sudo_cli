@@ -227,7 +227,7 @@ function completedResponse(upstream, model, custom, toolNames, reasoning, toolsA
   const output = [];
   if (message.content !== undefined && message.content !== null && typeof message.content !== 'string') malformed();
   if (message.content) output.push({ id: `msg_${randomUUID()}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: message.content, annotations: [] }] });
-  if (message.tool_calls !== undefined && !Array.isArray(message.tool_calls)) malformed();
+  if (message.tool_calls != null && !Array.isArray(message.tool_calls)) malformed();
   const ids = new Set();
   for (const call of message.tool_calls ?? []) {
     if (!record(call) || call.type !== 'function' || !record(call.function) || !toolNames.has(call.function.name) || typeof call.function.arguments !== 'string' || typeof call.id !== 'string' || !call.id || ids.has(call.id)) malformed();
@@ -352,7 +352,7 @@ async function readChatStream(upstream, res, model, custom, toolNames, reasoning
       if (choice.index !== 0 || !record(choice.delta)) malformed();
       const delta = choice.delta;
       if (!toolsAllowed && (delta.tool_calls?.length || delta.function_call)) throw new BridgeError(502, 'The model returned a tool call while tool use is disabled.', 'tools_disabled');
-      if (delta.role !== undefined && delta.role !== 'assistant') malformed();
+      if (delta.role != null && delta.role !== 'assistant') malformed();
       for (const key of ['content', 'refusal', 'reasoning_content']) {
         if (delta[key] !== undefined && delta[key] !== null && typeof delta[key] !== 'string') malformed();
       }
@@ -362,7 +362,7 @@ async function readChatStream(upstream, res, model, custom, toolNames, reasoning
         writer.emit('response.output_text.delta', { item_id: item.id, output_index: items.find(entry => entry.item === item).output_index, content_index: 0, delta: text });
       }
       if (delta.reasoning_content) { responding(); message.reasoning_content += delta.reasoning_content; }
-      if (delta.tool_calls !== undefined) {
+      if (delta.tool_calls != null) {
         if (!Array.isArray(delta.tool_calls)) malformed();
         for (const part of delta.tool_calls) {
           if (!record(part) || !Number.isSafeInteger(part.index) || part.index < 0 || part.index >= 1024 || (part.type !== undefined && part.type !== 'function') || (part.function !== undefined && !record(part.function))) malformed();
@@ -545,7 +545,7 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,s
       if (controller.signal.aborted) throw new Error('Aborted');
       requestId = randomUUID(); selectedModel = request.model; started = performance.now();
       let reservation;
-      try { reservation = await beforeRequest?.({ id: requestId, model: request.model, transport: 'chat-completions', inputTokensEstimate: Math.ceil(Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') / 3), maxOutputTokens: request.max_tokens, estimated: true }); }
+      try { reservation = await beforeRequest?.({ id: requestId, model: request.model, transport: 'chat-completions', input: body.input, inputTokensEstimate: Math.ceil(Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') / 3), maxOutputTokens: request.max_tokens, estimated: true }); }
       catch (error) { hookFailure = true; throw error; }
       admitted = true;
       if (reservation?.maxOutputTokens !== undefined) {
