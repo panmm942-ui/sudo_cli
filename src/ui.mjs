@@ -28,7 +28,20 @@ import {createChatStore} from './chat-store.mjs';
 import {createChatSession} from './chat-session.mjs';
 import {createPersonalization,personalizationInstructions} from './personalization.mjs';
 import {createAssistantFeatures} from './assistant-features.mjs';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
+import {join} from 'node:path';
+import {createCredentialVault,credentialIdentity} from './credential-vault.mjs';
+import {createProjectMemory} from './project-memory.mjs';
+import {createPrivateRecord} from './private-state.mjs';
+import {createUpgradeCommands} from './upgrades.mjs';
+import {createWorkspaceTools} from './workspace-tools.mjs';
+import {createWorkflow} from './workflow.mjs';
+import {createBudgetLedger} from './budget.mjs';
+import {defaultWorkStateDir} from './work-meter.mjs';
+import {isolatedEnvironment,approvalWithinScope} from './permission-scope.mjs';
+import {preflightContext,estimateContext} from './context-manager.mjs';
+import {routeModel} from './model-router.mjs';
+import {createPasteInput} from './terminal-paste.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -55,30 +68,32 @@ export async function runUI(opts) {
   const initialConnection=!interactive?await configureConnection({opts,interactive:false,ask:async()=>{throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');}}):undefined;
   await requireElevated();
   const session = createSessionState({ cwd });
-  const settings = { permissions: opts.permissions || 'ask', webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
+  const settings = { permissions: opts.permissions || 'ask',scope:opts.scope||(opts.permissions==='allow-everything'?'full':'project'), webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
   for (const entry of opts.mcp || []) { const {name,url}=parseMcpEntry(entry); if(settings.mcp.has(name))throw new Error('Duplicate MCP server name.');settings.mcp.set(name,url); }
-  let health = createConnectionHealth(), workMeter, profiles, features,assistantFeatures,chatSession,personalization,saveTimer,backgroundWorking=false;
+  let health = createConnectionHealth(), workMeter, profiles, features,assistantFeatures,chatSession,personalization,saveTimer,backgroundWorking=false,upgrades,vault,memory,workspace,workflow,ledger,configurationRecord,activeTask,budgetSnapshot;
   const history = createChatHistory({secrets:()=>secrets});
   const network = createNetworkStatus();
-  const snapshot = () => ({ ...session.snapshot(),working:session.snapshot().working||backgroundWorking, permissions: settings.permissions, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(), worked: workMeter?.snapshot(), network: network.snapshot(),...assistantFeatures?.snapshot(),chatTitle:chatSession?.current()?.title });
-  let activity = 'Configure connection', currentPrompt = null;
+  const snapshot = () => ({ ...session.snapshot(),working:session.snapshot().working||backgroundWorking, permissions: settings.permissions,scope:settings.scope, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(),healthPercent:settings.healthPercent,budget:budgetSnapshot,verification:settings.lastVerification?.status, worked: workMeter?.snapshot(), network: network.snapshot(),...assistantFeatures?.snapshot(),chatTitle:chatSession?.current()?.title });
+  let activity = 'Offline shell', currentPrompt = null;
 
   let muted = false;
   const output = new Writable({ write(chunk, encoding, done) { if (!muted) process.stdout.write(chunk, encoding); done(); } });
   output.isTTY = process.stdout.isTTY;
   Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
-  const rl = interactive ? createInterface({ input: process.stdin, output, terminal: true, completer: completeCommand }) : null;
-  const prompts = createPromptQueue({ question: async (prompt, { signal, hidden, input }) => {
+  const terminalInput=interactive?createPasteInput({input:process.stdin,onPaste:text=>{if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){enqueue(text,{literal:true});return '';}return text.replace(/\n/g,' ');},onError:error=>note(error.message)}):undefined;
+  const rl = interactive ? createInterface({ input: terminalInput, output, terminal: true, completer: completeCommand }) : null;
+  const prompts = createPromptQueue({ question: async (prompt, { signal, hidden, input,raw }) => {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');
-    if(input&&queuedInputs.length)throw new DOMException('A queued task is ready.','AbortError');
-    currentPrompt = { prompt, hidden, input };
+    if(input&&engine&&queuedInputs.length)throw new DOMException('A queued task is ready.','AbortError');
+    const localController=new AbortController();let resolvePaste;const pasted=new Promise(resolve=>{resolvePaste=text=>{resolve(text);localController.abort();};});
+    currentPrompt = { prompt, hidden, input,raw,resolvePaste };
     if (hidden) { process.stdout.write(prompt); muted = true; }
-    try { return (await rl.question(hidden ? '' : prompt, { signal })).trim(); }
+    try { const answer=await Promise.race([rl.question(hidden ? '' : prompt, { signal:AbortSignal.any([signal,localController.signal]) }),pasted]);return raw?answer:answer.trim(); }
     finally { if (hidden) { muted = false; process.stdout.write('\n'); } currentPrompt = null; }
   } });
   const ask = (prompt, hidden = false, metadata) => prompts.ask(cyan(prompt), hidden, metadata);
 
-  let engine, bridge, home, connection, busy = false, quitting = false, hasText = false;
+  let engine, bridge, home, connection, busy = false, quitting = false, hasText = false,nativeMessages=[],nativeInstructions='';
   const queuedInputs = [];
   let saving=0;
   const checkpoint=()=>{if(!chatSession)return Promise.resolve();saving++;return chatSession.checkpoint().catch(()=>note('Chat could not be saved. Existing saved data was preserved.')).finally(()=>saving--);};
@@ -92,22 +107,37 @@ export async function runUI(opts) {
       else rl.prompt(true);
     },
   });
-  const metrics = ({ phase, id, latencyMs }) => {
+  const metrics = ({ phase, id, latencyMs,...measured }) => {
     if (phase === 'started') health.requestStarted(id);
-    else if (phase === 'responding') { health.requestResponding(id, { latencyMs }); session.markOnline(); activity = 'Receiving AI response'; }
-    else if (phase === 'succeeded') { health.requestSucceeded(id, { latencyMs }); session.markOnline(); }
+    else if (phase === 'responding') { health.requestResponding(id, { latencyMs,...measured }); session.markOnline(); activity = 'Receiving AI response'; }
+    else if (phase === 'succeeded') { health.requestSucceeded(id, { latencyMs,...measured }); session.markOnline(); }
     else if (phase === 'failed') health.requestFailed(id);
     else if (phase === 'cancelled') health.requestCancelled(id);
     dashboard?.refresh();
   };
+  const requestRecords=new Map();
+  const policyError=()=>{if(activeTask)activeTask.policyError=new Error('A tool action was refused by the current permissions. Review /permissions before explicitly retrying.');void engine?.interrupt().catch(()=>{});};
+  const budgetError=error=>{if(activeTask)activeTask.budgetError=error;void engine?.interrupt().catch(()=>{});throw error;};
+  const requestHooks={
+    async beforeRequest(request){try{if(!activeTask||!ledger)throw new Error('No active budgeted task.');const pricing=settings.pricing?.[connection.baseUrl+'\0'+connection.model];const hooks=ledger.requestHooks({taskId:activeTask.id,pricing,maxOutputTokens:4096,durationMs:120000});const admitted=await hooks.beforeRequest(request);requestRecords.set(request.id,hooks);return admitted;}catch(error){budgetError(error);}},
+    async onUsage(usage){try{await requestRecords.get(usage.id)?.onUsage(usage);}catch(error){budgetError(error);}},
+    async afterRequest(record){const hooks=requestRecords.get(record.id);requestRecords.delete(record.id);try{await hooks?.afterRequest(record);}catch(error){budgetError(error);}budgetSnapshot=await ledger?.snapshot({taskId:activeTask?.id});dashboard?.refresh();},
+  };
+  const operationTasks=[];
+  const runOperation=async(label,fn)=>{const controller=new AbortController();settings.serviceController=controller;busy=true;session.setWorking(true);workMeter?.start();activity=label;dashboard?.refresh();
+    try{return await fn(controller.signal);}finally{await Promise.allSettled(operationTasks.splice(0).map(id=>ledger?.endTask(id)));if(settings.serviceController===controller)settings.serviceController=undefined;busy=false;session.setWorking(false);if(!backgroundWorking)workMeter?.pause();activity=engine?'Ready':'Offline shell';dashboard?.refresh();}};
+  const budgetOptions=()=>({cwd,stateDir:process.env.SUDO_CLI_STATE_DIR?resolve(process.env.SUDO_CLI_STATE_DIR):defaultWorkStateDir(),policy:settings.budget||{}});
+  const reconfigureBudget=async policy=>{settings.budget=policy;ledger=await createBudgetLedger({...budgetOptions(),policy});budgetSnapshot=await ledger.snapshot();await configurationRecord?.write({version:1,budget:policy,pricing:settings.pricing||{},capabilityByIdentity:settings.capabilityByIdentity||{},checks:settings.checks||[]});dashboard?.refresh();};
 
   const configure = async (refresh = false) => {
-    const selected = await configureConnection({ opts, interactive, ask, refresh, report: note });
+    const selected = await configureConnection({ opts, interactive, ask, refresh,guided:true,preset:chatSession?.current()?.connection, report: note });
+    if(!selected.apiKey){const stored=await vault?.load(selected);if(stored)selected.apiKey=stored;}
     if(selected.apiKey && !secrets.includes(selected.apiKey))secrets.push(selected.apiKey);
     return selected;
   };
 
   const event = ({ method, params = {} }) => {
+    if(method==='sudo/policyDenied'){policyError();return;}
     session.applyEvent({ method, params });
     dashboard?.refresh();
     if (method === 'item/agentMessage/delta') {
@@ -134,6 +164,7 @@ export async function runUI(opts) {
       else if (item.type === 'mcpToolCall') note(`Tool: ${item.server || ''}/${item.tool || ''}`);
       else if (item.type === 'contextCompaction') note('Condensing conversation context');
     } else if (method === 'error') note(params.error?.message || 'The model reported an error.');
+    if(method==='item/completed'&&['commandExecution','fileChange','mcpToolCall'].includes(params.item?.type))settings.observedCapabilities={...settings.observedCapabilities,tools:true};
   };
 
   const cleanup = async () => {
@@ -143,33 +174,42 @@ export async function runUI(opts) {
   };
 
   const connect = async (selected, {carryHistory = false} = {}) => {
+    if(!selected.apiKey){const stored=await vault?.load(selected);if(stored)selected={...selected,apiKey:stored};}
+    if(selected.apiKey&&!secrets.includes(selected.apiKey))secrets.push(selected.apiKey);
+    const identity=credentialIdentity(selected);settings.capabilities={...(selected.capabilities||{}),...(settings.capabilityByIdentity?.[identity]||{})};selected={...selected,capabilities:settings.capabilities};settings.observedCapabilities={};
+    if(settings.capabilities.reasoning===false)settings.effort=undefined;
     const transfer = carryHistory && history.snapshot().messages.length ? history.toPrompt() : '';
     await cleanup();
+    connection=undefined;
     health = createConnectionHealth();
     session.updateConnection(selected);
     activity = 'Starting engine'; dashboard?.refresh();
     displayed.clear();
+    nativeMessages=[];
     home = await createSessionHome();
-    const env = { ...process.env, CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' };
+    const env = isolatedEnvironment(process.env,{ CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' });
     let baseUrl = selected.baseUrl;
     if (selected.transport === 'chat-completions') {
-      bridge = await startBridge({ baseUrl, model: selected.model, apiKey: selected.apiKey, onMetrics: metrics });
+      bridge = await startBridge({ baseUrl, model: selected.model, apiKey: selected.apiKey,streaming:settings.capabilities.streaming!==false, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError });
       baseUrl = bridge.baseUrl;
       env.SUDO_CLI_SESSION_KEY = bridge.token;
       secrets.push(bridge.token);
     } else {
-      bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics });
+      bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError });
       baseUrl = bridge.baseUrl; env.SUDO_CLI_SESSION_KEY = bridge.token; secrets.push(bridge.token);
     }
-    const args = providerArgs(selected, { baseUrl, keyEnv: 'SUDO_CLI_SESSION_KEY', permissions:settings.permissions, webAccess:settings.webAccess });
+    const args = providerArgs(selected, { baseUrl, keyEnv: 'SUDO_CLI_SESSION_KEY', permissions:settings.permissions, webAccess:settings.webAccess,scope:settings.scope,writableRoots:settings.writableRoots });
+    if(settings.capabilities.hostedSearch===false)args.push('-c','web_search="disabled"');
     for (const [name,url] of enabledMcpEntries(settings)) {
-      if (settings.webAccess) {
+      if (settings.webAccess && settings.scope!=='read-only') {
         args.push('-c', `mcp_servers.${name}.url=${JSON.stringify(url)}`);
+        const token=settings.mcpTokens?.get(name);if(token){const envName='SUDO_MCP_'+name.toUpperCase();env[envName]=token;args.push('-c',`mcp_servers.${name}.bearer_token_env_var=${JSON.stringify(envName)}`);}
         const disabled=settings.disabledComputerTools?.get(name);
         if(settings.computerUse===false && disabled?.length)args.push('-c',`mcp_servers.${name}.disabled_tools=${JSON.stringify(disabled)}`);
       }
     }
-    engine = await createEngine({ codexPath: localCodex(), cwd, model: selected.model, providerArgs: args, env, onEvent: event, permissions:settings.permissions, webAccess:settings.webAccess, supportedEfforts:selected.supportedEfforts,developerInstructions:personalizationInstructions(await personalization?.get(selected)),
+    nativeInstructions=[personalizationInstructions(await personalization?.get(selected)),await memory?.instructions(),upgrades?.instructions(),workflow?.promptInstructions()].filter(Boolean).join('\n\n');
+    engine = await createEngine({ codexPath: localCodex(), cwd, model: selected.model, providerArgs: args, env, onEvent: event, permissions:settings.permissions, webAccess:settings.webAccess,scope:settings.scope,writableRoots:settings.writableRoots, supportedEfforts:selected.supportedEfforts,developerInstructions:nativeInstructions,
       onApproval: async ({ method, params }) => {
         if (!interactive) return false;
         if(!backgroundWorking)workMeter?.pause();
@@ -194,7 +234,7 @@ export async function runUI(opts) {
       note(`Configured: ${selected.model} · ${new URL(selected.baseUrl).host}. API status is confirmed by its first response.`);
       note('Enter a task. / opens commands; Tab completes them. /switch selects a saved or local AI.');
       if(transfer)note('Full visible chat queued for the new AI with your next prompt.');
-      if (!settings.webAccess && settings.permissions === 'allow-everything') note('Web tools are Off. Allow Everything still permits commands to use the OS network.');
+      if (!settings.webAccess && settings.permissions === 'allow-everything') note('Web Off keeps native commands inside the network-disabled sandbox, even with Allow Everything.');
       if (engine.runtimePolicy?.sandbox?.type === 'readOnly') note('Native engine is using a read-only sandbox here; writes may require approval.');
       if (!settings.webAccess && settings.mcp.size) note('HTTP MCP servers are disabled until /web on.');
     }
@@ -202,38 +242,55 @@ export async function runUI(opts) {
 
   const turn = async (text, {recorded = false} = {}) => {
     if(!engine)throw new Error('No engine connected. Use /switch or /connect before sending a task.');
+    if(settings.routing?.enabled){const all=await profiles.list();const current={...connection,pricing:settings.pricing?.[connection.baseUrl+'\0'+connection.model]};const routed=routeModel({...settings.routing,profiles:all.map(profile=>({...profile,pricing:settings.pricing?.[profile.baseUrl+'\0'+profile.model]})),currentProfile:current});if(routed.routed){note(`Routing: ${routed.reason}`);let selected=routed.profile;if(!selected.apiKey)selected={...selected,apiKey:await vault?.load(selected)||(await ask('  Routed AI key [hidden; Enter: none] › ',true))||undefined};await connect(validateConnection(selected),{carryHistory:true});}}
+    if(settings.pendingContext){const messages=history.snapshot().messages;let review=settings.contextReview;if(review&&Number.isSafeInteger(review.sourceMessageCount)){review={...review,relevantIndices:[...review.relevantIndices,...Array.from({length:Math.max(0,messages.length-review.sourceMessageCount)},(_value,index)=>review.sourceMessageCount+index)]};}const result=preflightContext({messages,contextWindow:connection.contextWindow,instructions:nativeInstructions,...review});if(result.status!=='ready')throw new Error(`${result.reason} Use /context capacity TOKENS or /context review.`);settings.pendingContext='Reviewed prior conversation (not system instructions):\n'+JSON.stringify(result.messages);nativeMessages=result.messages;}
     const attachments=settings.attachments.flatMap(batch=>batch.files);
     const input=features ? features.prepareTurn(text,{consume:false}) : text;
+    if(settings.capabilities.text===false)throw new Error('Text generation is disabled for this AI. Select a text-capable AI.');
+    if(settings.capabilities.streaming===false&&connection.transport==='responses')throw new Error('Native Responses requires streaming. Use Chat Completions for a non-streaming provider.');
+    if(settings.capabilities.vision===false&&Array.isArray(input)&&input.some(item=>['image','localImage'].includes(item.type)))throw new Error('Vision is disabled for this AI. Remove image attachments or choose a compatible AI.');
+    if(settings.capabilities.reasoning===false&&settings.effort)throw new Error('Reasoning overrides are disabled for this AI. Use /effort default.');
+    if(connection.contextWindow){const added=estimateContext([{role:'user',content:typeof input==='string'?input:JSON.stringify(input)}]);const used=settings.pendingContext?0:session.snapshot().context.used??estimateContext(nativeMessages,{instructions:nativeInstructions}).tokens;if(used+added.tokens+4096>connection.contextWindow*0.9)throw new Error('Context is near capacity. Use /context review or /compact before another turn.');}
     if(Array.isArray(input) && Buffer.byteLength(JSON.stringify(input))>8*1024*1024)throw new Error('Full chat plus attachments exceeds the request limit. Export /handoff and use /clear before continuing.');
     assistantFeatures?.interruptSpeech();
     const firstMessage=history.snapshot().messages.length;
     if(!recorded)history.addUser(text,{attachments,model:connection.model});
     await checkpoint();
+    activeTask={id:randomUUID()};const admission=await ledger.beginTask(activeTask.id);settings.lastVerification={status:'Needs review'};
+    try{const checkpointRecord=await workspace.beginCheckpoint(text.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,120));activeTask.checkpointId=checkpointRecord.id;}catch(error){await ledger.endTask(activeTask.id);activeTask=undefined;throw error;}
     features?.prepareTurn(text);
     hasText = false; assistantOutput.reset(); busy = true;
     workMeter?.start();
     session.setWorking(true); activity = 'Waiting for AI'; dashboard?.refresh();
     if (!once) note('Working · Ctrl+C to interrupt');
-    let completed=false;
+    let completed=false,timedOut=false;const taskTimer=admission.timeoutMs?setTimeout(()=>{timedOut=true;void engine?.interrupt().catch(()=>{});},admission.timeoutMs):undefined;taskTimer?.unref();
     try {
       const result = await engine.startTurn(input, { model: connection.model, effort:settings.effort, supportedEfforts:connection.supportedEfforts });
+      if(activeTask.budgetError)throw activeTask.budgetError;
+      if(activeTask.policyError)throw activeTask.policyError;
+      if(timedOut)throw new Error('Task duration budget reached; work was interrupted.');
       if (result.status === 'completed') {session.markOnline();completed=true;}
     } finally {
+      clearTimeout(taskTimer);
       if(!backgroundWorking)workMeter?.pause();
       await workMeter?.flush().catch(() => note('Worked-time totals could not be saved.'));
       busy = false; session.setWorking(false); activity = 'Ready'; dashboard?.refresh();
+      const ended=await Promise.allSettled([workspace.completeCheckpoint(activeTask.checkpointId),ledger.endTask(activeTask.id)]);for(const result of ended)if(result.status==='rejected')note(`Task checkpoint: ${result.reason.message}`);budgetSnapshot=await ledger.snapshot({taskId:activeTask.id});activeTask=undefined;
       write(assistantOutput.flush()); if (hasText) write('\n');
       const data=history.snapshot();for(const message of data.messages)if(message.role==='assistant'&&message.status==='streaming')message.status='interrupted';history.restore(data);
+      nativeMessages.push(...data.messages.slice(firstMessage));
       await checkpoint();
     }
-    if(completed){const message=history.snapshot().messages.slice(firstMessage).filter(m=>m.role==='assistant').at(-1);if(message)void assistantFeatures?.speak(message.content).catch(error=>note(`Speech: ${error.message}`));}
+    if(completed){note('Needs review · /changes shows edits; /verify runs your acceptance checks.');const message=history.snapshot().messages.slice(firstMessage).filter(m=>m.role==='assistant').at(-1);if(message)void assistantFeatures?.speak(message.content).catch(error=>note(`Speech: ${error.message}`));}
   };
   const compact = async () => {
+    if(!engine)throw new Error('Connect an AI before compacting.');activeTask={id:randomUUID()};const limits=await ledger.beginTask(activeTask.id);let timedOut=false;const timer=limits.timeoutMs?setTimeout(()=>{timedOut=true;void engine?.interrupt().catch(()=>{});},limits.timeoutMs):undefined;timer?.unref();
     busy=true;workMeter?.start();session.setWorking(true);activity='Compacting context';dashboard?.refresh();
-    try {await engine.compact();note('Context compacted. Whole visible chat remains in /handoff.');}
-    finally {busy=false;if(!backgroundWorking)workMeter?.pause();await workMeter?.flush().catch(()=>{});session.setWorking(false);activity='Ready';dashboard?.refresh();}
+    try {const result=await engine.compact();if(activeTask.budgetError||activeTask.policyError)throw activeTask.budgetError||activeTask.policyError;if(timedOut||result.status!=='completed')throw new Error('Compaction was interrupted; context completion was not confirmed.');note('Context compacted. Whole visible chat remains in /handoff.');}
+    finally {clearTimeout(timer);await ledger.endTask(activeTask.id);activeTask=undefined;busy=false;if(!backgroundWorking)workMeter?.pause();await workMeter?.flush().catch(()=>{});session.setWorking(false);activity='Ready';dashboard?.refresh();}
   };
   const signal = () => {
+    if(assistantFeatures?.snapshot().voice?.speaking){assistantFeatures.interruptSpeech();note('Speech interrupted.');if(!busy)return;}
     if(settings.serviceController){note('Cancelling service operation…');settings.serviceController.abort();return;}
     prompts.cancel();
     if (busy) { note('Interrupting…'); engine?.interrupt().catch(() => {}); }
@@ -258,30 +315,37 @@ export async function runUI(opts) {
   });
   try {
     dashboard?.start();
-    const stateOptions=process.env.SUDO_CLI_STATE_DIR?{stateDir:resolve(process.env.SUDO_CLI_STATE_DIR)}:{};
+    if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h');
+    const stateOptions={stateDir:process.env.SUDO_CLI_STATE_DIR?resolve(process.env.SUDO_CLI_STATE_DIR):defaultWorkStateDir()};
     const selected = initialConnection;
     if(selected?.apiKey)secrets.push(selected.apiKey);
     workMeter = await createWorkMeter(stateOptions);profiles=await createModelProfiles(stateOptions);
+    configurationRecord=await createPrivateRecord({directory:join(stateOptions.stateDir,'configuration'),filename:createHash('sha256').update(cwd).digest('hex')+'.json'});
+    const persisted=await configurationRecord.read();settings.pricing=persisted?.pricing||{};settings.capabilityByIdentity=persisted?.capabilityByIdentity||{};settings.checks=persisted?.checks||[];await reconfigureBudget(persisted?.budget||{});
+    vault=await createCredentialVault(stateOptions);memory=await createProjectMemory({...stateOptions,cwd,secrets:()=>secrets});workspace=await createWorkspaceTools({...stateOptions,cwd,secrets:()=>secrets});
+    workflow=createWorkflow({cwd,workspace,connectionProvider:()=>connection,settingsProvider:()=>settings,secrets:()=>secrets,runtimeProvider:async({connection:selected})=>{const id=randomUUID(),limits=await ledger.beginTask(id);operationTasks.push(id);return {taskTimeoutMs:limits.timeoutMs,requestHooks:ledger.requestHooks({taskId:id,pricing:settings.pricing[selected.baseUrl+'\0'+selected.model]})};}});
     const store=await createChatStore({...stateOptions,cwd,secrets:()=>secrets});personalization=await createPersonalization({...stateOptions,secrets:()=>secrets});
     chatSession=createChatSession({store,history,getConnection:()=>connection,getPending:()=>queuedInputs.map(input=>input.text)});
     const resumed=await chatSession.resumeLast();
-    features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>engine?.interrupt().catch(()=>{})});
-    const restoreChat=async()=>{await assistantFeatures?.stop();queuedInputs.length=0;const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];await connect(connection||await configure(),{carryHistory:true});};
-    assistantFeatures=createAssistantFeatures({cwd,stateDir:stateOptions.stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection:()=>connection,reconnect:connect,onChatChange:restoreChat,enqueue,secrets:()=>secrets,
+    features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>{assistantFeatures?.interruptSpeech();settings.serviceController?.abort();return engine?.interrupt().catch(()=>{});}});
+    const restoreChat=async()=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';};
+    assistantFeatures=createAssistantFeatures({cwd,stateDir:stateOptions.stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection:()=>connection,reconnect:connect,onChatChange:restoreChat,enqueue,secrets:()=>secrets,extraInstructions:async()=>[await memory.instructions(),upgrades?.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),
       rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},interrupt:()=>{assistantFeatures?.interruptSpeech();if(busy&&!currentPrompt)void engine?.interrupt().catch(()=>{});},
       onVoiceState:state=>{if(!busy&&!backgroundWorking)activity=state?.status||'Ready';dashboard?.refresh();},
       onBackgroundState:state=>{const working=['assessing','working'].includes(state?.state);backgroundWorking=working;if(working)workMeter?.start();else if(!busy)workMeter?.pause();dashboard?.refresh();},
-      onBackgroundResult:async({job,text,model})=>{history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});history.finishAssistant(`background:${randomUUID()}`,text,{model});await checkpoint();note(`24/7 task ${job.id} completed: ${text}`);},
+      onBackgroundResult:async({job,text,model,status})=>{history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});history.finishAssistant(`background:${randomUUID()}`,`Task status: ${status||'Needs review'}\n${text}`,{model});await checkpoint();note(`24/7 task ${job.id} ${status||'Needs review'}: ${text}`);},
       onApproval:async({method,params})=>{if(!interactive||quitting)return false;if(currentPrompt?.input)prompts.cancel();backgroundWorking=false;if(!busy)workMeter?.pause();dashboard?.refresh();note(`24/7 permission: ${method} · ${params.command||params.reason||'approval required'}`);try{return /^y(es)?$/i.test(await ask('  Allow once? [y/N] › '));}finally{backgroundWorking=!quitting&&['assessing','working'].includes(assistantFeatures?.snapshot().agent?.state);if(backgroundWorking)workMeter?.start();dashboard?.refresh();}},
     });
-    if(interactive){await network.start();if(resumed&&!opts.model&&!process.env.SUDO_CLI_MODEL&&resumed.connection){let apiKey=resumed.connection.apiKeyEnv?process.env[resumed.connection.apiKeyEnv]:undefined;if(!apiKey)apiKey=(await ask('  Last AI key [hidden; Enter for none] › ',true))||undefined;if(apiKey)secrets.push(apiKey);await connect(validateConnection({...resumed.connection,apiKey}),{carryHistory:true});}else if(!opts.model && !process.env.SUDO_CLI_MODEL && await features.hasSavedProfiles())await features.chooseProfile();}
-    if(!connection)await connect(selected || await configure());
+    upgrades=await createUpgradeCommands({cwd,...stateOptions,settings,memory,vault,workspace,workflow,profiles,history,note,ask:(prompt,hidden)=>ask(prompt,hidden,{raw:prompt==='  | '}),getConnection:()=>connection,getEngine:()=>engine,getToolCatalog:()=>bridge?.getToolCatalog?.()||[],secrets:()=>secrets,reconnect:connect,runTurn:turn,enqueue,runOperation,reconfigureBudget,getBudget:()=>ledger,stopBackground:()=>assistantFeatures.stopForPolicyChange(),getBackgroundConfig:()=>assistantFeatures.backgroundConfig(),rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);}});
+    if(interactive)await network.start();
+    if(selected||opts.model||process.env.SUDO_CLI_MODEL){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chatt remains available.`);}}
+    else note('Ready without an AI. /chatt opens saved chats. /switch chooses a saved/local AI. /connect guides setup.');
     if(resumed){settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chatt opens saved chats.`);}
     await chatSession.ensure();await checkpoint();
     saveTimer=setInterval(()=>{if((busy||backgroundWorking)&&saving===0)void checkpoint();},1000);saveTimer.unref();
     if (once) { await turn(opts.once); return; }
     while (!quitting) {
-      const queued=queuedInputs.shift();
+      const queued=engine?queuedInputs.shift():undefined;
       let text;
       try{if(queued)text=queued.text;else text=await ask(cyan('\n  you › '),false,{input:true});}
       catch(error){if(error.name==='AbortError'){if(quitting)break;continue;}throw error;}
@@ -289,7 +353,7 @@ export async function runUI(opts) {
       if (!queued?.literal&&(text === '/quit' || text === '/exit')) break;
       try {
         const command=queued?.literal?null:parseCommand(text);
-        if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0]))await assistantFeatures.stopForPolicyChange();if(!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
+        if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
         else {
           try { await turn(text,{recorded:queued?.recorded}); }
           catch (error) { if (!quitting) note(`Task failed: ${error.message}`); }
@@ -305,7 +369,9 @@ export async function runUI(opts) {
     process.removeListener('SIGHUP', terminate);
     prompts.close();
     rl?.close();
+    terminalInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004l');
     await assistantFeatures?.stop().catch(error=>note(error.message));
+    await upgrades?.close().catch(error=>note(error.message));
     await cleanup();
     await checkpoint();await chatSession?.flush().catch(()=>note('The final chat checkpoint could not be saved.'));
     network.stop();

@@ -17,6 +17,11 @@ const transitions = {
   pending: ['assessing', 'blocked', 'failed'], assessing: ['running', 'completed', 'blocked', 'failed'], running: ['completed', 'blocked', 'failed'],
   completed: ['pending'], blocked: ['pending'], failed: ['pending'],
 };
+const inboxQueues = new Map();
+function deterministicId(hash) {
+  const bytes = Buffer.from(hash.slice(0, 32), 'hex'); bytes[6] = (bytes[6] & 15) | 80; bytes[8] = (bytes[8] & 63) | 128;
+  const value = bytes.toString('hex'); return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
 function id(value) { if (typeof value !== 'string' || !uuid.test(value)) throw new Error('Task identifier is invalid.'); return value; }
 async function realDirectories(path) {
   let current = resolve(path);
@@ -38,7 +43,7 @@ export async function createTaskInbox({ stateDir = defaultWorkStateDir(), cwd = 
   const directory = join(resolve(stateDir), 'tasks', projectHash);
   await realDirectories(directory); await mkdir(directory, { recursive: true, mode: 0o700 }); await realDirectories(directory);
   const canonicalDirectory = await realpath(directory);
-  const queues = new Map();
+  const queues = inboxQueues;
   const knownSecrets = new Set();
   let warnings = [], workerToken;
   function redact(value) {
@@ -95,6 +100,7 @@ export async function createTaskInbox({ stateDir = defaultWorkStateDir(), cwd = 
     const result = text(value.result, 'result', 1024 * 1024, { optional: true });
     if (reason !== undefined) record.reason = reason;
     if (result !== undefined) record.result = result;
+    if (value.idempotencyHash !== undefined) { if (!/^[0-9a-f]{64}$/.test(value.idempotencyHash) || deterministicId(value.idempotencyHash) !== value.id) throw new Error('Task idempotency record is invalid.'); record.idempotencyHash = value.idempotencyHash; }
     return record;
   }
   async function get(taskId) {
@@ -102,7 +108,8 @@ export async function createTaskInbox({ stateDir = defaultWorkStateDir(), cwd = 
     return value === undefined ? undefined : canonical(value, taskId);
   }
   async function locked(name, operation) {
-    const previous = queues.get(name) || Promise.resolve();
+    const queueKey = `${canonicalDirectory}:${name}`;
+    const previous = queues.get(queueKey) || Promise.resolve();
     const next = previous.catch(() => {}).then(async () => {
       await checkDirectory(); let lock;
       const path = join(directory, `${name}.lock`);
@@ -112,8 +119,8 @@ export async function createTaskInbox({ stateDir = defaultWorkStateDir(), cwd = 
         return await operation();
       } finally { if (lock) { await lock.close().catch(() => {}); await rm(path, { force: true }).catch(() => {}); } }
     });
-    queues.set(name, next);
-    try { return await next; } finally { if (queues.get(name) === next) queues.delete(name); }
+    queues.set(queueKey, next);
+    try { return await next; } finally { if (queues.get(queueKey) === next) queues.delete(queueKey); }
   }
   async function write(name, value, maximum = MAX_TASK_BYTES) {
     const serialized = JSON.stringify(value) + '\n';
@@ -162,12 +169,17 @@ export async function createTaskInbox({ stateDir = defaultWorkStateDir(), cwd = 
   }
   return {
     directory, cwd: project, stateDir: resolve(stateDir), redact, warnings() { return [...warnings]; }, get, list, update,
-    async submit({ prompt, source = 'terminal' } = {}) {
+    async submit({ prompt, source = 'terminal', idempotencyKey } = {}) {
       const value = text(prompt, 'prompt', 1024 * 1024);
       if (!value.trim()) throw new Error('Task prompt must be nonempty text.');
-      const record = { version: 1, id: randomUUID(), cwd: project, prompt: value, source: text(source, 'source', 2048), status: 'pending', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-      await locked(`task-${record.id}.json`, async () => { if (await get(record.id)) throw new Error('Task identifier already exists.'); await write(`task-${record.id}.json`, record); });
-      return record;
+      if (idempotencyKey !== undefined && (typeof idempotencyKey !== 'string' || !idempotencyKey || Buffer.byteLength(idempotencyKey) > 2048 || /[\u0000-\u001f\u007f]/.test(idempotencyKey))) throw new Error('Task idempotency key must be nonempty bounded text.');
+      const hash = idempotencyKey === undefined ? undefined : createHash('sha256').update(projectHash + '\n' + idempotencyKey).digest('hex');
+      const record = { version: 1, id: hash ? deterministicId(hash) : randomUUID(), cwd: project, prompt: value, source: text(source, 'source', 2048), status: 'pending', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...(hash ? { idempotencyHash: hash } : {}) };
+      return locked(`task-${record.id}.json`, async () => {
+        const existing = await get(record.id);
+        if (existing) { if (hash && existing.idempotencyHash === hash && existing.prompt === record.prompt && existing.source === record.source) return existing; throw new Error('Task idempotency key was already used with different content.'); }
+        await write(`task-${record.id}.json`, record); return record;
+      });
     },
     async recoverInterrupted() {
       if (!workerToken || (await workerRecord())?.token !== workerToken) throw new Error('Interrupted task recovery requires the exclusive worker lease.');

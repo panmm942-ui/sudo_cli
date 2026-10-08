@@ -1,26 +1,30 @@
-# Using sudocli 0.5
+# Using sudocli 0.6
 
-Complete [first setup](platforms.md), then open a terminal as Administrator on Windows and run `sudocli` from your project. On Linux/macOS, use `sudo "$HOME/.local/bin/sudocli"`, or sudo with the full launcher path. Model sessions require verified administrator/root privileges; setup, help, version and doctor remain available normally. The CLI does not request elevation for you.
+Complete [first setup](platforms.md), then launch from the project you want to work on. Windows requires an Administrator terminal; Unix uses `sudo "$HOME/.local/bin/sudocli"` or the full local launcher path. Setup, help, version and doctor work normally without elevation. The CLI never elevates itself.
 
-A UTF-8 terminal with Braille/truecolor support displays the original supplied antenna. Its characters, spacing and 30 FPS / 1.5-second pulse / 0.20-second delay are preserved. The tower stays soft white; only the red waves animate, and they freeze when AI work stops. A wide, tall window such as 100 columns by 32 rows leaves room for the dashboard and conversation. Plain output remains available with `NO_COLOR=1` or `TERM=dumb`.
+The original red SUDO CLI logo, Braille antenna, credits and timing are preserved. A UTF-8 truecolor terminal around 100 columns by 32 rows leaves room for the dashboard and conversation. `NO_COLOR=1` removes colors; `TERM=dumb` uses plain output. The terminal's previous screen returns on normal exit.
 
-## Connect your first AI
+## Open saved work before connecting
 
-Enter the exact model ID served by your endpoint, its API base URL, and the protocol. The default Chat Completions transport requires `/chat/completions`; Responses requires a compatible `/responses` endpoint. Base URLs normally end in `/v1`. Enter an API key at the hidden prompt, or leave it blank for an unauthenticated server. Keys also can come from `--api-key-env NAME`. The CLI does not select, download or host an AI model.
-
-Enter a task such as `Explain the project and identify its main entry point.` Status becomes Working during the agent turn. Connected AI is confirmed by a real response. WiFi Yes does not establish model connectivity, and the Connection percentage is a measured model-response estimate.
-
-Use `/` or `/help` for the command menu and Tab for command-name completion. A regular prompt entered during work goes into an ordered queue. The current task continues, and queued commands/prompts run afterward. A queued model switch takes effect before a later queued task. `/stop` or Ctrl+C interrupts active model work without deleting that queue. Ctrl+C exits when idle.
-
-For an immediate instruction to an active model turn, use:
+A default interactive launch starts with no AI selected and no model request. You can use `/help`, `/status`, `/chatt`, `/search-chat` and `/memory` in this shell. The last saved chat for the current project resumes automatically. It stays local until you connect an AI and send a task.
 
 ```text
-/steer Focus on the failing tests first.
+/chatt
+/chatt open CHAT_ID
+/connect
 ```
 
-Steering is accepted only while a native turn remains active and supports it; manual compaction cannot accept steering. Other slash commands entered while busy are queued.
+`/connect` offers cloud/custom, Ollama or LM Studio. Local shortcuts discover models from an already-running compatible server; they do not install or host model weights. Supply the exact model ID, base URL, API format, capacity if known and hidden key. Chat Completions needs `/chat/completions`; Responses needs a compatible `/responses` endpoint. A local server without authentication can use a blank key.
 
-## Save and switch AIs
+Launch flags can supply the connection directly:
+
+```sh
+sudocli --model exact-model-id --base-url https://api.example.com/v1 --transport chat-completions --context-window 131072 --api-key-env MY_MODEL_KEY --cwd /path/to/project
+```
+
+Use the model's actual capacity; the number above is an example. Selected AI and configured endpoint are shown before generation. A completed response establishes execution; `/test-connection` only checks the catalog and cannot establish generation, tool or audio support.
+
+## Save AIs, capabilities and protected keys
 
 ```text
 /switch save Main coding
@@ -29,177 +33,193 @@ Steering is accepted only while a native turn remains active and supports it; ma
 /switch Main coding
 /model list
 /model exact-model-id
+/capabilities
 ```
 
-`/switch` alone lists saved choices and can select by number or name. `add` walks through cloud/custom endpoint setup; `local` offers editable shortcuts for an already-running Ollama, LM Studio or other local compatible server. The local model must already be served. `/model list` queries the current endpoint rather than treating Codex's native catalog as third-party provider capabilities.
+Saved profiles retain nonsecret model/endpoint/protocol metadata, optional capacity and explicitly declared effort/capability information. They do not contain API-key values. `/switch remove NAME` removes a profile. `/switch` alone lists choices; switching sends no chat until your next task.
 
-Saved profiles retain name/model/endpoint/protocol and optional context limit, key environment-variable name and explicitly declared effort levels. **API-key values are not stored.** A key can be reused in this running session or requested again after reopening. `/switch remove NAME` deletes a saved choice. See [profile storage](profiles.md).
+`/capabilities` distinguishes observed facts, declarations and unknown support for text, streaming, tools, vision, reasoning, audio, structured output, hosted search, training and model discovery. `/capabilities declare FEATURE on|off` records your known service support. An observation from one model is not proof about another model. Unsupported declared features are refused; unknown support stays labelled. For reasoning, `/effort supported low,medium,high` declares permitted values; `/effort default` reconnects without an override. A model name or parameter count never proves these capabilities.
 
-Model/endpoint/runtime-option reconnects retain the complete visible chat. The sanitized user/assistant transcript is added to the new AI's next prompt. It is not a summary, and no chat is sent merely by selecting a profile. Hidden reasoning/tool internals and original attachment bytes do not transfer. Context capacity can differ or be unknown; a smaller provider can reject the full conversation. Requests above the CLI's 8 MiB limit fail explicitly rather than silently shortening the chat.
+The default credential lifetime is this process. `/credentials status` reports the backend; `/credentials save` explicitly uses Windows DPAPI, macOS Keychain or Linux Secret Service when installed/available. Protected storage belongs to that OS account and connection identity; a startup service may run as a different account. `/credentials forget` removes the stored credential while an already-connected session retains its in-memory key.
 
-## Personalize each AI
+## Enter readable prompts and search
+
+Enter a normal task, such as `Explain this project and identify its main entry point.` `/help` shows common commands; `/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
+
+Clear reading is on by default: short initial answers, short lines and spaced actions. `/readability off` disables it. `/details` asks the connected AI to expand the last answer.
 
 ```text
+/prompt
+Explain this code and the edge case:
+function total(values) {
+  return values.reduce((sum, value) => sum + value, 0);
+}
+/end
+```
+
+`/prompt` preserves multiline text until `/end`. On terminals supporting bracketed paste, pasted text is queued as a literal prompt; embedded slash lines do not change permissions or execute commands. Unbracketed terminals should use `/prompt` for multiline content.
+
+Prompts submitted during work queue in order. `/stop` or Ctrl+C interrupts model work without deleting the queue. `/steer TEXT` guides an active native turn when it accepts steering. Other commands entered while busy wait for the current work. Ctrl+C exits when idle.
+
+## Use explicit coding checks and safe undo
+
+```text
+/workflow plan
+Plan the parser fix and meaningful acceptance checks.
+/workflow edit
+Implement the approved parser fix.
+/changes
+/checks add node --test test/parser.test.mjs
+/verify
+```
+
+Choose a real command appropriate to your project. The CLI records bounded before/after checkpoints around ordinary AI tasks. `/changes [CHECKPOINT_ID]` shows actual recorded changes, including a bounded diff. The default is the latest checkpoint. Files omitted by bounds/exclusions make coverage partial.
+
+`/checks add COMMAND` adds a check; `/checks list` shows the list and `/checks clear` removes it. `/verify COMMAND` runs one explicit command; `/verify` runs the selected list. Results include exit code, stdout/stderr, elapsed time, cancellation and capture limits.
+
+| Result | Meaning |
+| --- | --- |
+| Verified | All selected checks passed for the recorded source state with complete coverage |
+| Failed | A selected check exited nonzero or failed to launch |
+| Needs review | No checks, cancellation/timeout/output bound, source changes during checks, or incomplete source coverage |
+
+A model saying “finished” does not set Verified. Verification is evidence about those checks and that source state, not untested behavior or external services.
+
+`/undo [CHECKPOINT_ID]` restores only files whose current contents still match the recorded AI result. New recorded files are individually removed. Later human edits, unsafe/symbolic paths and replacement files become conflicts and stay untouched. Partial undo reports the restored paths and conflicts. Undo invalidates the associated verification. Checkpoints survive restart; unfinished checkpoints cannot be safely undone. See [workspace workflows](workspace-workflows.md).
+
+`/workflow plan|edit|test|review` selects task guidance. Plan/review also select read-only scope; edit/test return to the previous write scope. `/review FOCUS` runs an independent reviewer; `/team TASK` runs a planner and reviewer with fresh native sessions and separate bounded source snapshots. Neither role changes the original project or accepts work. Reports are advisory, with stated snapshot/external-behavior limits.
+
+## Bound long conversations and approved memory
+
+```text
+/context capacity 131072
+/context status
+/context review
+/memory edit
 /personalize setup
-/personalize status
-/personalize on
-/personalize off
-/preferences
 ```
 
-Setup optionally saves a persona, language, tone, answer length, format and additional instructions for the connected endpoint/model/protocol. A profile nickname does not change that identity. `/preferences` is an alias for `/personalize`; `clear` removes that connection's personalization. Nothing is enabled until you choose it. These are developer instructions applied alongside task and permission rules; they do not change model weights or make unsupported capabilities available. The 24/7 guardian and working AI use their own separate preferences. See [personalization](personalization.md).
+Full visible chat remains archived and is never silently shortened. Before replaying it after a model switch, runtime reconnect or restart, the CLI requires the selected AI's capacity. It estimates input size with framing/instructions and reserves output space. Provider tokenization and additional overhead can differ; the estimate is labelled.
 
-## Resume or start a chat
+If full replay exceeds the allowance, it stops before provider traffic. `/context review` displays numbered messages, accepts your reviewed summary until `/end`, then asks for comma-separated message numbers. Choose the relevant excerpts yourself. It retains the complete archive and replays the bounded summary/excerpts as conversation input, never as higher-trust developer instructions. An oversized reviewed selection is also refused.
 
-```text
-/chatt
-/chatt open CHAT_ID
-/chatt save
-/chatt rename New title
-/new
-```
+`/compact` invokes native compaction while retaining the archive. `/clear` gives the engine fresh context and retains visible history. `/new` starts a fresh saved chat with a keep/discard choice. `/history clear` clears the current visible archive without resetting the active engine. `/handoff [DIRECTORY]` exports full Markdown/JSON separately; hidden reasoning/tool internals and original attachment bytes are not transferred.
 
-Visible prompts, received assistant text and queued text prompts automatically persist locally for this project. Reopen sudocli in the same project to resume its last chat. An interrupted assistant reply keeps the text already received; reopening provides that partial transcript as context rather than rerunning an old tool operation. Remaining queued prompts are restored. Unsaved keystrokes and original queued attachment bytes are not recovered.
+`/memory edit` accepts project rules/preferences/decisions until `/end`; `on|off|clear` controls that approved memory. Model output and discovered files cannot silently become approved memory. `/personalize setup` separately saves persona, language, tone, reply length/format and other instructions per endpoint/model/protocol. `/preferences` is its alias. These are developer instructions, not training or execution permissions.
 
-`/chatt` lists saved project chats; use the displayed ID to reopen one. `/chatt save` checkpoints the current chat and `rename TITLE` changes its title. `/new` or `/chatt new` asks whether to keep or discard the current saved chat, then creates a fresh conversation. `/chatt delete ID` explicitly removes the selected saved chat after confirmation. Separate projects have separate last-chat pointers.
-
-The current connection metadata is saved without an API key. Re-enter a key or use its configured environment variable after reopening. Known connection/service keys and terminal controls are removed from saved text; the transcript still contains other personal or confidential text you choose to enter. Storage is bounded and refuses corrupted or symbolic-link records. See [saved chat behavior](chats.md).
-
-## Reasoning, context and history
-
-```text
-/effort
-/effort high
-/effort supported low,medium,high
-/effort default
-/compact
-/handoff
-```
-
-`/effort` reports whether this connection has a declared support list. Standard native request values are none, minimal, low, medium, high, xhigh, max, ultra and persistent; unknown providers may reject them. `/effort supported` records your known model capabilities for this session; `/switch save NAME` persists that metadata. Custom values require a declared list. The CLI does not infer capacity from a model's name or parameter count.
-
-Default sends no reasoning override. Native overrides are sticky across turns, so `/effort default` reconnects to clear a prior value and queues the visible chat for the next task. `/compact` calls native compaction and waits for completion; it changes model context while preserving the complete separate export history.
-
-`/history` shows the full visible chat. `/handoff [DIRECTORY]` writes a separate portable Markdown and canonical JSON export; the default directory is `.sudocli/handoffs` under the project. Known runtime keys and terminal controls are removed; attachment metadata is included without original file bytes. Autosave continues independently of handoff exports.
-
-`/clear` gives the engine fresh context and keeps visible history. `/history clear` removes that visible history from the current stored chat while leaving the active engine context intact. Neither deletes an already exported handoff file. Use `/new` for a fresh saved chat and fresh engine context together.
-
-## Attach files and skills
-
-```text
-/upload "src/my file.js" "docs/screenshots"
-/attachments
-/attachments clear
-/skills list
-/skills load review
-```
-
-`/upload` reads and queues a snapshot locally. Sending the next prompt sends the queued text/images to the selected AI endpoint; inspecting the queue alone makes no network request. The queue is used once. Supported content is bounded UTF-8 text and PNG/JPEG/GIF/WebP images. Folder scans exclude dependencies, common credential files/content, symlinks and unsupported/binary formats with reported reasons. Defaults are 100 files per collection, 2 MiB total queued raw content, 512 KiB per text file, 5,000 inspected entries and 20 directory levels. Image/tool support still depends on the AI. See [attachment details](attachments.md).
-
-For workspace skills, put a valid `SKILL.md` beneath `.agents/skills/NAME/`. `/skills list` shows native metadata/errors and actual loaded instruction sources such as AGENTS.md. `/skills load NAME` attaches an enabled native skill to the next prompt; `/skills clear` clears that skill queue. Skills are instructions, not model weight training.
-
-## Permissions, web and computer tools
+## Scope execution and tools
 
 ```text
 /permissions ask
-/web on
-/mcp add browser http://127.0.0.1:8931/mcp
-/mcp list
-/mcp tools
-/computer-use status
+/permissions scope project
+/permissions tools
+/permissions tools none
+/permissions folders add PATH
+/web off
 ```
 
-The URL above is an example; your service must already be running. Ask requests workspace sandboxing plus one-time execution approvals. Windows can report a stricter read-only fallback. `/permissions allow-everything` deliberately grants commands the elevated process's full local access without execution approval prompts. Administrator/root launch does not automatically select Allow Everything.
+Administrator/root admission is distinct from agent permission. Defaults are Ask, project scope and Web Off. Read-only prevents native writes; project uses native workspace sandboxing plus your explicitly selected real write folders; full expands the boundary. Allow Everything skips approval prompts only within the resulting policy. Full unrestricted native execution requires full scope, Allow Everything and Web On together. The actual native policy is reported; Windows may use a stricter read-only fallback.
 
-Web On permits sandboxed command networking and configured HTTP MCP services. Hosted web search additionally requires a compatible Responses provider. The Chat adapter uses command/MCP alternatives rather than hosted search. Web Off excludes hosted search and supplied HTTP MCP servers and requests sandbox networking Off in Ask. It keeps the host model API connection available and is not a firewall for full-access or approved escalated commands. Explicit voice/training service commands use their separately configured APIs.
+With Web Off, unsandboxed command escalation is denied, native command networking is disabled and supplied HTTP MCP servers are excluded. The host model API remains reachable. Explicit ASR/TTS/training/GPU commands use their separately configured endpoints. Web On permits selected sandbox networking/MCP; hosted search additionally requires a compatible provider.
 
-`/computer-use setup NAME URL` designates a running MCP service for browser/desktop use. Model vision/tool support and that service determine what works. `on` permits its supplied tools. `off` reconnects and removes designated computer servers entirely; detected computer tools in previously classified mixed servers are denied through native raw-name filtering. Unknown/new servers are omitted while Off; a failed classification omits all supplied MCP servers. Adding/replacing a server invalidates its old classification. Inspect it with Computer Use On before retaining non-computer tools while Off.
+`/permissions tools` shows observed exact wire names after a model request populates the catalog. Use `tools allow NAME ...`, `tools none` or `tools all`. The provider adapters reject tool calls outside the selected policy. `/permissions folders add PATH` selects an existing real folder; `folders clear` removes additions. Read-only still prevents writes.
 
-Name-based detection cannot identify every renamed tool. Computer Use Off controls supplied MCP tools; it does not prevent terminal commands from launching OS software under the selected permission policy. `/mcp remove NAME` removes an entire server. The CLI does not install a browser/desktop automation service.
+Permission/web/tool/computer changes stop existing background workers before they continue under old access. Restart the guardian explicitly with the updated settings. Reconnects retain archived chat subject to context preflight.
 
-Changing permissions, Web Access, MCP configuration or computer policy stops foreground and detached background workers. Restart 24/7 mode explicitly to use the new policy. Ordinary model tasks reconnect under the new settings and retain chat history.
+## Limit spending and choose routing
 
-## Continuous voice and explicit transcription
+```text
+/route price 1 2
+/budget setup
+/budget status
+/route cheap
+/route local
+/route manual Main coding
+/route off
+```
+
+Replace the example rates with the selected provider/model's actual USD price per million input/output tokens. Budget setup asks for task/day money, tokens, model requests and minutes of active work; blank means unlimited. Provider requests reserve bounded estimated usage before network traffic, then reconcile reported usage. Missing pricing blocks money-limited work. `/budget off` explicitly disables caps. `/budget reset-day` resets only the local counters; provider charges remain unchanged.
+
+Costs are estimates/accounting, not invoices. The default request output cap is 4096 tokens. Voice, training and GPU hourly bills are separate. Rejected admission does not call the provider.
+
+Routing is opt-in and uses saved profiles. Local mode prefers a configured loopback endpoint; cheap mode uses your configured token prices. Manual selection takes priority, and `/switch` turns automatic routing off. A rationale is shown when the connection changes. No local AI is installed, and service price/capability metadata is not inferred from model names.
+
+## Configure voice and echo avoidance
 
 ```text
 /voice setup
 /voice speech
-/microphone device "Exact Windows microphone name"
-/microphone on
-/voice live
-/voice status
+/microphone devices
+/microphone device Exact device name
+/voice echo headphones
+/voice wake assistant
+/live
+/voice pause
+/voice resume
+/voice repeat
 /voice off
 ```
 
-`/voice setup` configures a compatible transcription endpoint/model/key. `/voice speech` separately configures the speech endpoint/model/voice/key. `/voice live` or `/live` starts continuous listening: detected utterances become ordinary prompts, and assistant replies play using an AI-generated voice. Listening continues during transcription, AI work and speech playback. New speech stops playback and interrupts an active AI turn. `/voice off`, `/microphone off`, or exiting stops audio capture/playback and pending audio requests.
+Transcription and speech need separately configured compatible endpoint/model/key choices. Native FFmpeg/FFplay and OS microphone permission are required. Windows uses an exact DirectShow device name, Linux uses PulseAudio, and macOS uses an AVFoundation audio index. Device discovery reports the installed tool's output; no device is assumed usable until tried.
 
-Live voice requires native FFmpeg and FFplay on PATH and OS microphone permission. Windows needs an exact DirectShow device name, Linux uses PulseAudio, and macOS uses an AVFoundation audio index. Silence remains local and makes no transcription call. Speech is segmented with pre-roll and silence detection, with a 20-second phrase bound and one queued transcription phrase. A slow service that fills the queue asks you to repeat the dropped phrase.
+This is composed ASR → coding AI → TTS. Detected phrases become ordinary literal prompts, and replies play through the configured speech service. Silence is handled locally. Headphones mode keeps listening and supports interruption; speaker mode pauses listening during playback to avoid feeding speech back into the microphone. Speaker mode is half-duplex and has no acoustic echo cancellation. Physical microphone/speaker acceptance has not been performed here.
 
-Use headphones for reliable interruption. Energy detection has no acoustic echo cancellation, so speakers can feed the assistant's voice back into its microphone. Recognition quality and latency depend on the microphone, ASR, coding model, TTS and network. A chat-only model endpoint does not automatically supply audio APIs; this is continuous ASR/coding/TTS conversation rather than ChatGPT's exact proprietary backend. See [live voice details](live-voice.md).
+Wake-phrase filtering happens after ASR, so it is not an offline wake-word engine and preceding speech still reaches the configured transcription service. Pause prevents recognized phrases from becoming prompts; resume permits them again. Repeat speaks the last completed reply. Spoken slash text cannot mutate settings or approve execution. `/voice off`, microphone Off or exit stops capture/playback and pending audio requests.
 
-With a configured transcription service, explicit input is also available:
+Explicit `/voice record 10` or `/voice file PATH` shows a transcript and asks before sending it. Record takes 1–60 seconds; audio files have a 25 MiB bound and require service format support. Arming the microphone alone does not record. Live recognized prompts/replies use normal chat autosave; service keys remain in memory. See [live voice](live-voice.md) and [services](services.md).
 
-```text
-/voice record 10
-/voice file "recording.wav"
-```
-
-`/voice file` uploads a selected audio file to `/audio/transcriptions`; `/upload` does not transcribe audio. Files are bounded to 25 MiB. Supported extensions are WAV, MP3, M4A, MP4, OGG, FLAC, WEBM and MPEG, subject to service support.
-
-Microphone arming alone does not record. `/voice record SECONDS` starts an explicit 1–60-second FFmpeg recording; FFmpeg must be installed on PATH and the OS must permit microphone access. Windows needs an exact DirectShow device name, Linux uses PulseAudio, and macOS uses an AVFoundation audio index. Recordings use an owned temporary WAV that is removed when the command finishes normally.
-
-Explicit `record`/`file` modes display the transcript first and ask Yes before sending it. Microphone arming alone does not record; continuous capture begins only with an explicit live-mode command. Service keys/settings remain in memory. Live capture writes no recordings to disk; recognized prompts and assistant replies use normal chat autosave. Spoken text is not treated as a permission approval or automatically executed slash command.
-
-`/ide code` or `/ide cursor` opens the project in installed VS Code or Cursor. The assistant remains in this terminal; this command does not install or attach an editor extension. Missing editors/FFmpeg/backends receive setup errors. See [service details](services.md).
-
-## Keep a guardian available 24/7
+## Run durable background work
 
 ```text
 /247 setup
 /247 start
-/247 add Check the failing build and fix its cause.
+/247 add Check the failing build and explain the cause.
 /247 list
 /247 result JOB_ID
 /247 retry JOB_ID
-/247 stop
+/schedule add
+/startup setup
+/startup plan
 ```
 
-Setup selects a saved, already-running local AI on a loopback endpoint as the guardian and a working AI for heavier tasks. You can optionally supply a standing goal, checked by the local guardian every 60 seconds, and choose project folders to watch. Without a standing goal or queued task, it makes no model calls. Folder changes become explicit inbox jobs; task-generated changes are suppressed while work is active to avoid a feedback loop.
+Setup chooses a saved, already-running local guardian AI on loopback and a working AI for heavier tasks. Explicit inbox jobs, selected folder changes or an optional standing goal trigger work. With no goal/job, idle makes no model calls. The guardian finishes locally, calls the working AI or blocks the job with a reason. Foreground `/247 start` stops on terminal exit; `/247 detach` survives terminal close. `/247 stop` stops either worker. Detached execution declines approvals requiring a person.
 
-`/247 start` runs in this terminal and stops when the terminal session exits. Use `/247 detach` to launch a separate elevated worker that continues after you close sudocli. `/247 status` reports either worker, and `/247 stop` stops it. Detached operation requires the computer and local model service to remain running; reboot autostart is not installed.
+Tasks/results and schedule occurrences persist. Interrupted active work requires review/retry rather than assuming completion; occurrences are enqueued idempotently. `/schedule add` requires an ISO time with an explicit timezone and optional repeat minutes. List/pause/resume/remove manage a schedule. The guardian must run to process due work; machine sleep/off and unavailable local services still stop execution.
 
-The guardian assesses each job and either completes it locally, sends it to the working AI, or blocks it with a reason. It uses the same permission, web, MCP and computer policies as when started. A detached worker cannot ask you for an execution approval, so required approvals block the job. Changing those policies stops existing workers; restart explicitly with the updated settings. The two AIs retain their separate personalization instructions.
+Startup is explicit: inspect `/startup plan`, then use `/startup install` if you want OS registration. It uses systemd on Linux, launchd on macOS or Task Scheduler on Windows. API-key values are excluded from startup configuration; supply runtime environment references or an explicitly trusted credential-loader executable. `/startup remove` disables it. Merely detaching does not install startup. OS registration and production reboot recovery were not installed/tested on this user's machine. See [operations](operations.md) and [worker behavior](agent-worker.md).
 
-Jobs, reasons and results persist in a separate project inbox. `/247 list` shows their states, `result` displays a saved result, and `retry` requeues a blocked or failed job. Results do not automatically enter your resumed chat; view and use them when relevant. Runtime model/service keys are passed to the worker in memory and are not saved with jobs. See [guardian behavior](always-on.md) and [detached worker details](agent-worker.md).
+## Control GPU state, browser and search services
 
-Optional HTTPS or loopback wake/sleep hooks can start and stop cloud compute around work. This saves hourly GPU charges only if your provider's hook actually stops or deallocates the billed resource. An idle model request or sleeping worker alone does not release a rented GPU, and storage or other provider charges can continue.
+`/gpu setup` configures wake/sleep/status hooks; `/gpu status`, `/gpu wake` and `/gpu sleep` use them. A successful POST is only acknowledgement. An explicit provider status must report running/stopped/deallocated and billing state before resource state is treated as known. Storage-only or other charges may continue. No GPU is provisioned or deallocated merely by saving hooks, and no production GPU lifecycle was tested.
 
-## Export data or run a supported training job
+For browser tools, enable Web On and use `/browser start`, with installed Chromium/Chrome/Edge and explicit allowed origins. `/browser executable PATH` overrides discovery. This starts a dedicated headless browser/profile and authenticated loopback MCP adapter with navigation, text/links, screenshot, CSS click and field typing. Actions are displayed; `/browser stop` stops the adapter/child. The Windows adapter was exercised against a loopback page through actual CDP, including a 10,702-byte screenshot.
 
-```text
-/training export
-/training setup
-/training start "training/conversation-EXAMPLE.jsonl"
-/training status JOB_ID
-/training cancel JOB_ID
-```
+Root Unix Chromium launch refuses to disable its sandbox. Run a browser MCP service as a normal user and connect it using `/computer-use setup NAME URL`. External desktop/browser automation depends on that actual service and model vision/tools. `/computer-use off` excludes designated computer servers and detected computer tools in classified mixed servers; unknown/new servers are omitted while Off. Classification cannot identify every renamed tool. `/mcp remove NAME` excludes a whole server.
 
-Export writes a local JSONL dataset under `training/` by default, using complete text user/assistant exchanges. It can include repeated conversation prefixes for successive examples and excludes nontext/unfinished exchanges; review the result before uploading. The example filename above must be replaced with the actual exported path. Exports have 25 MiB/1,000-example bounds.
+`/search QUERY` requests source-linked search through compatible Responses hosted search or configured search/browser MCP. It requires Web On and appropriate capability/tool setup. Fetched instructions remain untrusted. Source links and factual claims still need review; a connection alone does not establish search quality. `/ide code|cursor` opens an installed external editor without installing an extension.
 
-Setup requires a backend implementing compatible Files and Fine-tuning APIs and an actually fine-tunable model ID. Start asks before uploading the selected JSONL file and creating a provider job. Status reads the real job; Cancel asks before requesting cancellation. Provider charges, GPU resources, supported models and training outcomes belong to that backend. The CLI does not provide compute or modify an arbitrary connected model's weights. A user-supplied training MCP service can provide another workflow through its own tools.
+## Defensive security, training and updates
 
-## What persists
+`/security scan` runs bounded local source/dependency/credential-pattern heuristics. It suppresses matched credential values and reports coverage limits. `/security lab PATH` explicitly approves a relative local source target and makes a bounded disposable copy. `/security review PATH` uses an independent defensive reviewer. These operations do not authorize external targets, exploit execution or access to the original project outside that scope. Absence of findings is not proof of security; no advisory database is queried. See [workspace workflows](workspace-workflows.md).
 
-| Data | Storage/action |
+Training is under `/help advanced`. `/training export` creates a bounded JSONL dataset from complete text exchanges; review it. `/training setup` needs compatible Files/Fine-tuning APIs and a fine-tunable model. `/training start FILE` asks before upload/job creation; `status ID` and `cancel ID` use the real service. Provider costs, compute and outcomes remain external. These commands do not train every connected AI.
+
+`/update stage PACKAGE_OR_HTTPS_URL TRUSTED_SHA256` verifies a supplied trusted hash and stages a bounded ZIP. `/update install` validates compatible paths/package/runtime metadata, installs beside the old release and changes the registered launcher. `/update rollback` points it to the retained prior release. Review the checksum through a trusted channel and restart after switching versions. This is explicit update/rollback, not an automatic downloaded-code startup step.
+
+## What persists and what was tested
+
+| Data | Lifetime |
 | --- | --- |
-| Command wrapper and installed runtime | First setup |
-| Numeric worked-time totals | Automatic per-user checkpoints |
-| Named AI metadata | Explicit profile save; no key values |
-| Per-AI personalization | Explicit setup/save, independently enabled per connection |
-| Visible chat, received partial replies and queued text prompts | Automatic project chat checkpoints; separate optional `/handoff` exports |
-| 24/7 tasks, status reasons and results | Durable project task inbox |
-| Detached worker control token | Private local record used only to authenticate status/stop |
-| Training JSONL | Explicit `/training export` |
-| Model/service keys, active permission/Web/effort settings and original queued attachment bytes | Running process only; detached workers receive a snapshot in memory |
+| Visible chats/partial replies/queued text, profiles, personalization and approved project memory | Private independent state, with project/connection identities |
+| Checkpoints, verification evidence, jobs, schedules and budget records | Private durable records with bounded/safe-path validation |
+| Optional protected credentials | OS account store only after explicit save |
+| Runtime keys and active scope/tool/voice selections | Running process; background workers receive an in-memory snapshot |
+| Original attachment bytes and unsent keystrokes | Not recovered on restart |
+| Handoff Markdown/JSON and training datasets | Explicit project exports |
+| Installed startup service or registered update | Explicit OS/launcher operation |
 
-`SUDO_CLI_STATE_DIR` can choose a different persistent state directory for profiles, personalization, chats, work totals and the task inbox. `/status` reports timers/context/connection state; `/doctor` diagnoses optional configuration. Normal `/quit` checkpoints the chat and numeric work totals, stops live audio and foreground guardian work, cleans the private engine and restores the terminal. A detached worker intentionally continues until stopped. Native macOS/ARM, physical audio capture/playback, production third-party models, desktop automation and real training services remain conditional/unverified. See [verification](verification.md) for the tested platforms and boundaries.
+`SUDO_CLI_STATE_DIR` selects independent persistent storage. Normal `/quit` saves state/work totals, stops live audio and foreground background work, closes the private engine and restores the terminal. A deliberately detached worker continues until stopped.
+
+Actual Linux x64 PTY acceptance used the native Codex engine and 22 loopback streamed model requests with isolated HOME/XDG/state/project; all four CLI children exited 0. Multiline input and bracketed paste reached the model literally without changing permissions. Local Windows/Linux automated checks and actual Windows browser CDP acceptance are distinct from the six-target CI definition. macOS/ARM CI jobs, physical audio, external desktop services, production providers and rented GPU billing remain unverified here. See [terminal evidence](v0.6-terminal-evidence.md), [22-area evidence](v0.6-feature-evidence.md) and [release verification](verification-v0.6.md).
+
+The frontend is MIT; bundled OpenAI Codex 0.160.1 and its matching source/notices retain Apache-2.0, and Node.js 24.19.0 retains its license/dependency notices. [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui). See [THIRD_PARTY.md](../THIRD_PARTY.md).

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { setTimeout as wait } from 'node:timers/promises';
 
 const recordName = /^session-[A-Za-z0-9_-]{1,80}\.json$/;
 const duration = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -82,14 +83,23 @@ export async function createWorkMeter({
       const temporary = `${path}.${randomUUID()}.tmp`;
       try {
         await writeFile(temporary, JSON.stringify({ version: 1, activeMs }), { mode: 0o600, flag: 'wx' });
-        await rename(temporary, path);
+        // On Windows another meter's refreshOthers read handle can temporarily
+        // prevent replacing this session's record. Keep the complete temporary
+        // record and retry only the rename, within the existing store bound.
+        for (let attempt = 0; ; attempt++) {
+          try { await rename(temporary, path); break; }
+          catch (error) {
+            if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 10) throw error;
+            await wait(10 + attempt * 5);
+          }
+        }
         persistedMs = activeMs;
         await refreshOthers();
         storageStatus = 'ok';
         return snapshot();
-      } catch {
+      } catch (error) {
         storageStatus = 'error';
-        throw new Error('Unable to save active work duration.');
+        throw new Error('Unable to save active work duration.', { cause: error });
       } finally { await rm(temporary, { force: true }).catch(() => {}); }
     });
     writes = operation;

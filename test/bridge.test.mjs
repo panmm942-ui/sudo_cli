@@ -12,6 +12,17 @@ const messageResult = (message = { role: 'assistant', content: 'Hello from the m
   usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
 });
 
+test('bridge signals sanitized tool policy failure before a native client can retry', async t => {
+  const errors = [];
+  const { post } = await setup(t, () => messageResult({ role: 'assistant', content: null, tool_calls: [{ id: 'rogue', type: 'function', function: { name: SECRET, arguments: '{}' } }] }), { toolsAllowed: false, onPolicyError: error => errors.push(error) });
+  const response = await post({ input: 'Text', tools: [{ type: 'function', name: 'allowed' }] });
+  await response.text();
+  assert.equal(response.status, 502);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'TOOLS_DISABLED');
+  assert.doesNotMatch(JSON.stringify(errors), new RegExp(SECRET));
+});
+
 test('bridge forwards explicit reasoning effort and preserves provider default when omitted', async (t) => {
   const { requests, post } = await setup(t);
   for (const effort of ['none', 'xhigh', 'max', 'ultra', 'adaptive']) {
@@ -32,6 +43,7 @@ test('bridge forwards explicit reasoning effort and preserves provider default w
   }
   assert.equal(requests.length, count);
 });
+test('a declared non-streaming Chat provider receives JSON generation while native SSE still works',async t=>{const {requests,post}=await setup(t,()=>messageResult(),{streaming:false});const response=await post({input:'Hello',stream:true});assert.equal(response.status,200);const text=await response.text();assert.match(text,/response.completed/);assert.match(text,/Hello from the model/);assert.equal(requests[0].body.stream,false);assert.equal(requests[0].body.stream_options,undefined);});
 
 async function setup(t, handler = () => messageResult(), options = {}) {
   const requests = [];
@@ -68,7 +80,7 @@ function events(source) {
   });
 }
 
-test('bridge returns complete text Responses SSE and sends only a nonstream model request', async (t) => {
+test('bridge requests upstream streaming and accepts compatible JSON fallback', async (t) => {
   const { bridge, requests, post } = await setup(t);
   assert.match(bridge.baseUrl, /^http:\/\/127\.0\.0\.1:\d+\/v1$/);
   assert.ok(bridge.token.length >= 32);
@@ -88,7 +100,7 @@ test('bridge returns complete text Responses SSE and sends only a nonstream mode
   assert.equal(result.at(-1).response.status, 'completed');
   assert.equal(result.at(-1).response.usage.total_tokens, 17);
   assert.deepEqual(requests[0].body, {
-    model: 'fixture-model', stream: false, messages: [{ role: 'system', content: 'Be helpful' }, { role: 'user', content: 'Hello' }],
+    model: 'fixture-model', stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: 'Be helpful' }, { role: 'user', content: 'Hello' }],
     temperature: 0.3, max_tokens: 50,
   });
   assert.equal(requests[0].path, '/v1/chat/completions');
@@ -434,4 +446,194 @@ test('health metrics use upstream response latency without disclosing request or
   assert.ok(metrics[1].latencyMs >= 0);
   assert.equal(metrics[0].id, metrics[1].id);
   assert.doesNotMatch(JSON.stringify(metrics), /private prompt|sk-fake/);
+});
+
+test('real upstream deltas reach Responses clients before upstream completion and preserve final usage', async t => {
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const metrics = [], usage = [], outcomes = [];
+  const { post, requests } = await setup(t, async (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: 'First ' }, finish_reason: null }] }) + '\n\n');
+    await held;
+    res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'second' }, finish_reason: 'stop' }] }) + '\n\n');
+    res.end('data: ' + JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 4, total_tokens: 24 } }) + '\n\ndata: [DONE]\n\n');
+  }, { onMetrics: event => metrics.push(event), requestHooks: { beforeRequest: async () => ({ maxOutputTokens: 8 }), onUsage: async event => usage.push(event), afterRequest: async event => outcomes.push(event) } });
+  let response;
+  try { response = await Promise.race([post({ input: 'private input', max_output_tokens: 99 }), delay(1000).then(() => { throw new Error('No streaming headers before upstream completion'); })]); }
+  catch (error) { release(); throw error; }
+  const reader = response.body.getReader(); let source = '';
+  try {
+    while (!source.includes('"delta":"First "')) {
+      const part = await Promise.race([reader.read(), delay(1000).then(() => { throw new Error('No incremental delta before completion'); })]);
+      assert.equal(part.done, false); source += new TextDecoder().decode(part.value);
+    }
+  } finally { release(); }
+  for (;;) { const part = await reader.read(); if (part.done) break; source += new TextDecoder().decode(part.value); }
+  const result = events(source);
+  assert.deepEqual(result.filter(event => event.type === 'response.output_text.delta').map(event => event.delta), ['First ', 'second']);
+  assert.equal(result.at(-1).response.output[0].content[0].text, 'First second');
+  assert.equal(result.at(-1).response.usage.total_tokens, 24);
+  assert.equal(requests[0].body.max_tokens, 8);
+  assert.deepEqual(metrics.map(event => event.phase), ['started', 'responding', 'succeeded']);
+  assert.ok(metrics.at(-1).totalLatencyMs >= metrics[1].firstTokenLatencyMs);
+  assert.equal(usage[0].estimated, false);
+  assert.equal(usage[0].outputTokens, 4);
+  assert.equal(outcomes[0].outcome, 'succeeded');
+  assert.equal(outcomes[0].id, usage[0].id);
+  assert.doesNotMatch(JSON.stringify(metrics), /private input|sk-fake/);
+});
+
+test('fragmented parallel tool calls preserve arguments and custom raw input', async t => {
+  const { post } = await setup(t, (_req, res) => {
+    const chunks = [
+      { choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call-f', type: 'function', function: { name: 'run', arguments: '{"value":' } }, { index: 1, id: 'call-c', type: 'function', function: { name: 'patch', arguments: '{"input":"line' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '5}' } }, { index: 1, function: { arguments: '\\nnext"}' } }] }, finish_reason: 'tool_calls' }] },
+      { choices: [], usage: { prompt_tokens: 10, completion_tokens: 9, total_tokens: 19 } },
+    ];
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(chunks.map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
+  });
+  const result = events(await (await post({ input: 'Use tools', tools: [{ type: 'function', name: 'run' }, { type: 'custom', name: 'patch' }] })).text());
+  const output = result.at(-1).response.output;
+  assert.equal(output[0].arguments, '{"value":5}');
+  assert.equal(output[1].input, 'line\nnext');
+  assert.equal(output[0].call_id, 'call-f');
+  assert.equal(output[1].call_id, 'call-c');
+  assert.deepEqual(result.filter(event => event.type === 'response.function_call_arguments.delta').map(event => event.delta), ['{"value":', '5}']);
+});
+
+test('unfinished and filtered tool streams emit failure without completed executable tool items', async t => {
+  for (const finish_reason of [null, 'length', 'content_filter']) {
+    const { post } = await setup(t, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'x', type: 'function', function: { name: 'run', arguments: '{}' } }] }, finish_reason }] }) + '\n\ndata: [DONE]\n\n');
+    });
+    const result = events(await (await post({ input: 'Tool', tools: [{ type: 'function', name: 'run' }] })).text());
+    assert.equal(result.at(-1).type, 'response.failed');
+    assert.ok(!result.some(event => event.type === 'response.output_item.done'));
+  }
+});
+
+test('budget exhaustion blocks outbound generation and missing usage settles admitted requests', async t => {
+  const { post, requests } = await setup(t, () => messageResult(), { requestHooks: { beforeRequest() { const error = new Error('secret budget diagnostics'); error.code = 'BUDGET_EXCEEDED'; throw error; } } });
+  const blocked = await post({ input: 'Hi' });
+  assert.equal(blocked.status, 429);
+  assert.doesNotMatch(await blocked.text(), /secret budget/);
+  assert.equal(requests.length, 0);
+  const after = [], usage = [];
+  const admitted = await setup(t, () => { const result = messageResult(); delete result.usage; return result; }, { requestHooks: { beforeRequest: async () => ({}), onUsage: event => usage.push(event), afterRequest: event => after.push(event) } });
+  await (await admitted.post({ input: 'Hi' })).text();
+  assert.equal(usage.length, 0);
+  assert.equal(after[0].outcome, 'succeeded');
+});
+
+test('budget duration bounds running bridge requests and accounting errors prevent completed streams', async t => {
+  const outcomes = [];
+  const bounded = await setup(t, () => undefined, { timeoutMs: 200, requestHooks: { beforeRequest: () => ({ timeoutMs: 30 }), afterRequest: event => outcomes.push(event) } });
+  const timeout = await bounded.post({ input: 'Wait' });
+  assert.equal(timeout.status, 504); await timeout.text();
+  assert.equal(outcomes[0].outcome, 'failed');
+  const failed = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"choices":[{"index":0,"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n');
+  }, { requestHooks: { beforeRequest: () => ({}), onUsage: () => { throw new Error('secret accounting failure'); }, afterRequest: event => outcomes.push(event) } });
+  const stream = events(await (await failed.post({ input: 'Hi' })).text());
+  assert.equal(stream.at(-1).type, 'response.failed');
+  assert.ok(!stream.some(event => event.type === 'response.completed'));
+  assert.doesNotMatch(JSON.stringify(stream.at(-1)), /secret accounting/);
+  assert.equal(outcomes.at(-1).outcome, 'failed');
+});
+
+test('upstream DONE completes generation even when its HTTP stream stays open', async t => {
+  const { post } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"choices":[{"index":0,"delta":{"content":"Finished"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  }, { timeoutMs: 80 });
+  const result = events(await (await post({ input: 'Finish' })).text());
+  assert.equal(result.at(-1).type, 'response.completed');
+});
+
+test('malformed provider token usage remains unknown instead of becoming a measured zero', async t => {
+  const usage = [], metrics = [];
+  const { post } = await setup(t, () => ({ ...messageResult(), usage: { prompt_tokens: -1, completion_tokens: '5', total_tokens: 7 } }), { requestHooks: { onUsage: event => usage.push(event) }, onMetrics: event => metrics.push(event) });
+  const result = await (await post({ input: 'Hi', stream: false })).json();
+  assert.equal(result.usage, null);
+  assert.equal(usage.length, 0);
+  assert.equal(metrics.at(-1).outputTokens, null);
+  assert.equal(metrics.at(-1).generationTokensPerSecond, null);
+});
+
+test('fragmented names that share a declared tool prefix cannot select the shorter tool early', async t => {
+  const { post } = await setup(t, (_req, res) => {
+    const chunks = [
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-prefix', type: 'function', function: { name: 'run', arguments: '' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { name: '_long', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+    ];
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(chunks.map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
+  });
+  const result = events(await (await post({ input: 'Tool', tools: [{ type: 'function', name: 'run' }, { type: 'function', name: 'run_long' }] })).text());
+  assert.equal(result.at(-1).type, 'response.completed');
+  assert.equal(result.at(-1).response.output[0].name, 'run_long');
+  assert.ok(!result.some(event => event.item?.name === 'run'));
+});
+
+test('streamed tools cannot complete before budget accounting accepts their reported usage', async t => {
+  const { post } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-budget","type":"function","function":{"name":"run","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n');
+  }, { requestHooks: { onUsage: () => { throw new Error('Accounting unavailable'); } } });
+  const result = events(await (await post({ input: 'Tool', tools: [{ type: 'function', name: 'run' }] })).text());
+  assert.equal(result.at(-1).type, 'response.failed');
+  assert.ok(!result.some(event => event.type === 'response.output_item.done'));
+  assert.ok(!result.some(event => event.type === 'response.function_call_arguments.done'));
+});
+
+test('tools-off bridge omits definitions and rejects rogue JSON function calls without executable events', async t => {
+  const { post, requests } = await setup(t, () => messageResult({ role: 'assistant', content: null, tool_calls: [{ id: 'rogue', type: 'function', function: { name: 'run', arguments: '{}' } }] }), { toolsAllowed: false });
+  const response = await post({ input: 'Reply using text only', tools: [{ type: 'function', name: 'run' }], tool_choice: { type: 'function', name: 'run' }, parallel_tool_calls: true });
+  const source = await response.text();
+  assert.equal(response.status, 502);
+  assert.ok(!source.includes('response.output_item.done'));
+  assert.ok(!Object.hasOwn(requests[0].body, 'tools'));
+  assert.ok(!Object.hasOwn(requests[0].body, 'tool_choice'));
+  assert.ok(!Object.hasOwn(requests[0].body, 'parallel_tool_calls'));
+});
+
+test('tools-off bridge rejects rogue streamed tool deltas before executable completion', async t => {
+  const { post, requests } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"rogue","type":"function","function":{"name":"run","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n');
+  }, { toolsAllowed: false });
+  const result = events(await (await post({ input: 'Text only', tools: [{ type: 'function', name: 'run' }] })).text());
+  assert.equal(result.at(-1).type, 'response.failed');
+  assert.ok(!result.some(event => event.type === 'response.output_item.done' || event.type === 'response.function_call_arguments.done'));
+  assert.ok(!Object.hasOwn(requests[0].body, 'tools'));
+});
+
+test('tools-off bridge accepts text and strips native hosted tool declarations before conversion', async t => {
+  const { post, requests } = await setup(t, () => messageResult(), { toolsAllowed: false });
+  const response = await post({ input: 'Text only', tools: [{ type: 'web_search' }], tool_choice: 'required' });
+  assert.equal(response.status, 200);
+  assert.equal(events(await response.text()).at(-1).response.status, 'completed');
+  assert.ok(!Object.hasOwn(requests[0].body, 'tools'));
+});
+
+test('bridge allowlist filters exact wire names and reports the advertised catalog without definitions', async t => {
+  const { post, requests, bridge } = await setup(t, () => messageResult(), { toolAllowlist: ['named__run'] });
+  await (await post({ input: 'Text', tools: [{ type: 'function', name: 'other', description: 'private description' }, { type: 'namespace', name: 'named', tools: [{ type: 'function', name: 'run', parameters: { type: 'object', properties: { secret: { type: 'string' } } } }] }], tool_choice: { type: 'function', name: 'other' } })).text();
+  assert.deepEqual(requests[0].body.tools.map(tool => tool.function.name), ['named__run']);
+  assert.ok(!Object.hasOwn(requests[0].body, 'tool_choice'));
+  assert.deepEqual(bridge.getToolCatalog(), ['named__run', 'other']);
+  assert.doesNotMatch(JSON.stringify(bridge.getToolCatalog()), /private description|secret/);
+});
+
+test('bridge allowlist rejects a rogue excluded function while accepting allowed calls', async t => {
+  for (const name of ['allowed', 'excluded']) {
+    const { post } = await setup(t, () => messageResult({ role: 'assistant', content: null, tool_calls: [{ id: 'call-policy', type: 'function', function: { name, arguments: '{}' } }] }), { toolAllowlist: ['allowed'] });
+    const response = await post({ input: 'Tool', tools: [{ type: 'function', name: 'allowed' }, { type: 'function', name: 'excluded' }] });
+    const source = await response.text();
+    if (name === 'allowed') assert.equal(events(source).at(-1).response.output[0].name, 'allowed');
+    else { assert.equal(response.status, 502); assert.ok(!source.includes('response.output_item.done')); }
+  }
 });

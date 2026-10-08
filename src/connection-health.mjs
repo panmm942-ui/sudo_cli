@@ -24,12 +24,17 @@ export function createConnectionHealth({ clock = () => performance.now(), histor
     lastTime = Math.max(lastTime, value);
     return lastTime;
   };
-  const finish = (id, success, suppliedLatency) => {
+  const finish = (id, success, options = {}) => {
     if (!requests.has(id)) return false;
     const request = requests.get(id);
     requests.delete(id);
-    const latencyMs = finiteLatency(suppliedLatency) ? suppliedLatency : request.respondedLatency ?? now() - request.started;
-    history.push({ latencyMs, score: success ? latencyScore(latencyMs) : 0 });
+    const totalLatencyMs = finiteLatency(options.totalLatencyMs) ? options.totalLatencyMs : now() - request.started;
+    const firstTokenLatencyMs = finiteLatency(options.firstTokenLatencyMs) ? options.firstTokenLatencyMs : request.respondedLatency;
+    const latencyMs = finiteLatency(options.latencyMs) ? options.latencyMs : firstTokenLatencyMs ?? totalLatencyMs;
+    const generationMs = firstTokenLatencyMs === null ? null : totalLatencyMs - firstTokenLatencyMs;
+    const outputTokens = Number.isSafeInteger(options.outputTokens) && options.outputTokens >= 0 ? options.outputTokens : null;
+    const generationTokensPerSecond = Number.isFinite(options.generationTokensPerSecond) && options.generationTokensPerSecond >= 0 ? options.generationTokensPerSecond : outputTokens !== null && generationMs > 0 ? outputTokens * 1000 / generationMs : null;
+    history.push({ latencyMs, firstTokenLatencyMs, totalLatencyMs, generationTokensPerSecond, success, score: success ? latencyScore(latencyMs) : 0 });
     if (history.length > historySize) history.shift();
     return true;
   };
@@ -40,14 +45,14 @@ export function createConnectionHealth({ clock = () => performance.now(), histor
       requests.set(id, { started: now(), respondedLatency: null });
       return true;
     },
-    requestResponding(id, { latencyMs } = {}) {
+    requestResponding(id, { latencyMs, firstTokenLatencyMs } = {}) {
       const request = requests.get(id);
       if (!request || request.respondedLatency !== null) return false;
-      request.respondedLatency = finiteLatency(latencyMs) ? latencyMs : now() - request.started;
+      request.respondedLatency = finiteLatency(firstTokenLatencyMs) ? firstTokenLatencyMs : finiteLatency(latencyMs) ? latencyMs : now() - request.started;
       return true;
     },
-    requestSucceeded(id, { latencyMs } = {}) { return finish(id, true, latencyMs); },
-    requestFailed(id) { return finish(id, false); },
+    requestSucceeded(id, options = {}) { return finish(id, true, options); },
+    requestFailed(id, options = {}) { return finish(id, false, options); },
     requestCancelled(id) { return requests.delete(id); },
     snapshot() {
       const time = now();
@@ -69,10 +74,20 @@ export function createConnectionHealth({ clock = () => performance.now(), histor
         source = 'pending-latency-estimate';
       }
       percent = percent === null ? null : Math.round(percent);
+      const successes = history.filter(sample => sample.success);
+      const latest = successes.at(-1);
+      const failures = history.length - successes.length;
+      const average = key => { const values = successes.map(sample => sample[key]).filter(value => value !== null); return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null; };
       return {
         percent, label: percent === null ? 'Unmeasured' : percent > 70 ? 'Good' : percent > 50 ? 'Fair' : 'Poor',
         latencyMs: pendingLatency ?? (responding.length ? Math.max(...responding) : history.at(-1)?.latencyMs ?? null),
         pending, active: requests.size, samples: history.length, source,
+        firstTokenLatencyMs: responding.length ? Math.max(...responding) : latest?.firstTokenLatencyMs ?? null,
+        totalLatencyMs: latest?.totalLatencyMs ?? null,
+        generationTokensPerSecond: latest?.generationTokensPerSecond ?? null,
+        averageFirstTokenLatencyMs: average('firstTokenLatencyMs'), averageTotalLatencyMs: average('totalLatencyMs'),
+        averageGenerationTokensPerSecond: average('generationTokensPerSecond'),
+        failures, errorRate: history.length ? failures / history.length : null,
       };
     },
   };

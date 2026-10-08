@@ -21,7 +21,7 @@ function sanitize(input) {
   const name = validName(input.name);
   // Copy metadata explicitly. Never pass a connection's apiKey or arbitrary fields
   // to JSON serialization, including nested values from callers.
-  const connection = validateConnection({ model: input.model, transport: input.transport, baseUrl: input.baseUrl, apiKeyEnv: input.apiKeyEnv, contextWindow: input.contextWindow });
+  const connection = validateConnection({ model: input.model, transport: input.transport, baseUrl: input.baseUrl, apiKeyEnv: input.apiKeyEnv, contextWindow: input.contextWindow,capabilities:input.capabilities });
   const profile = { name, ...connection };
   if (input.supportedEfforts !== undefined) {
     if (!Array.isArray(input.supportedEfforts) || input.supportedEfforts.length > 32 || input.supportedEfforts.some(value => typeof value !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(value))) throw new Error('Supported effort capabilities must be a bounded list of simple identifiers.');

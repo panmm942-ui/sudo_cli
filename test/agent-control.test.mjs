@@ -98,6 +98,34 @@ test('worker configuration rejects implicit permission toggles and unsafe lifecy
   assert.throws(() => validateAgentConfig({ ...config, wake: { url: 'https://example.com/wake', apiKey: 'private-secret\r\nheader' } }), error => !error.message.includes('private-secret'));
   assert.throws(() => validateAgentConfig({ ...config, localDeveloperInstructions: '\u001bunsafe local preference' }), /instructions/i);
 });
+
+test('worker validation binds capabilities to each connection and retains scoped tool and folder permissions', async t => {
+  const { validateAgentConfig } = await import('../src/agent-control.mjs');
+  const base = { baseUrl: 'http://localhost:1234/v1', model: 'local', transport: 'chat-completions' };
+  const root = await directory(t);
+  const settings = { capabilities: { tools: false, reasoning: false }, toolAllowlist: ['first.run'], writableRoots: [root] };
+  const value = validateAgentConfig({ localConnection: base, cloudConnection: { ...base, model: 'cloud', capabilities: { tools: true } }, settings });
+  assert.deepEqual(value.localConnection.capabilities, {}, 'local unknown support must not inherit cloud settings');
+  assert.deepEqual(value.cloudConnection.capabilities, { tools: true }, 'connection declarations take precedence');
+  assert.deepEqual(value.settings.capabilities, { tools: true });
+  assert.deepEqual(value.settings.toolAllowlist, ['first.run']);
+  assert.deepEqual(value.settings.writableRoots, [root]);
+  settings.toolAllowlist.push('second.run');
+  assert.deepEqual(value.settings.toolAllowlist, ['first.run']);
+  for (const settings of [{ toolAllowlist: ['run', 'run'] }, { toolAllowlist: 'run' }, { writableRoots: ['relative'] }, { capabilities: { reasoning: false }, effort: 'high' }]) assert.throws(() => validateAgentConfig({ localConnection: base, cloudConnection: base, settings }), /permission|folder|reasoning/i);
+});
+
+test('worker validation preserves only explicit bounded acceptance check fields', async () => {
+  const { validateAgentConfig } = await import('../src/agent-control.mjs');
+  const base = { baseUrl: 'http://localhost:1234/v1', model: 'local', transport: 'chat-completions' };
+  const checks = [{ shellCommand: 'npm test\nnode --version', label: 'project tests', privateKey: 'discard-this' }, { command: process.execPath, args: ['--version'], label: 'runtime', env: { secret: 'discard-this' } }];
+  const config = { localConnection: base, cloudConnection: base, settings: { checks } };
+  const value = validateAgentConfig(config);
+  assert.deepEqual(value.settings.checks, [{ shellCommand: checks[0].shellCommand, label: 'project tests' }, { command: process.execPath, args: ['--version'], label: 'runtime' }]);
+  checks[1].args.push('changed');
+  assert.deepEqual(value.settings.checks[1].args, ['--version']);
+  for (const checks of [Array(17).fill({ shellCommand: 'true' }), [{ shellCommand: 'x'.repeat(32769) }], [{ shellCommand: '🙂'.repeat(17000) }], [{ shellCommand: 'true', command: 'false' }], [{ command: 'node', args: ['bad\0argument'] }], [{ shellCommand: 'true', label: 'x'.repeat(201) }]]) assert.throws(() => validateAgentConfig({ ...config, settings: { checks } }), /check/i);
+});
 test('native elevated detached worker remains idle, authenticates control, refuses duplicates, and stops cleanly', { skip: process.platform === 'win32' || process.geteuid?.() !== 0 }, async t => {
   const { startAgentWorker, getAgentWorker, stopAgentWorker } = await import('../src/agent-control.mjs');
   const cwd = await mkdtemp(join(tmpdir(), 'codexcli-agent-idle-test-')), stateDir = join(cwd, 'state');
@@ -151,7 +179,11 @@ test('detached worker survives its launching process and processes an explicit t
   const inbox = await createTaskInbox({ cwd, stateDir });
   const job = await inbox.submit({ prompt: 'Run the fixture explanation task.', source: 'user' });
   await waitFor(async () => (await inbox.get(job.id)).status === 'completed');
-  assert.equal((await inbox.get(job.id)).result, 'Fixture background task completed.');
+  const completion=await inbox.get(job.id);
+  assert.match(completion.result,/^Fixture background task completed\.\n\nAcceptance: Needs review\. Checkpoint: [a-f0-9-]{36}\.$/);
+  const {createWorkspaceTools}=await import('../src/workspace-tools.mjs');
+  const checkpoints=await (await createWorkspaceTools({cwd,stateDir})).listCheckpoints();
+  assert.ok(checkpoints.some(checkpoint=>completion.result.endsWith(`Checkpoint: ${checkpoint.id}.`)&&checkpoint.status==='completed'));
   assert.deepEqual(requests.map(request => request.model), ['guardian-fixture', 'working-fixture']);
   assert.ok(JSON.stringify(requests[0].messages).includes('Guardian-specific preference'));
   assert.ok(!JSON.stringify(requests[0].messages).includes('Working-model preference'));
@@ -185,12 +217,13 @@ test('detached native approval requests are declined and block the job instead o
   const result = await inbox.get(job.id);
   assert.equal(toolRequested, true);
   assert.equal(result.status, 'blocked');
-  assert.match(result.reason, /permission approval/i);
+  assert.match(result.reason, /(?:permission.*approval|approval.*permission)/i);
   await assert.rejects(readFile(join(cwd, 'permission-proof.txt')), error => error.code === 'ENOENT');
   failAfterDenial = true;
   const interrupted = await inbox.submit({ prompt: 'Perform the failing-after-denial fixture only.', source: 'user' });
   await waitFor(async () => ['blocked', 'failed', 'completed'].includes((await inbox.get(interrupted.id)).status), 15000);
   const afterFailure = await inbox.get(interrupted.id);
   assert.equal(afterFailure.status, 'blocked');
-  assert.match(afterFailure.reason, /permission approval/i);
+  assert.match(afterFailure.reason, /(?:permission.*approval|approval.*permission)/i);
+  await assert.rejects(readFile(join(cwd, 'permission-proof.txt')), error => error.code === 'ENOENT');
 });

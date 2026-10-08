@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { once } from 'node:events';
+import { createToolPolicy } from './provider-capabilities.mjs';
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_HISTORY_CALLS = 1024;
@@ -163,14 +164,20 @@ function messages(body, reasoning, byLogical) {
   return out;
 }
 
-function modelRequest(body, model, reasoning) {
+function modelRequest(body, model, reasoning, toolsAllowed = true) {
   if (!record(body)) invalid('The request must be a JSON object.');
+  if (!toolsAllowed) {
+    body = { ...body };
+    const adapterTools = tools => Array.isArray(tools) ? tools.flatMap(tool => tool?.type === 'namespace' ? [{ ...tool, tools: adapterTools(tool.tools) ?? [] }] : ['function', 'custom'].includes(tool?.type) ? [tool] : []) : undefined;
+    body.tools = adapterTools(body.tools);
+    delete body.tool_choice; delete body.parallel_tool_calls;
+  }
   const selectedModel = body.model === undefined ? model : body.model;
   if (!validModel(selectedModel)) invalid('Model must be a nonempty identifier without control characters.');
   if (body.previous_response_id) invalid('previous_response_id is unsupported; send the complete input history.');
   if (body.stream !== undefined && typeof body.stream !== 'boolean') invalid('stream must be a boolean.');
   const { tools, custom, byFlat, byLogical } = convertTools(body.tools);
-  const request = { model: selectedModel, stream: false, messages: messages(body, reasoning, byLogical) };
+  const request = { model: selectedModel, stream: body.stream === true, ...(body.stream === true ? { stream_options: { include_usage: true } } : {}), messages: messages(body, reasoning, byLogical) };
   if (body.reasoning !== undefined) {
     if (!record(body.reasoning)) invalid('reasoning must be an object.');
     const effort = body.reasoning.effort;
@@ -209,10 +216,12 @@ function modelRequest(body, model, reasoning) {
   return { request, custom, toolNames: byFlat };
 }
 
-function completedResponse(upstream, model, custom, toolNames, reasoning) {
+function completedResponse(upstream, model, custom, toolNames, reasoning, toolsAllowed = true, toolPolicy) {
   const message = upstream?.choices?.[0]?.message;
   const malformed = () => { throw new BridgeError(502, 'The model returned an unsupported or malformed Chat Completions response.', 'upstream_error'); };
   if (!record(message) || message.role !== 'assistant') malformed();
+  if (!toolsAllowed && (message.tool_calls?.length || message.function_call)) throw new BridgeError(502, 'The model returned a tool call while tool use is disabled.', 'tools_disabled');
+  if (Array.isArray(message.tool_calls)) for (const call of message.tool_calls) toolPolicy?.assertItem({ type: 'function_call', name: call?.function?.name });
   if (upstream.choices[0].finish_reason === 'length') throw new BridgeError(502, 'The model output was truncated. Increase its output token limit and retry.', 'upstream_incomplete');
   if (upstream.choices[0].finish_reason === 'content_filter') throw new BridgeError(502, 'The model endpoint filtered the response.', 'upstream_incomplete');
   const output = [];
@@ -239,19 +248,20 @@ function completedResponse(upstream, model, custom, toolNames, reasoning) {
   }
   if (!output.length) output.push({ id: `msg_${randomUUID()}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: message.content ?? message.refusal ?? '', annotations: [] }] });
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
-  const inputTokens = count(upstream.usage?.prompt_tokens);
-  const outputTokens = count(upstream.usage?.completion_tokens);
+  const measured = actualUsage(upstream.usage, 'chat-completions');
+  const inputTokens = measured?.inputTokens;
+  const outputTokens = measured?.outputTokens;
   return {
     id: `resp_${randomUUID()}`, object: 'response', created_at: Math.floor(Date.now() / 1000), status: 'completed',
     model, output, error: null, incomplete_details: null,
-    usage: { input_tokens: inputTokens, input_tokens_details: { cached_tokens: count(upstream.usage?.prompt_tokens_details?.cached_tokens) },
+    usage: measured ? { input_tokens: inputTokens, input_tokens_details: { cached_tokens: count(upstream.usage?.prompt_tokens_details?.cached_tokens) },
       output_tokens: outputTokens, output_tokens_details: { reasoning_tokens: count(upstream.usage?.completion_tokens_details?.reasoning_tokens) },
-      total_tokens: count(upstream.usage?.total_tokens) || inputTokens + outputTokens },
+      total_tokens: measured.totalTokens } : null,
   };
 }
 
-// The upstream result is buffered. Protocol events preserve the Responses event
-// order required by Codex, but do not imply token-by-token upstream generation.
+// Compatible providers may ignore stream and return JSON. Keep that fallback
+// explicit; real event streams are translated incrementally below.
 function sendSse(res, response) {
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' });
   let sequence = 0;
@@ -285,8 +295,162 @@ function sendSse(res, response) {
   res.end();
 }
 
+function sseWriter(res, model) {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' });
+  let sequence = 0;
+  const pending = { id: `resp_${randomUUID()}`, object: 'response', created_at: Math.floor(Date.now() / 1000), model, status: 'in_progress', output: [], error: null, incomplete_details: null, usage: null };
+  const emit = (type, value) => {
+    if (res.destroyed || res.writableEnded) throw new BridgeError(502, 'The model stream was interrupted.', 'upstream_error');
+    if (res.writableLength > MAX_BODY_BYTES) throw new BridgeError(502, 'The model stream exceeded the output buffer limit.', 'upstream_error');
+    res.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...value })}\n\n`);
+  };
+  emit('response.created', { response: pending }); emit('response.in_progress', { response: pending });
+  return { pending, emit, fail(error) {
+    if (!res.destroyed && !res.writableEnded) { emit('response.failed', { response: { ...pending, status: 'failed', error: { code: error.code, message: error.message } } }); res.end(); }
+  } };
+}
+
+/** Translate Chat deltas before completion. Tool completion follows full validation. */
+async function readChatStream(upstream, res, model, custom, toolNames, reasoning, responding, toolsAllowed = true, toolPolicy) {
+  const writer = sseWriter(res, model);
+  const message = { role: 'assistant', content: '', reasoning_content: '' };
+  const calls = new Map(), items = [];
+  let textItem, finishReason, usage, ended = false, bytes = 0;
+  const malformed = () => { throw new BridgeError(502, 'The model returned an unsupported or malformed Chat Completions stream.', 'upstream_error'); };
+  const ensureText = () => {
+    if (textItem) return textItem;
+    textItem = { id: `msg_${randomUUID()}`, type: 'message', role: 'assistant', status: 'in_progress', content: [] };
+    const output_index = items.length; items.push({ kind: 'message', item: textItem, output_index });
+    writer.emit('response.output_item.added', { output_index, item: textItem });
+    writer.emit('response.content_part.added', { item_id: textItem.id, output_index, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
+    return textItem;
+  };
+  const publishCall = call => {
+    const identity = toolNames.get(call.function.name);
+    if (!identity || !call.id || custom.has(call.function.name)) return;
+    if (toolPolicy && !toolPolicy.allows(call.function.name)) return;
+    // A streamed name can still be a prefix of a different declared tool.
+    // Hold ambiguous identity until completion rather than exposing the wrong tool.
+    if (!call.item && [...toolNames.keys()].some(name => name !== call.function.name && name.startsWith(call.function.name))) return;
+    if (call.publishedName && call.publishedName !== call.function.name) malformed();
+    if (!call.item) {
+      call.publishedName = call.function.name;
+      call.item = { id: `fc_${randomUUID()}`, type: 'function_call', status: 'in_progress', call_id: call.id, name: identity.name, ...(identity.namespace ? { namespace: identity.namespace } : {}), arguments: '' };
+      call.output_index = items.length; items.push({ kind: 'call', call, item: call.item, output_index: call.output_index });
+      writer.emit('response.output_item.added', { output_index: call.output_index, item: call.item });
+    }
+    const delta = call.function.arguments.slice(call.emittedArguments);
+    if (delta) { writer.emit('response.function_call_arguments.delta', { item_id: call.item.id, output_index: call.output_index, delta }); call.emittedArguments = call.function.arguments.length; }
+  };
+  const inspect = data => {
+    if (data === '[DONE]') { ended = true; return; }
+    if (ended) malformed();
+    let event; try { event = JSON.parse(data); } catch { malformed(); }
+    if (!record(event) || event.error || !Array.isArray(event.choices)) malformed();
+    if (record(event.usage)) usage = event.usage;
+    for (const choice of event.choices) {
+      if (choice.index !== 0 || !record(choice.delta)) malformed();
+      const delta = choice.delta;
+      if (!toolsAllowed && (delta.tool_calls?.length || delta.function_call)) throw new BridgeError(502, 'The model returned a tool call while tool use is disabled.', 'tools_disabled');
+      if (delta.role !== undefined && delta.role !== 'assistant') malformed();
+      for (const key of ['content', 'refusal', 'reasoning_content']) {
+        if (delta[key] !== undefined && delta[key] !== null && typeof delta[key] !== 'string') malformed();
+      }
+      const text = delta.content || delta.refusal || '';
+      if (text) {
+        responding(); const item = ensureText(); message.content += text;
+        writer.emit('response.output_text.delta', { item_id: item.id, output_index: items.find(entry => entry.item === item).output_index, content_index: 0, delta: text });
+      }
+      if (delta.reasoning_content) { responding(); message.reasoning_content += delta.reasoning_content; }
+      if (delta.tool_calls !== undefined) {
+        if (!Array.isArray(delta.tool_calls)) malformed();
+        for (const part of delta.tool_calls) {
+          if (!record(part) || !Number.isSafeInteger(part.index) || part.index < 0 || part.index >= 1024 || (part.type !== undefined && part.type !== 'function') || (part.function !== undefined && !record(part.function))) malformed();
+          let call = calls.get(part.index);
+          if (!call) { call = { id: '', type: 'function', function: { name: '', arguments: '' }, emittedArguments: 0 }; calls.set(part.index, call); }
+          if (part.id !== undefined) { if (typeof part.id !== 'string' || !part.id || (call.id && call.id !== part.id)) malformed(); call.id = part.id; }
+          for (const key of ['name', 'arguments']) if (part.function?.[key] !== undefined) { if (typeof part.function[key] !== 'string') malformed(); call.function[key] += part.function[key]; }
+          if (part.function?.arguments) responding();
+          publishCall(call);
+        }
+      }
+      if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+        if (finishReason !== undefined || !['stop', 'tool_calls', 'length', 'content_filter'].includes(choice.finish_reason)) malformed();
+        finishReason = choice.finish_reason;
+      }
+    }
+  };
+  const decoder = new TextDecoder(); let line = '', dataLines = [];
+  const lineReady = raw => {
+    const value = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (!value) { if (dataLines.length) inspect(dataLines.join('\n')); dataLines = []; }
+    else if (value.startsWith('data:')) dataLines.push(value.slice(5).replace(/^ /, ''));
+  };
+  const consume = text => {
+    line += text;
+    for (;;) { const newline = line.indexOf('\n'); if (newline < 0) break; lineReady(line.slice(0, newline)); line = line.slice(newline + 1); }
+  };
+  try {
+    for await (const chunk of upstream.body ?? []) {
+      bytes += chunk.length; if (bytes > MAX_BODY_BYTES) throw new BridgeError(502, 'Model response exceeds the 16 MiB bridge limit.', 'upstream_error');
+      consume(decoder.decode(chunk, { stream: true }));
+      // DONE terminates generation even if a compatible server keeps its socket open.
+      if (ended) break;
+    }
+    consume(decoder.decode()); if (line) lineReady(line); lineReady('');
+    if (!finishReason) malformed();
+    message.tool_calls = [...calls.entries()].sort(([a], [b]) => a - b).map(([_index, call]) => ({ id: call.id, type: call.type, function: call.function }));
+    if (!message.tool_calls.length) delete message.tool_calls;
+    const response = completedResponse({ choices: [{ message, finish_reason: finishReason }], usage }, model, custom, toolNames, reasoning, toolsAllowed, toolPolicy);
+    // Validate the entire result before any executable completed tool event.
+    const finalItems = [], finalEvents = [];
+    const emitFinal = (type, value) => finalEvents.push([type, value]);
+    for (const entry of items) {
+      let final;
+      if (entry.kind === 'message') {
+        final = response.output.find(item => item.type === 'message'); final.id = entry.item.id;
+        const part = final.content[0], position = { item_id: final.id, output_index: entry.output_index, content_index: 0 };
+        emitFinal('response.output_text.done', { ...position, text: part.text }); emitFinal('response.content_part.done', { ...position, part });
+      } else {
+        final = response.output.find(item => item.call_id === entry.call.id); final.id = entry.item.id;
+        emitFinal('response.function_call_arguments.done', { item_id: final.id, output_index: entry.output_index, arguments: final.arguments });
+      }
+      emitFinal('response.output_item.done', { output_index: entry.output_index, item: final }); finalItems.push(final);
+    }
+    for (const final of response.output.filter(item => !finalItems.includes(item))) {
+      const output_index = finalItems.length;
+      if (final.type === 'custom_tool_call') {
+        emitFinal('response.output_item.added', { output_index, item: { ...final, input: '' } });
+        emitFinal('response.custom_tool_call_input.delta', { item_id: final.id, output_index, delta: final.input });
+        emitFinal('response.custom_tool_call_input.done', { item_id: final.id, output_index, input: final.input });
+      } else if (final.type === 'function_call') {
+        emitFinal('response.output_item.added', { output_index, item: { ...final, status: 'in_progress', arguments: '' } });
+        emitFinal('response.function_call_arguments.delta', { item_id: final.id, output_index, delta: final.arguments });
+        emitFinal('response.function_call_arguments.done', { item_id: final.id, output_index, arguments: final.arguments });
+      } else {
+        emitFinal('response.output_item.added', { output_index, item: { ...final, status: 'in_progress', content: [] } });
+        const position = { item_id: final.id, output_index, content_index: 0 }, part = final.content[0];
+        emitFinal('response.content_part.added', { ...position, part: { ...part, text: '' } });
+        emitFinal('response.output_text.done', { ...position, text: part.text }); emitFinal('response.content_part.done', { ...position, part });
+      }
+      emitFinal('response.output_item.done', { output_index, item: final }); finalItems.push(final);
+    }
+    // The caller settles budget usage before exposing completed executable items.
+    writer.flushFinal = () => { for (const [type, value] of finalEvents) writer.emit(type, value); };
+    return { response: { ...response, id: writer.pending.id, created_at: writer.pending.created_at, output: finalItems }, writer, usage };
+  } catch (error) { error.streamWriter = writer; throw error; }
+}
+
+function actualUsage(usage, style) {
+  if (!record(usage)) return null;
+  const inputTokens = usage[style === 'chat-completions' ? 'prompt_tokens' : 'input_tokens'];
+  const outputTokens = usage[style === 'chat-completions' ? 'completion_tokens' : 'output_tokens'];
+  if (![inputTokens, outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)) return null;
+  return { inputTokens, outputTokens, totalTokens: Number.isSafeInteger(usage.total_tokens) && usage.total_tokens >= 0 ? usage.total_tokens : inputTokens + outputTokens, estimated: false };
+}
+
 function sendJson(res, status, body, headers = {}) {
-  if (res.destroyed || res.writableEnded) return;
+  if (res.destroyed || res.writableEnded || res.headersSent) return;
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
   res.end(JSON.stringify(body));
 }
@@ -326,15 +490,18 @@ async function readUpstream(response) {
 }
 
 /** Start a private, authenticated Responses-to-Chat-Completions adapter. */
-export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000, onMetrics = () => {} } = {}) {
+export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,streaming=true, toolsAllowed = true, toolAllowlist, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
   const url = endpoint(baseUrl);
   if (!validModel(model)) throw new Error('A nonempty model identifier without control characters is required.');
   if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || /[\r\n]/.test(apiKey))) throw new Error('If provided, the API key must be a nonempty string without line breaks.');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new Error('timeoutMs must be a positive integer within the timer range.');
+  createToolPolicy({ toolsAllowed, toolAllowlist });
+  if (typeof onPolicyError !== 'function') throw new Error('The model policy callback must be a function.');
   const token = randomBytes(32).toString('hex');
   const expectedAuth = Buffer.from(`Bearer ${token}`);
   const reasoning = new Map();
   const controllers = new Set();
+  let latestToolCatalog = [];
   const server = createServer(async (req, res) => {
     if (req.url === '/health' && req.method === 'GET') return sendJson(res, 200, { status: 'ok' });
     if (req.url !== '/v1/responses') return sendJson(res, 404, { error: { message: 'Endpoint not found.', type: 'invalid_request_error' } });
@@ -346,17 +513,49 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000, 
     const abort = () => { if (!res.writableEnded) controller.abort(); };
     req.once('aborted', abort);
     res.once('close', abort);
-    let timedOut = false;
-    let requestId, started;
-    const metric = (phase) => { if (requestId) { try { onMetrics({ phase, id: requestId, latencyMs: performance.now() - started, source: 'buffered-chat-response' }); } catch { /* Metrics cannot interrupt the transport. */ } } };
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-    timer.unref();
+    let timedOut = false, admitted = false, settled = false, hookFailure = false, metricsStarted = false;
+    let requestId, started, firstLatency, reportedUsage, selectedModel = model, streamWriter, streamed = false;
+    const metric = (phase) => {
+      if (requestId && metricsStarted) {
+        const totalLatencyMs = performance.now() - started;
+        const generationMs = firstLatency == null ? null : totalLatencyMs - firstLatency;
+        try { onMetrics({ phase, id: requestId, latencyMs: firstLatency ?? totalLatencyMs, firstTokenLatencyMs: firstLatency ?? null,
+          totalLatencyMs, outputTokens: reportedUsage?.outputTokens ?? null,
+          generationTokensPerSecond: reportedUsage && generationMs > 0 ? reportedUsage.outputTokens * 1000 / generationMs : null,
+          source: streamed ? 'streamed-chat-first-output' : 'buffered-chat-response' }); } catch { /* Metrics cannot interrupt the transport. */ }
+      }
+    };
+    let timer;
+    const setDeadline = duration => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; controller.abort(); }, duration); timer.unref(); };
+    setDeadline(timeoutMs);
+    const settle = async outcome => {
+      if (!admitted || settled) return;
+      settled = true;
+      try { await afterRequest?.({ id: requestId, model: selectedModel, transport: 'chat-completions', outcome, durationMs: performance.now() - started }); }
+      catch (error) { hookFailure = true; throw error; }
+    };
     try {
       if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') throw new BridgeError(415, 'Compressed request bodies are unsupported.');
       const body = await readRequest(req);
-      const { request, custom, toolNames } = modelRequest(body, model, reasoning);
+      const { request: preparedRequest, custom, toolNames } = modelRequest(body, model, reasoning, toolsAllowed);
+      const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist });
+      const request = toolPolicy.filterRequest(preparedRequest, { format: 'chat-completions' });
+      if(!streaming){request.stream=false;delete request.stream_options;}
+      latestToolCatalog = toolPolicy.getToolCatalog().filter(name => !apiKey || !name.includes(apiKey));
       if (controller.signal.aborted) throw new Error('Aborted');
-      requestId = randomUUID(); started = performance.now(); metric('started');
+      requestId = randomUUID(); selectedModel = request.model; started = performance.now();
+      let reservation;
+      try { reservation = await beforeRequest?.({ id: requestId, model: request.model, transport: 'chat-completions', inputTokensEstimate: Math.ceil(Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') / 3), maxOutputTokens: request.max_tokens, estimated: true }); }
+      catch (error) { hookFailure = true; throw error; }
+      admitted = true;
+      if (reservation?.maxOutputTokens !== undefined) {
+        if (!Number.isSafeInteger(reservation.maxOutputTokens) || reservation.maxOutputTokens < 1) { hookFailure = true; throw new Error('Invalid request budget cap.'); }
+        request.max_tokens = Math.min(request.max_tokens ?? reservation.maxOutputTokens, reservation.maxOutputTokens);
+      }
+      if (reservation?.timeoutMs !== undefined && (!Number.isSafeInteger(reservation.timeoutMs) || reservation.timeoutMs < 1)) { hookFailure = true; throw new Error('Invalid request budget duration.'); }
+      setDeadline(Math.min(timeoutMs, reservation?.timeoutMs ?? timeoutMs));
+      if (controller.signal.aborted) throw new Error('Aborted');
+      metricsStarted = true; started = performance.now(); metric('started');
       const upstream = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...(apiKey === undefined ? {} : { authorization: `Bearer ${apiKey}` }) }, body: JSON.stringify(request), signal: controller.signal, redirect: 'error' });
       if (!upstream.ok) {
         await upstream.body?.cancel();
@@ -364,15 +563,43 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000, 
         const retryAfter = upstream.headers.get('retry-after');
         throw new BridgeError(status, `Model endpoint returned HTTP ${upstream.status}.`, 'upstream_error', retryAfter && /^\d{1,8}$/.test(retryAfter) ? { 'retry-after': retryAfter } : {});
       }
-      const response = completedResponse(await readUpstream(upstream), request.model, custom, toolNames, reasoning);
+      let response;
+      if (body.stream === true && /text\/event-stream/i.test(upstream.headers.get('content-type') ?? '')) {
+        streamed = true;
+        const result = await readChatStream(upstream, res, request.model, custom, toolNames, reasoning, () => {
+          if (firstLatency == null) { firstLatency = performance.now() - started; metric('responding'); }
+        }, toolsAllowed, toolPolicy);
+        response = result.response; streamWriter = result.writer; reportedUsage = actualUsage(result.usage, 'chat-completions');
+      } else {
+        const result = await readUpstream(upstream);
+        response = completedResponse(result, request.model, custom, toolNames, reasoning, toolsAllowed, toolPolicy);
+        reportedUsage = actualUsage(result.usage, 'chat-completions');
+      }
+      if (reportedUsage) {
+        try { await onUsage?.({ id: requestId, model: request.model, transport: 'chat-completions', ...reportedUsage }); }
+        catch (error) { hookFailure = true; throw error; }
+      }
+      await settle('succeeded');
       metric('succeeded');
       if (res.destroyed) return;
-      if (body.stream === true) sendSse(res, response);
+      if (streamWriter) { streamWriter.flushFinal(); streamWriter.emit('response.completed', { response }); res.end(); }
+      else if (body.stream === true) sendSse(res, response);
       else sendJson(res, 200, response);
     } catch (error) {
-      metric(controller.signal.aborted && !timedOut ? 'cancelled' : 'failed');
-      const failure = timedOut ? new BridgeError(504, 'Model request timed out.', 'upstream_timeout') : error instanceof BridgeError ? error : new BridgeError(502, 'Unable to reach the model endpoint.', 'upstream_error');
-      sendJson(res, failure.status, { error: { message: failure.message, type: failure.code, code: failure.code } }, failure.headers);
+      const outcome = controller.signal.aborted && !timedOut ? 'cancelled' : 'failed';
+      try { await settle(outcome); } catch { hookFailure = true; }
+      metric(outcome);
+      const policyCode = String(error?.code).toUpperCase();
+      if (['TOOLS_DISABLED', 'TOOL_NOT_ALLOWED'].includes(policyCode)) {
+        try { Promise.resolve(onPolicyError({ code: policyCode, message: 'The model returned a tool call outside the configured tool permissions.' })).catch(() => {}); } catch { /* The provider response remains rejected even if notification fails. */ }
+      }
+      const failure = timedOut ? new BridgeError(504, 'Model request timed out.', 'upstream_timeout')
+        : hookFailure ? new BridgeError(String(error?.code).toUpperCase() === 'BUDGET_EXCEEDED' ? 429 : 503, String(error?.code).toUpperCase() === 'BUDGET_EXCEEDED' ? 'The configured model budget is exhausted.' : 'The model budget could not be verified.', 'budget_error')
+        : ['TOOLS_DISABLED', 'TOOL_NOT_ALLOWED'].includes(policyCode) ? new BridgeError(502, 'The model returned a tool call outside the configured tool permissions.', 'tool_policy_error')
+        : error instanceof BridgeError ? error : new BridgeError(502, 'Unable to reach the model endpoint.', 'upstream_error');
+      const writer = streamWriter ?? error?.streamWriter;
+      if (writer) writer.fail(failure);
+      else sendJson(res, failure.status, { error: { message: failure.message, type: failure.code, code: failure.code } }, failure.headers);
     } finally {
       clearTimeout(timer);
       controllers.delete(controller);
@@ -387,6 +614,7 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000, 
   let closing;
   return {
     baseUrl: `http://127.0.0.1:${server.address().port}/v1`, token,
+    getToolCatalog: () => [...latestToolCatalog],
     close() {
       if (!closing) {
         for (const controller of controllers) controller.abort();

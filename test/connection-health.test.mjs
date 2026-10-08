@@ -116,3 +116,16 @@ test('a partial stream failure counts once even after a healthy first response',
   assert.equal(health.snapshot().active, 0);
   assert.equal(health.requestFailed('stream'), false);
 });
+
+test('measured metrics distinguish first output, full latency, errors and provider token speed', () => {
+  let now = 0; const health = createConnectionHealth({ clock: () => now });
+  health.requestStarted('one'); now = 100; health.requestResponding('one', { firstTokenLatencyMs: 100 });
+  now = 1100; health.requestSucceeded('one', { firstTokenLatencyMs: 100, totalLatencyMs: 1100, outputTokens: 20 });
+  health.requestStarted('bad'); now = 1200; health.requestFailed('bad');
+  const result = health.snapshot();
+  assert.equal(result.firstTokenLatencyMs, 100);
+  assert.equal(result.totalLatencyMs, 1100);
+  assert.equal(result.generationTokensPerSecond, 20);
+  assert.equal(result.errorRate, 0.5);
+  assert.equal(result.failures, 1);
+});

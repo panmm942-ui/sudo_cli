@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { VERSION } from './version.mjs';
 import { validateRuntimeOptions, validateReasoningEffort, validateSupportedEfforts } from './runtime.mjs';
+import {permissionPolicy,approvalWithinScope} from './permission-scope.mjs';
 
 const MAX_LINE_CHARS = 8 * 1024 * 1024;
 const isTurn = (turn) => typeof turn?.id === 'string' && turn.id.length > 0 && Array.isArray(turn.items)
@@ -61,14 +62,14 @@ function pageOptions({ cursor, limit } = {}) {
 export async function createEngine({
   codexPath = 'codex', cwd = process.cwd(), model, providerArgs = [],
   env = process.env, onEvent = () => {}, onApproval = async () => false,
-  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false, supportedEfforts, developerInstructions, signal,
+  requestTimeoutMs = 30_000, permissions = 'ask', webAccess = false, scope,writableRoots=[], supportedEfforts, developerInstructions, signal,
 } = {}) {
   signal?.throwIfAborted();
   if(developerInstructions !== undefined && (typeof developerInstructions!=='string' || Buffer.byteLength(developerInstructions)>65536 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(developerInstructions)))throw new Error('Developer instructions must be text within 64 KiB.');
   const choices = validateRuntimeOptions({ permissions, webAccess });
   const modelEfforts = validateSupportedEfforts(supportedEfforts);
-  const approvalPolicy = choices.permissions === 'ask' ? 'on-request' : 'never';
-  const sandbox = choices.permissions === 'ask' ? 'workspace-write' : 'danger-full-access';
+  const policy=permissionPolicy({...choices,scope:scope|| (permissions==='allow-everything'?'full':'project'),writableRoots});
+  const {approvalPolicy,sandbox}=policy;
   let runtimePolicy;
   let instructionSources = [];
   const command = Array.isArray(codexPath) ? codexPath : [codexPath];
@@ -143,8 +144,10 @@ export async function createEngine({
     const legacy = method === 'execCommandApproval' || method === 'applyPatchApproval';
     let result;
     if (modern || legacy || method === 'item/permissions/requestApproval') {
-      let approved = choices.permissions === 'allow-everything';
-      if (!approved) {
+      const inScope=approvalWithinScope({method,params},{...policy,cwd});
+      if(!inScope)try{onEvent({method:'sudo/policyDenied',params:{method}});}catch{}
+      let approved = inScope && choices.permissions === 'allow-everything';
+      if (!approved && inScope) {
         try { approved = (await onApproval({ method, params })) === true; } catch { /* Failed UI means decline. */ }
       }
       if (modern) result = { decision: approved ? 'accept' : 'decline' };
@@ -242,23 +245,24 @@ export async function createEngine({
       capabilities: { experimentalApi: true, explicitGatewayOauth: true },
     });
     send({ method: 'initialized', params: {} });
-    const config = { 'sandbox_workspace_write.network_access': choices.webAccess };
+    const config = { 'sandbox_workspace_write.network_access': policy.networkAccess };
+    if(policy.writableRoots.length)config['sandbox_workspace_write.writable_roots']=policy.writableRoots;
     // The host process must still reach the selected model API. This disables
     // hosted web capabilities and restricts sandboxed commands, not API traffic.
-    if (!choices.webAccess) config.web_search = 'disabled';
+    if (!policy.networkAccess) config.web_search = 'disabled';
     const result = await request('thread/start', { cwd, model, ephemeral: true, approvalPolicy, approvalsReviewer: 'user', sandbox, config, ...(developerInstructions ? {developerInstructions} : {}) });
     if (typeof result?.thread?.id !== 'string' || !result.thread.id) throw new Error('Codex app-server returned an invalid thread response.');
     if (result.thread.ephemeral !== true) throw new Error('Codex app-server must support ephemeral threads. Update Codex and retry.');
     const actual = result.sandbox;
-    const validSandbox = choices.permissions === 'allow-everything' ? actual?.type === 'dangerFullAccess'
-      : ['workspaceWrite', 'readOnly'].includes(actual?.type);
+    const validSandbox = policy.unrestricted ? actual?.type === 'dangerFullAccess'
+      : policy.sandbox==='read-only'?actual?.type==='readOnly':['workspaceWrite', 'readOnly'].includes(actual?.type);
     if (result.approvalPolicy !== approvalPolicy || !validSandbox) throw new Error('Codex engine did not apply the requested permission policy.');
-    if (choices.permissions === 'ask' && (typeof actual.networkAccess !== 'boolean'
-      || (actual.type === 'workspaceWrite' && actual.networkAccess !== choices.webAccess)
+    if (!policy.unrestricted && (typeof actual.networkAccess !== 'boolean'
+      || (actual.type === 'workspaceWrite' && actual.networkAccess !== policy.networkAccess)
       || (actual.type === 'readOnly' && actual.networkAccess))) throw new Error('Codex engine did not apply the requested network policy.');
     // Windows without sandbox setup can return a stricter read-only policy.
     // Expose that actual policy instead of silently claiming workspace access.
-    runtimePolicy = { ...choices, approvalPolicy: result.approvalPolicy, sandbox: { ...actual } };
+    runtimePolicy = { ...choices,scope:policy.scope,networkEnforced:!policy.unrestricted,approvalPolicy: result.approvalPolicy, sandbox: { ...actual } };
     instructionSources = Array.isArray(result.instructionSources) ? result.instructionSources.filter(identifier) : [];
     threadId = result.thread.id;
   } catch (error) { await close(); throw error; }

@@ -1,5 +1,9 @@
 # sudo cli progress
 
+Current release: **0.6.0**. All 22 approved roadmap areas now have concrete implementations. See [feature evidence and dependencies](v0.6-feature-evidence.md), [user guide](user-guide.md), [native terminal acceptance](v0.6-terminal-evidence.md), and [final release verification](verification-v0.6.md).
+
+The notes below describe the historical 0.2 build, not the current feature set.
+
 Scope: custom terminal CLI using open-source Codex engine; runtime-only setup; no ChatGPT changes. Version 0.2 adds Linux/macOS launch and runtime setup plus a live ASCII dashboard.
 Ruling: replaced initial saved-profile/native-TUI design with in-memory wizard and isolated app-server, per explicit user clarification.
 Ruling: reuse app-server through its documented protocol rather than compiling duplicate Rust engine; source/license are documented.

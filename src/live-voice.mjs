@@ -175,7 +175,8 @@ export function splitSpeechText(text) {
 }
 
 /** Continuous microphone -> local VAD -> compatible ASR -> coding engine callback, with interruptible TTS. */
-export function createLiveVoice({ transcription, speech, device, platform = process.platform, onTranscript = () => {}, onSpeechStart = () => {}, onState = () => {}, onError = () => {}, captureCommand, playbackCommand, signal, timeoutMs = 60000, vad = {} } = {}) {
+export function createLiveVoice({ transcription, speech, device, platform = process.platform, onTranscript = () => {}, onSpeechStart = () => {}, onState = () => {}, onError = () => {}, captureCommand, playbackCommand, signal, timeoutMs = 60000, vad = {},echoMode='headphones' } = {}) {
+  if(!['headphones','speaker'].includes(echoMode))throw new Error('Voice echo mode must be headphones or speaker.');
   const asr = validateService(transcription), tts = validateService(speech);
   if (!asr.model || !tts.model) throw new Error('Live voice requires configured transcription and speech models.');
   const voice = speech?.voice ?? 'alloy';
@@ -188,7 +189,7 @@ export function createLiveVoice({ transcription, speech, device, platform = proc
   let recorder, player, sessionController, speechController, transcriptionTask, speechTask, stopping;
   let lastState = '';
   function snapshot() {
-    return { running, listening, hearing, transcribing, speaking, queuedPhrases: pendingPhrase ? 1 : 0, droppedPhrases, transcribedPhrases, status: !running ? 'Stopped' : hearing ? 'Hearing' : speaking ? 'Speaking' : transcribing ? 'Transcribing' : 'Listening' };
+    return { running, listening, hearing, transcribing, speaking,echoMode, queuedPhrases: pendingPhrase ? 1 : 0, droppedPhrases, transcribedPhrases, status: !running ? 'Stopped' : hearing ? 'Hearing' : speaking ? 'Speaking' : transcribing ? 'Transcribing' : 'Listening' };
   }
   function report(error) { try { Promise.resolve(onError(error)).catch(() => {}); } catch { /* UI error handlers cannot terminate capture. */ } }
   function changed() {
@@ -254,7 +255,7 @@ export function createLiveVoice({ transcription, speech, device, platform = proc
     recorder = launch(capture, captureArgs, true);
     const handle = recorder;
     handle.child.stdout.on('data', chunk => {
-      if (running && generation === epoch) {
+      if (running && generation === epoch && !(echoMode==='speaker'&&speaking)) {
         try { segmenter.feed(chunk); } catch { report(new Error('Live microphone audio could not be processed.')); void stop(); }
       }
     });
@@ -319,7 +320,7 @@ export function createLiveVoice({ transcription, speech, device, platform = proc
     const chunks = splitSpeechText(text);
     if (!chunks.length) return { interrupted: false, spokenCharacters: 0 };
     interruptSpeech();
-    speechController = new AbortController(); speaking = true; changed();
+    speechController = new AbortController(); speaking = true;if(echoMode==='speaker'){segmenter.reset();hearing=false;}changed();
     const selected = speechController;
     speechTask = streamSpeech(text, sessionController, selected);
     return speechTask;

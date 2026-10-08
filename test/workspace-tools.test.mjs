@@ -1,0 +1,189 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+async function fixture(t, options = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'codexcli-workspace-test-'));
+  const cwd = join(root, 'project'); await mkdir(cwd);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { createWorkspaceTools } = await import('../src/workspace-tools.mjs');
+  return { root, cwd, stateDir: join(root, 'state'), workspace: await createWorkspaceTools({ cwd, stateDir: join(root, 'state'), ...options }) };
+}
+
+test('checkpoint survives reopening and undo restores changed/deleted files and removes only recorded new files', async t => {
+  const { cwd, stateDir, workspace } = await fixture(t);
+  await writeFile(join(cwd, 'changed.txt'), 'before\n');
+  await writeFile(join(cwd, 'deleted.txt'), 'keep\n');
+  const { id } = await workspace.beginCheckpoint('task');
+  await writeFile(join(cwd, 'changed.txt'), 'after\n');
+  await rm(join(cwd, 'deleted.txt'));
+  await writeFile(join(cwd, 'new.txt'), 'new\n');
+  await workspace.completeCheckpoint(id);
+  const { createWorkspaceTools } = await import('../src/workspace-tools.mjs');
+  const reopened = await createWorkspaceTools({ cwd, stateDir });
+  assert.equal((await reopened.listCheckpoints())[0].id, id);
+  const changes = await reopened.reviewCheckpoint(id);
+  assert.deepEqual(changes.changes.map(item => [item.path, item.kind]), [['changed.txt', 'modified'], ['deleted.txt', 'deleted'], ['new.txt', 'added']]);
+  assert.match(changes.diff, /before/);
+  assert.match(changes.diff, /after/);
+  const result = await reopened.undoCheckpoint(id);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'before\n');
+  assert.equal(await readFile(join(cwd, 'deleted.txt'), 'utf8'), 'keep\n');
+  assert.deepEqual((await readdir(cwd)).sort(), ['changed.txt', 'deleted.txt']);
+});
+
+test('undo preserves intervening human edits and human-created replacements', async t => {
+  const { cwd, workspace } = await fixture(t);
+  await writeFile(join(cwd, 'one.txt'), 'before'); await writeFile(join(cwd, 'two.txt'), 'before');
+  const { id } = await workspace.beginCheckpoint();
+  await writeFile(join(cwd, 'one.txt'), 'AI'); await rm(join(cwd, 'two.txt'));
+  await workspace.completeCheckpoint(id);
+  await writeFile(join(cwd, 'one.txt'), 'human'); await writeFile(join(cwd, 'two.txt'), 'replacement');
+  const undone = await workspace.undoCheckpoint(id);
+  assert.deepEqual(undone.conflicts.map(item => item.path), ['one.txt', 'two.txt']);
+  assert.equal(await readFile(join(cwd, 'one.txt'), 'utf8'), 'human');
+  assert.equal(await readFile(join(cwd, 'two.txt'), 'utf8'), 'replacement');
+});
+
+test('checkpoints exclude selected state inside the project, secrets and runtime folders', async t => {
+  const { root, cwd } = await fixture(t);
+  for (const folder of ['runtime', '.git', 'secrets']) { await mkdir(join(cwd, folder)); await writeFile(join(cwd, folder, 'x.txt'), 'private'); }
+  await writeFile(join(cwd, '.env'), 'API_KEY=private'); await writeFile(join(cwd, 'key.pem'), 'private');
+  const { createWorkspaceTools } = await import('../src/workspace-tools.mjs');
+  const workspace = await createWorkspaceTools({ cwd, stateDir: join(cwd, 'custom-state') });
+  const { id } = await workspace.beginCheckpoint(); await writeFile(join(cwd, 'good.txt'), 'ok'); await workspace.completeCheckpoint(id);
+  assert.deepEqual((await workspace.reviewCheckpoint(id)).changes.map(item => item.path), ['good.txt']);
+  assert.ok(root);
+});
+
+test('checkpoint bounds and redacted diff report skipped oversized files without storing them', async t => {
+  const { cwd, workspace } = await fixture(t, { maxFileBytes: 128, secrets: () => ['synthetic-private-token'] });
+  await writeFile(join(cwd, 'big.txt'), 'x'.repeat(129));
+  await writeFile(join(cwd, 'code.js'), 'let value=1;');
+  const { id } = await workspace.beginCheckpoint();
+  await writeFile(join(cwd, 'code.js'), 'let value="synthetic-private-token";'); await workspace.completeCheckpoint(id);
+  const result = await workspace.reviewCheckpoint(id);
+  assert.equal(result.partial, true);
+  assert.ok(result.skipped.some(item => item.path === 'big.txt'));
+  assert.ok(!result.diff.includes('synthetic-private-token'));
+});
+
+test('symlink entries cannot be checkpointed or restored over a replaced parent directory', async t => {
+  const { root, cwd, workspace } = await fixture(t);
+  await mkdir(join(cwd, 'nested')); await writeFile(join(cwd, 'nested', 'file.txt'), 'before');
+  await mkdir(join(root, 'outside')); await writeFile(join(root, 'outside', 'file.txt'), 'outside');
+  const { id } = await workspace.beginCheckpoint(); await writeFile(join(cwd, 'nested', 'file.txt'), 'after'); await workspace.completeCheckpoint(id);
+  await rm(join(cwd, 'nested'), { recursive: true });
+  try { await symlink(join(root, 'outside'), join(cwd, 'nested'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('Symbolic links require host support'); return; } throw error; }
+  const result = await workspace.undoCheckpoint(id);
+  assert.equal(result.conflicts[0].path, 'nested/file.txt');
+  assert.equal(await readFile(join(root, 'outside', 'file.txt'), 'utf8'), 'outside');
+});
+
+test('explicit real checks record stdout stderr and failed exit without trusting completion text', async t => {
+  const { workspace } = await fixture(t);
+  const result = await workspace.acceptWork({ checks: [{ command: process.execPath, args: ['-e', 'console.log("verified by model"); console.error("failure");process.exit(7)'] }] });
+  assert.equal(result.status, 'Failed'); assert.equal(result.verified, false);
+  assert.equal(result.checks[0].exitCode, 7); assert.match(result.checks[0].stdout, /verified by model/); assert.match(result.checks[0].stderr, /failure/);
+  assert.equal((await workspace.acceptWork({ checks: [] })).status, 'Needs review');
+  assert.equal((await workspace.acceptWork({ checks: [{ command: process.execPath, args: ['-e', 'console.log("actual check")'] }] })).status, 'Verified');
+});
+
+test('checks bound duration output and cancellation and never call shell for argv checks', async t => {
+  const { cwd, workspace } = await fixture(t);
+  const timed = await workspace.runChecks([{ command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'] }], { timeoutMs: 80 });
+  assert.equal(timed[0].status, 'timed-out');
+  const limited = await workspace.runChecks([{ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(20000))'] }], { maxOutputBytes: 1024 });
+  assert.equal(limited[0].status, 'output-limit'); assert.ok(Buffer.byteLength(limited[0].stdout) <= 1024);
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 80); t.after(() => clearTimeout(timer));
+  const cancelled = await workspace.runChecks([{ command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'] }], { signal: controller.signal });
+  assert.equal(cancelled[0].status, 'cancelled');
+  const literal = await workspace.runChecks([{ command: process.execPath, args: ['-e', 'console.log(process.argv[1])', 'literal; touch dangerous'] }]);
+  assert.match(literal[0].stdout, /literal; touch dangerous/); assert.deepEqual(await readdir(cwd), []);
+});
+
+test('explicit shellCommand checks execute the selected text and invalid requests fail before spawning', async t => {
+  const { workspace } = await fixture(t);
+  const command = process.platform === 'win32' ? 'Write-Output "literal-check"' : 'printf "literal-check"';
+  assert.equal((await workspace.runChecks([{ shellCommand: command }]))[0].status, 'passed');
+  await assert.rejects(workspace.runChecks([{ command: process.execPath, args: [], shellCommand: command }]), /check/i);
+  await assert.rejects(workspace.runChecks(new Array(17).fill({ command: process.execPath, args: [] })), /check/i);
+});
+
+test('isolated source snapshots exclude private files and clean only owned copies', async t => {
+  const { root, cwd } = await fixture(t);
+  await mkdir(join(cwd, 'src')); await writeFile(join(cwd, 'src', 'file.mjs'), 'export const value=1;'); await writeFile(join(cwd, '.env'), 'private');
+  const { createWorkspaceSnapshot } = await import('../src/workspace-tools.mjs');
+  const snapshot = await createWorkspaceSnapshot({ cwd, baseDir: join(root, 'copies') });
+  assert.notEqual(snapshot.cwd, cwd); assert.equal(snapshot.files.length, 1); assert.equal(await readFile(join(snapshot.cwd, 'src', 'file.mjs'), 'utf8'), 'export const value=1;');
+  await snapshot.cleanup(); assert.deepEqual(await readdir(join(root, 'copies')), []); assert.equal(await readFile(join(cwd, '.env'), 'utf8'), 'private');
+});
+
+test('timeout terminates a selected check subprocess tree including descendants holding output pipes', { timeout: 5000 }, async t => {
+  const { workspace } = await fixture(t);
+  const script = 'const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","inherit","inherit"]});console.log(c.pid);setInterval(()=>{},1000)';
+  const result = await workspace.runChecks([{ command: process.execPath, args: ['-e', script] }], { timeoutMs: 200 });
+  assert.equal(result[0].status, 'timed-out');
+  const pid = Number(result[0].stdout.trim()); assert.ok(pid > 0); assert.throws(() => process.kill(pid, 0));
+});
+
+test('untrusted checkpoint record paths are rejected before changing project files', async t => {
+  const { cwd, stateDir, workspace } = await fixture(t);
+  await writeFile(join(cwd, 'code.js'), 'before'); const { id } = await workspace.beginCheckpoint(); await writeFile(join(cwd, 'code.js'), 'after'); await workspace.completeCheckpoint(id);
+  const projects = await readdir(join(stateDir, 'workspace-checkpoints')); const path = join(stateDir, 'workspace-checkpoints', projects[0], `${id}.json`);
+  const record = JSON.parse(await readFile(path, 'utf8')); record.before.files[0].path = 'code.js:secret';
+  await writeFile(path, JSON.stringify(record));
+  await assert.rejects(workspace.undoCheckpoint(id), /invalid/i);
+  assert.equal(await readFile(join(cwd, 'code.js'), 'utf8'), 'after');
+});
+
+test('partial global scans never misclassify omitted existing files as deletions', async t => {
+  const { cwd, workspace } = await fixture(t, { maxFiles: 1 });
+  await writeFile(join(cwd, 'a.js'), 'before'); const { id } = await workspace.beginCheckpoint();
+  await writeFile(join(cwd, 'b.js'), 'new'); await workspace.completeCheckpoint(id);
+  const review = await workspace.reviewCheckpoint(id); assert.equal(review.partial, true);
+  const undo = await workspace.undoCheckpoint(id); assert.equal(undo.restored.length, 0);
+  assert.equal(await readFile(join(cwd, 'a.js'), 'utf8'), 'before'); assert.equal(await readFile(join(cwd, 'b.js'), 'utf8'), 'new');
+});
+
+test('model snapshots neutralize automatic instruction files and mark binary omissions', async t => {
+  const { root, cwd } = await fixture(t);
+  await writeFile(join(cwd, 'AGENTS.md'), 'Instruction content is source data.'); await writeFile(join(cwd, 'binary.bin'), Buffer.from([1, 0, 2]));
+  const { createWorkspaceSnapshot } = await import('../src/workspace-tools.mjs');
+  const snapshot = await createWorkspaceSnapshot({ cwd, baseDir: join(root, 'copies') });
+  assert.ok(!snapshot.files.includes('AGENTS.md')); assert.equal(snapshot.partial, true);
+  assert.ok(snapshot.skipped.some(item => item.path === 'binary.bin')); await snapshot.cleanup();
+  await assert.rejects(createWorkspaceSnapshot({ cwd, baseDir: join(cwd, 'copies') }), /outside|project/i);
+});
+
+test('verification becomes Needs review when selected checks change source and saved evidence is invalidated by later edits', async t => {
+  const { cwd, stateDir, workspace } = await fixture(t);
+  await writeFile(join(cwd, 'code.txt'), 'before'); const { id } = await workspace.beginCheckpoint(); await writeFile(join(cwd, 'code.txt'), 'AI'); await workspace.completeCheckpoint(id);
+  const changed = await workspace.acceptWork({ checkpointId: id, checks: [{ command: process.execPath, args: ['-e', 'require("node:fs").writeFileSync("code.txt","during-check")'] }] });
+  assert.equal(changed.checks[0].status, 'passed'); assert.equal(changed.status, 'Needs review'); assert.equal(changed.workspaceChanged, true);
+  const passed = await workspace.acceptWork({ checkpointId: id, checks: [{ command: process.execPath, args: ['-e', 'console.log("check passed")'] }] }); assert.equal(passed.status, 'Verified');
+  const { createWorkspaceTools } = await import('../src/workspace-tools.mjs'); const reopened = await createWorkspaceTools({ cwd, stateDir });
+  assert.equal((await reopened.getVerification(id)).status, 'Verified');
+  await writeFile(join(cwd, 'code.txt'), 'human-later');
+  assert.equal((await reopened.getVerification(id)).status, 'Needs review');
+});
+
+test('storage parent symbolic replacement cannot redirect a resumed checkpoint operation', async t => {
+  const { root, cwd, stateDir, workspace } = await fixture(t);
+  await writeFile(join(cwd, 'a.js'), 'before'); const { id } = await workspace.beginCheckpoint();
+  const storage = join(stateDir, 'workspace-checkpoints'); const moved = join(root, 'original-checkpoints');
+  const { rename } = await import('node:fs/promises'); await rename(storage, moved);
+  try { await symlink(moved, storage, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') { t.skip('Symbolic links require host support'); return; } throw error; }
+  await assert.rejects(workspace.completeCheckpoint(id), /storage|symbolic|changed/i);
+});
+
+test('credential redaction cannot amplify captured check output past its byte bound', async t => {
+  const { workspace } = await fixture(t, { secrets: () => ['x'] });
+  const [result] = await workspace.runChecks([{ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(20))'] }], { maxOutputBytes: 64 });
+  assert.equal(result.status, 'output-limit'); assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 64); assert.ok(!result.stdout.includes('x'));
+});

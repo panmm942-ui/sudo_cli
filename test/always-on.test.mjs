@@ -74,7 +74,7 @@ test('stop aborts a running worker and leaves its task blocked for explicit reco
     signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }, { once: true });
   }) });
   await agent.start(); const job = await agent.submit({ prompt: 'Long task' });
-  await until(async () => (await inbox.get(job.id)).status === 'running');
+  await until(() => agent.snapshot().state === 'working');
   await agent.stop();
   assert.equal(aborted, true);
   assert.equal((await inbox.get(job.id)).status, 'blocked');
@@ -151,4 +151,70 @@ test('a local completion decision requires a nonempty result instead of silently
   await agent.start(); const job = await agent.submit({ prompt: 'Task' });
   await until(async () => (await inbox.get(job.id)).status === 'blocked');
   assert.match((await inbox.get(job.id)).reason, /invalid decision/i);
+});
+
+test('GPU acknowledgements leave coordinator power and billing unknown while verified status is displayed', async t => {
+  const { agent, inbox } = await fixture(t, { assess: async () => ({ action: 'cloud' }), wake: async () => ({ ok: true }), sleep: async () => ({ ok: true }), runCloud: async () => 'Done' });
+  await agent.start(); const job = await agent.submit('Work');
+  await until(async () => (await inbox.get(job.id)).status === 'completed');
+  assert.equal(agent.snapshot().cloudState, 'unknown');
+  assert.equal(agent.snapshot().cloudBilling, 'unknown');
+  const verified = await fixture(t, { assess: async () => ({ action: 'cloud' }), wake: async () => ({ verified: true, state: 'running', billing: 'active' }), sleep: async () => ({ verified: true, state: 'stopped', billing: 'storage-only' }), runCloud: async () => 'Done' });
+  await verified.agent.start(); const other = await verified.agent.submit('Work');
+  await until(async () => (await verified.inbox.get(other.id)).status === 'completed');
+  await until(() => verified.agent.snapshot().cloudState === 'asleep');
+  assert.equal(verified.agent.snapshot().cloudBilling, 'storage-only');
+});
+
+test('coordinator closes task budget lifecycle after a provider failure', async t => {
+  const lifecycle = [];
+  const { agent, inbox } = await fixture(t, { assess: async () => ({ action: 'cloud' }), runCloud: async () => { throw new Error('Provider failed'); }, beginTask: async id => lifecycle.push(`begin:${id}`), endTask: async id => lifecycle.push(`end:${id}`) });
+  await agent.start(); const job = await agent.submit('Work');
+  await until(async () => (await inbox.get(job.id)).status === 'failed');
+  await until(() => lifecycle.length === 2);
+  assert.deepEqual(lifecycle, [`begin:${job.id}`, `end:${job.id}`]);
+});
+
+test('coordinator ticks durable schedules without idle model requests', async t => {
+  let assessments = 0;
+  const { agent, inbox } = await fixture(t, { assess: async () => { assessments++; return { action: 'local', result: 'Scheduled task completed' }; }, runCloud: async () => assert.fail('Local scheduled work should not use cloud') });
+  const { createScheduler } = await import('../src/scheduler.mjs');
+  const scheduler = await createScheduler({ inbox });
+  const scheduled = createAlwaysOn({ inbox, scheduler, pollMs: 10, idleSleepMs: 40, assess: async () => { assessments++; return { action: 'local', result: 'Scheduled task completed' }; }, runCloud: async () => assert.fail('Cloud should remain idle') });
+  t.after(() => scheduled.stop());
+  await scheduler.add({ id: 'scheduled-proof', prompt: 'Explicit local work', at: Date.now() + 40 });
+  await scheduled.start();
+  await until(async () => (await inbox.list())[0]?.status === 'completed');
+  await delay(50); assert.equal(assessments, 1);
+});
+
+test('stop between durable running status and dispatch prevents an already cancelled cloud call', async t => {
+  let calls = 0, stopping;
+  const { agent, inbox } = await fixture(t, { assess: async () => ({ action: 'cloud' }), runCloud: async () => { calls++; return 'Unexpected dispatch'; } });
+  const update = inbox.update;
+  inbox.update = async (id, patch) => { const result = await update(id, patch); if (patch.status === 'running') stopping = agent.stop(); return result; };
+  await agent.start(); const job = await agent.submit('Work');
+  await until(() => stopping !== undefined); await stopping;
+  assert.equal(calls, 0);
+  assert.equal((await inbox.get(job.id)).status, 'blocked');
+});
+
+test('whole task duration budget interrupts native work between provider requests', { timeout: 3000 }, async t => {
+  const { agent, inbox } = await fixture(t, { beginTask: async () => ({ timeoutMs: 100 }), endTask: async () => {}, assess: async () => ({ action: 'cloud' }), runCloud: async (_job, { signal }) => new Promise((resolve, reject) => { if (signal.aborted) reject(signal.reason); else signal.addEventListener('abort', () => reject(signal.reason), { once: true }); }) });
+  await agent.start(); const job = await agent.submit('Bounded native work');
+  await until(async () => (await inbox.get(job.id)).status === 'blocked', 1500);
+  await until(() => agent.snapshot().state === 'idle');
+  assert.match((await inbox.get(job.id)).reason, /duration|budget/i);
+});
+test('durable background completion waits for acceptance and records its failure',async t=>{
+  let checking=false,release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  t.after(()=>release());
+  const {agent,inbox}=await fixture(t,{assess:async()=>({action:'local',result:'Model claims success.'}),runCloud:async()=>assert.fail('Local completion should not call cloud'),onTaskResult:async(_job,patch)=>{checking=true;await gate;return {...patch,status:'failed',reason:'Selected acceptance check failed.'};}});
+  try{
+    await agent.start();const job=await agent.submit('Check the actual work');
+    await until(()=>checking);assert.notEqual((await inbox.get(job.id)).status,'completed');
+    release();await until(async()=>(await inbox.get(job.id)).status==='failed');
+    assert.equal(agent.snapshot().completed,0);assert.match((await inbox.get(job.id)).reason,/acceptance check failed/);
+  }finally{release();}
 });

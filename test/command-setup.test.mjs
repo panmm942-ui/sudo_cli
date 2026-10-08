@@ -189,7 +189,7 @@ test('Unix first setup command-only completes registration end to end in a tempo
   await mkdir(join(fixtureData.projectRoot, 'scripts'));
   await mkdir(join(fixtureData.projectRoot, 'src'));
   await mkdir(join(fixtureData.projectRoot, 'runtime'));
-  for (const file of ['command-setup.mjs', 'local-engine.mjs', 'runtime.mjs', 'platforms.mjs']) {
+  for (const file of ['command-setup.mjs', 'local-engine.mjs', 'runtime.mjs', 'platforms.mjs','permission-scope.mjs']) {
     await copyFile(fileURLToPath(new URL(`../src/${file}`, import.meta.url)), join(fixtureData.projectRoot, 'src', file));
   }
   await copyFile(fileURLToPath(new URL('../scripts/setup.mjs', import.meta.url)), join(fixtureData.projectRoot, 'scripts', 'setup.mjs'));

@@ -1,27 +1,63 @@
 name: Native terminal CLI verification
+
 on:
   push:
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Explicit supported labels, checked against GitHub's runner reference:
+        # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+        include:
+          - os: ubuntu-24.04
+            platform: Linux
+            arch: x64
+          - os: ubuntu-24.04-arm
+            platform: Linux
+            arch: arm64
+          - os: windows-2025
+            platform: Windows
+            arch: x64
+          - os: windows-11-arm
+            platform: Windows
+            arch: arm64
+          - os: macos-15-intel
+            platform: macOS
+            arch: x64
+          - os: macos-15
+            platform: macOS
+            arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          architecture: ${{ matrix.arch }}
+          package-manager-cache: false
+      - name: Confirm native architecture
+        run: node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Unexpected runner architecture'); console.log(process.platform, process.arch, process.version)"
       - name: Install the pinned project-local native engine
         run: node scripts/setup-runtime.mjs
-      - name: Verify engine startup
+      - name: Verify native engine startup without a model call
         run: node bin/sudocli.mjs doctor
-      - name: Test real engine and local model fixtures
+      - name: Test Windows admission, real engine and local fixtures
         if: runner.os == 'Windows'
-        run: node --test
-      - name: Test Unix root admission and real CLI sessions
+        run: node --test --test-concurrency=4
+      - name: Test Unix root admission, real engine and local fixtures
         if: runner.os != 'Windows'
-        run: sudo -E "$(command -v node)" --test
+        run: sudo -E "$(command -v node)" --test --test-concurrency=4
+      - name: Exercise actual Linux PTY acceptance with loopback provider
+        if: runner.os == 'Linux'
+        run: sudo -E python3 -B test/manual/verify-v0.6-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6-terminal-proof"

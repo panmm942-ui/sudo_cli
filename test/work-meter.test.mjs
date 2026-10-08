@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, writeFile, open, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -75,6 +75,62 @@ test('simultaneous instances preserve both sessions instead of overwriting lifet
   assert.equal(two.snapshot().totalMs, 4000);
   const third = await meterFor(t, { stateDir, checkpointMs: 0 });
   assert.equal(third.snapshot().totalMs, 4000);
+});
+
+test('a temporary Windows record reader does not fail the atomic duration checkpoint', { skip: process.platform !== 'win32' }, async (t) => {
+  const stateDir = await directory(t);
+  let now = 0;
+  const meter = await meterFor(t, { stateDir, sessionId: 'reader', clock: () => now, checkpointMs: 0 });
+  meter.start(); now = 1200; meter.pause();
+  const path = join(stateDir, 'session-reader.json'), probe = join(stateDir, 'held-reader.tmp');
+  const reader = await open(path, 'r');
+  let release;
+  try {
+    await writeFile(probe, '{"version":1,"activeMs":0}');
+    await assert.rejects(rename(probe, path), error => error.code === 'EPERM' && error.syscall === 'rename');
+    await rm(probe);
+    release = setTimeout(() => { void reader.close(); }, 80);
+    await meter.flush();
+    assert.equal(meter.snapshot().storageStatus, 'ok');
+    assert.equal(meter.snapshot().persistedMs, 1200);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, activeMs: 1200 });
+    assert.ok((await readdir(stateDir)).every(name => name.endsWith('.json')));
+  } finally { clearTimeout(release); await reader.close(); }
+});
+
+test('a persistent Windows reader fails within a bounded time and preserves the prior numeric checkpoint', { skip: process.platform !== 'win32', timeout: 4000 }, async (t) => {
+  const stateDir = await directory(t);
+  let now = 0;
+  const meter = await meterFor(t, { stateDir, sessionId: 'locked', clock: () => now, checkpointMs: 0 });
+  meter.start(); now = 2300; meter.pause();
+  const path = join(stateDir, 'session-locked.json'), reader = await open(path, 'r');
+  try {
+    await assert.rejects(meter.flush(), error => error.message === 'Unable to save active work duration.' && error.cause?.code === 'EPERM' && error.cause?.syscall === 'rename');
+    assert.equal(meter.snapshot().storageStatus, 'error');
+    assert.equal(meter.snapshot().sessionMs, 2300);
+    assert.equal(meter.snapshot().persistedMs, 0);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, activeMs: 0 });
+    assert.ok((await readdir(stateDir)).every(name => name.endsWith('.json')));
+  } finally { await reader.close(); }
+  await meter.flush();
+  assert.equal(meter.snapshot().persistedMs, 2300);
+  assert.equal(meter.snapshot().storageStatus, 'ok');
+});
+
+test('concurrent checkpoints retain all distinct session values under repeated reader replacement', async (t) => {
+  const stateDir = await directory(t);
+  let now = 0;
+  const sessions = await Promise.all(Array.from({ length: 12 }, (_, index) => meterFor(t, { stateDir, sessionId: 'race-' + index, clock: () => now * (index + 1), checkpointMs: 0 })));
+  for (const meter of sessions) meter.start();
+  for (now = 100; now <= 500; now += 100) await Promise.all(sessions.map(meter => meter.flush()));
+  now = 500;
+  for (const meter of sessions) meter.pause();
+  await Promise.all(sessions.map(meter => meter.close()));
+  const records = await readdir(stateDir);
+  assert.equal(records.length, 12);
+  for (let index = 0; index < sessions.length; index++) assert.deepEqual(JSON.parse(await readFile(join(stateDir, 'session-race-' + index + '.json'), 'utf8')), { version: 1, activeMs: 500 * (index + 1) });
+  const fresh = await meterFor(t, { stateDir, checkpointMs: 0 });
+  assert.equal(fresh.snapshot().totalMs, 500 * 78);
 });
 
 test('repeated and overlapping checkpoints do not count the same active time twice', async (t) => {

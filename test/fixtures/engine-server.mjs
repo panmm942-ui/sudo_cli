@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 // node --test discovers helper files under test/; serve only when spawned as the fake Codex command.
 if (!process.argv.slice(2).includes('app-server')) process.exit(0);
 
-const scenario = process.env.ENGINE_SCENARIO ?? 'normal';
+const scenario = process.env.ENGINE_SCENARIO ?? process.argv[2] ?? 'normal';
 const input = createInterface({ input: process.stdin });
 let initialized = false;
 let threadParams;
@@ -43,7 +43,7 @@ input.on('line', (line) => {
     threadParams = message.params;
     if (scenario === 'persistent-thread') return response(message.id, { thread: { id: 'thread-1', ephemeral: false } });
     if (scenario === 'bad-thread') return response(message.id, { thread: null });
-    let sandbox = message.params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } : { type: 'workspaceWrite', networkAccess: message.params.config?.['sandbox_workspace_write.network_access'] === true };
+    let sandbox = message.params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } :message.params.sandbox==='read-only'?{type:'readOnly',networkAccess:false}: { type: 'workspaceWrite', networkAccess: message.params.config?.['sandbox_workspace_write.network_access'] === true };
     if (scenario === 'wrong-permissions') sandbox = { type: 'dangerFullAccess' };
     if (scenario === 'wrong-network') sandbox = { type: 'workspaceWrite', networkAccess: true };
     if (scenario === 'ignored-network') sandbox = { type: 'workspaceWrite', networkAccess: false };

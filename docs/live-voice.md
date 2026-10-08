@@ -1,6 +1,6 @@
 # Continuous voice conversation
 
-Live voice keeps the microphone open while you speak, while the coding AI works, and while a reply plays. You can interrupt a spoken reply by talking. Your speech becomes a normal prompt for the connected coding model, so the model retains its conversation and coding tools. Replies use an AI-generated voice.
+Live voice composes microphone capture, compatible speech recognition, normal coding-model turns and compatible generated speech. Recognized text enters the model's conversation with its coding tools. Headphones mode permits speech to interrupt a reply; speaker mode pauses hearing during playback to reduce echo and uses `/stop` for interruption. This is an ASR/AI/TTS flow, with no acoustic echo cancellation or universal native realtime audio claim. Physical microphone/speaker behavior has not been verified here.
 
 The terminal remains the interface. Voice starts only after an explicit command and stops when you turn it off or exit. A missing microphone or speech service produces an actionable error; it never silently substitutes recorded text or a simulated conversation.
 
@@ -8,11 +8,13 @@ The terminal remains the interface. Voice starts only after an explicit command 
 
 1. Run `/voice setup` to configure the transcription endpoint and model.
 2. Run `/voice speech` to configure the speech endpoint, model and voice.
-3. Select your microphone with `/microphone device "DEVICE NAME"` when needed, then `/microphone on`.
+3. Inspect `/microphone devices`, select `/microphone device "DEVICE NAME"` when needed, then `/microphone on`. Discovery reports installed FFmpeg/device output; it does not prove capture permission or quality.
 4. Run `/voice live` or `/live` to start continuous listening and spoken conversation.
 5. Use `/voice status` to inspect the mode and `/voice off` to stop it.
 
-`/voice record SECONDS` and `/voice file PATH` remain available for explicit transcription when you want to review recognized text before submitting it. Live mode submits detected utterances as prompts automatically. It retains the terminal's permission approval flow.
+`/voice echo headphones|speaker` selects the mode and stops any current voice session before restart. `/voice pause` stops capture and releases the microphone; `/voice resume` starts listening again. `/voice repeat` replays the last spoken reply. `/voice wake PHRASE` filters recognized prompts for a wake phrase, and `/voice wake off` removes that filter. Wake matching occurs after ASR, so the configured transcription service still receives detected audio; it is not a local wake-word detector.
+
+`/voice record SECONDS` and `/voice file PATH` remain available for explicit transcription when you want to review recognized text before submitting it. Live mode submits accepted recognized utterances automatically as literal prompts, without executing slash commands or answering permission questions. It retains the terminal's typed permission approval flow.
 
 ## Requirements
 
@@ -34,9 +36,9 @@ Microphone samples are mono 16-bit PCM at 16 kHz. A local detector examines 20 m
 
 The detector sends a WAV phrase to transcription only after speech ends. Listening continues during transcription. One transcription request runs at a time and one additional phrase can wait. If you speak more phrases before a slow service catches up, the terminal asks you to repeat the dropped phrase instead of accumulating unbounded audio or costs.
 
-The transcript is delivered to the coding conversation. Detection of new speech immediately cancels the current speech request and audio player, and the terminal integration interrupts an active AI turn. Speech playback starts while the speech service streams its response. Long replies are split into requests below the speech API's input limit, retaining Unicode characters.
+In headphones mode, detected speech cancels the speech request/player. Without a wake phrase it also interrupts active AI work immediately; with a wake phrase, AI interruption waits for a matching transcript after ASR. Speaker mode resets the detector and ignores microphone samples during playback, so speech cannot interrupt the reply then; use `/stop`. Speech playback begins while the service streams its response. Long replies are split into requests below that API's input limit while retaining Unicode characters.
 
-Wear headphones when using interruption. This provider-independent implementation uses energy detection rather than acoustic echo cancellation: speaker output entering the microphone can be mistaken for your voice. Fans, background conversation, a quiet microphone, or long pauses can also require adjusting the microphone level or detection thresholds. Latency depends on your transcription service, coding model, speech service, and network.
+Wear headphones when using speech interruption. Energy detection has no acoustic echo cancellation: speaker output entering the microphone can be mistaken for speech in headphones mode. Speaker mode uses half-duplex listening, not echo cancellation. Fans, background conversation, a quiet microphone or long pauses can require adjusting levels/detection thresholds. Latency depends on ASR, the coding model, TTS and the network.
 
 This supports continuous listening and spoken conversation with your selected coding AI. ChatGPT's exact voice backend and a provider's native speech-to-speech model are separate services. The [Realtime API](https://developers.openai.com/api/docs/guides/realtime) requires a compatible realtime model and audio session; an arbitrary coding endpoint cannot acquire that protocol simply by enabling voice.
 
@@ -57,6 +59,7 @@ const voice = createLiveVoice({
   transcription: { baseUrl: asrUrl, model: asrModel, apiKey: asrKey },
   speech: { baseUrl: speechUrl, model: speechModel, apiKey: speechKey, voice: voiceName },
   device: microphoneName,
+  echoMode: 'headphones', // or 'speaker': hearing pauses during playback
   onSpeechStart: () => interruptActiveAiTurn(),
   onTranscript: text => queueNormalUserPrompt(text),
   onState: state => refreshVoiceStatus(state),
@@ -71,7 +74,7 @@ await voice.stop();
 
 The factory is synchronous. `start`, `stop`, and `speak` return promises; `snapshot` and `interruptSpeech` are synchronous. `onTranscript` should enqueue the prompt promptly; the audio subsystem does not await an entire AI task. Spoken transcripts are user prompts, not permission approvals or automatically executed slash commands.
 
-`snapshot()` exposes `running`, `listening`, `hearing`, `transcribing`, `speaking`, `queuedPhrases`, `droppedPhrases`, `transcribedPhrases`, and a display `status`. No endpoint keys, raw audio, or transcript contents appear in the snapshot. An optional `signal` stops the entire mode. The optional `vad` settings can adjust `threshold`, `noiseRatio`, `preRollMs`, `startSpeechMs`, `minSpeechMs`, `endSilenceMs`, and `maxPhraseMs` within validated bounds; the maximum phrase duration remains 20 seconds.
+`snapshot()` exposes `running`, `listening`, `hearing`, `transcribing`, `speaking`, `echoMode`, `queuedPhrases`, `droppedPhrases`, `transcribedPhrases`, and a display `status`. No endpoint keys, raw audio, or transcript contents appear in the snapshot. An optional `signal` stops the entire mode. The optional `vad` settings can adjust `threshold`, `noiseRatio`, `preRollMs`, `startSpeechMs`, `minSpeechMs`, `endSilenceMs`, and `maxPhraseMs` within validated bounds; the maximum phrase duration remains 20 seconds. The terminal handles pause/resume/repeat and the post-ASR wake filter around this low-level module.
 
 Native executable boundaries can be supplied with `captureCommand` and `playbackCommand` as an executable or executable-and-prefix-argument array. Both are launched without a shell and with hidden windows. Native capture/output arguments are appended, preserving device text literally. These boundaries also permit verification with synthetic recorders and players without accessing a real microphone or playing audio.
 

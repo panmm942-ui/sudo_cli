@@ -175,3 +175,21 @@ test('reasoning uses native levels, preserves omitted defaults and restricts dec
   for (const value of [null, '', 'secret\nvalue', 2]) assert.throws(() => validate(value), error => /Reasoning effort/.test(error.message) && !error.message.includes('secret'));
   assert.deepEqual(feature('validateConnection')({ transport: 'responses', model: 'm', baseUrl: 'https://example.com', supportedEfforts: ['adaptive', 'high'] }).supportedEfforts, ['adaptive', 'high']);
 });
+
+test('connection capability declarations are copied, boolean and bounded to known names', () => {
+  const validate = feature('validateConnection');
+  const base = { transport: 'responses', model: 'm', baseUrl: 'https://example.test/v1' };
+  const capabilities = { tools: false, hostedSearch: false, training: true };
+  const actual = validate({ ...base, capabilities });
+  assert.deepEqual(actual.capabilities, capabilities);
+  capabilities.tools = true;
+  assert.equal(actual.capabilities.tools, false);
+  assert.ok(!Object.hasOwn(validate(base), 'capabilities'));
+  for (const capabilities of [[], null, { tools: 'false' }, { secretUnknown: true }, { search: true }]) assert.throws(() => validate({ ...base, capabilities }), error => /capabilit/i.test(error.message) && !error.message.includes('secretUnknown'));
+});
+
+test('declared hosted-search unavailability disables native search with Web On', () => {
+  const base = { transport: 'responses', model: 'm', baseUrl: 'https://example.test/v1' };
+  assert.ok(feature('providerArgs')({ ...base, capabilities: { hostedSearch: false } }, { webAccess: true }).includes('web_search="disabled"'));
+  assert.ok(feature('providerArgs')({ ...base, capabilities: {} }, { webAccess: true }).includes('web_search="live"'));
+});

@@ -20,6 +20,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
   const cacheKey = connection => `${connection.baseUrl}\0${connection.model}`;
   function remember(connection) { if (connection.apiKey) { keys.set(cacheKey(connection),connection.apiKey); rememberSecret(connection.apiKey); } }
   async function activate(selected, carry = true) {
+    if(!selected)return;
     const validated = validateConnection(selected);
     const supported = validated.supportedEfforts;
     if (settings.effort && supported && !supported.includes(settings.effort)) { settings.effort = undefined; note('Effort reset to provider default for this model.'); }
@@ -174,12 +175,15 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     else throw new Error('Use /training export,setup,start FILE,status ID,or cancel ID.');
   }
   async function handle({name,args=[],rawArgs=args.join(' ')}) {
-    if(name==='/help'){note(commandMenu());return true;}
+    if(['/model','/effort','/upload','/skills','/compact'].includes(name)&&!getConnection())throw new Error('Connect an AI with /switch or /connect first.');
+    if(name==='/effort'&&args[0]&&!['default','supported'].includes(args[0])&&settings.capabilities?.reasoning===false)throw new Error('Reasoning overrides are disabled for this AI. Use /effort default.');
+    if(name==='/training'&&args[0]==='start'&&settings.capabilities?.training===false&&settings.trainingService?.model===getConnection()?.model&&settings.trainingService?.baseUrl===getConnection()?.baseUrl)throw new Error('Training is disabled for this AI. Select a supported training service first.');
+    if(name==='/help'){note(commandMenu(rawArgs,{compact:!args.length}));return true;}
     if(name==='/status'){
-      const current=getSnapshot();const connection=getConnection();note(`${connection.model} · ${new URL(connection.baseUrl).host} · ${connection.transport}`);
+      const current=getSnapshot();const connection=getConnection();note(connection?`${connection.model} · ${new URL(connection.baseUrl).host} · ${connection.transport}`:'No AI selected. /switch or /connect configures one.');
       note(`Status: ${current.working?'Working':'Not Working'} · WiFi Connection: ${current.network?.wifi||'Unknown'}`);
-      if(current.network?.wifi==='Yes')note(`Download: ${trafficRate(current.network.downloadBps)} · Upload: ${trafficRate(current.network.uploadBps)} (interface traffic, not a speed test)`);
-      note(`AI Connection: ${current.health?.percent==null?'Not measured':current.health.percent+'%'} (latency/error estimate)`);
+      if(current.network?.wifi==='Yes')note(`Live Traffic: Download ${trafficRate(current.network.downloadBps)} · Upload ${trafficRate(current.network.uploadBps)} (interface traffic, not a speed test)`);
+      note(`AI response: ${current.health?.firstTokenLatencyMs==null?'not measured':(current.health.firstTokenLatencyMs/1000).toFixed(2)+'s'} · Errors: ${current.health?.errorRate==null?'not measured':Math.round(current.health.errorRate*100)+'%'} · Speed: ${current.health?.generationTokensPerSecond==null?'not reported':current.health.generationTokensPerSecond.toFixed(1)+' tokens/s'}`);
       note(`Context: ${current.context?.used??'unknown'}/${current.context?.limit??'unknown'} tokens (last reported)`);
       note(`Permissions: ${settings.permissions==='ask'?'Ask':'Allow Everything'} · Web Access: ${settings.webAccess?'On':'Off'} · Effort: ${settings.effort||'Provider default'}`);
       note(`Worked: ${workedTime(current.worked?.sessionMs)} | In Total: ${workedTime(current.worked?.totalMs)}`);return true;
@@ -190,7 +194,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
       else await chooseProfile(args.join(' '));return true;
     }
     if(name==='/model'){
-      if(args[0]==='list')await endpointModels();else if(args.length)await activate({...getConnection(),model:args.join(' '),supportedEfforts:undefined});else note(`Model: ${getConnection().model}; /model list queries this endpoint.`);return true;
+      if(args[0]==='list')await endpointModels();else if(args.length)await activate({...getConnection(),model:args.join(' '),supportedEfforts:undefined,capabilities:undefined,contextWindow:undefined});else note(`Model: ${getConnection().model}; /model list queries this endpoint.`);return true;
     }
     if(name==='/connect'){await activate(await configure(true));return true;}
     if(name==='/effort'){
@@ -201,7 +205,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(name==='/web'||name==='/permissions'){
       if(!args.length){note(name==='/web'?`Web Access: ${settings.webAccess?'On':'Off'}`:`Permissions: ${settings.permissions}`);return true;}
       if(name==='/web'){if(!['on','off'].includes(args[0]))throw new Error('Use /web on or off.');settings.webAccess=args[0]==='on';}
-      else{const mode=args.join('-').toLowerCase();if(!['ask','allow-everything'].includes(mode))throw new Error('Use /permissions ask or allow-everything.');settings.permissions=mode;}
+      else{const mode=args.join('-').toLowerCase();if(!['ask','allow-everything'].includes(mode))throw new Error('Use /permissions ask or allow-everything; /permissions scope read-only|project|full sets the boundary.');settings.permissions=mode;}
       await activate(getConnection());return true;
     }
     if(name==='/upload'){
@@ -220,6 +224,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(name==='/skills'){await skills(args);return true;}
     if(name==='/ide'){const{openIDE}=await serviceModule();await openIDE({cwd,editor:args[0]||'code'});note('Project opened in the installed editor. sudocli continues in this terminal.');return true;}
     if(name==='/microphone'){
+      if(args[0]==='devices'){const {listMicrophoneDevices}=await import('./voice-devices.mjs');note(await listMicrophoneDevices());return true;}
       if(args[0]==='on'||args[0]==='off'){settings.microphone=args[0]==='on';note(`Microphone ${settings.microphone?'armed; recording starts only with /voice record':'Off'}.`);}
       else if(args[0]==='device'){settings.microphoneDevice=args.slice(1).join(' ');if(!settings.microphoneDevice)throw new Error('Use /microphone device DEVICE_NAME.');note(`Microphone device: ${settings.microphoneDevice}`);}
       else note(`Microphone: ${settings.microphone?'armed':'Off'} · Device: ${settings.microphoneDevice||'system default (Windows requires an exact device name)'}`);return true;
@@ -228,7 +233,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(name==='/training'){await training(args);return true;}
     if(name==='/review'){await runTurn(`Review the current workspace changes. Identify concrete bugs, security issues and regressions with file references. ${rawArgs}`);return true;}
     if(name==='/diff'){try{const result=await execute('git',['diff','--no-ext-diff','--no-color'],{cwd,windowsHide:true,maxBuffer:1024*1024});note(result.stdout||'No tracked working-tree diff.');}catch{throw new Error('Git diff is unavailable; ensure Git is installed and this project is a repository.');}return true;}
-    if(name==='/doctor'){note(`Engine: connected native app-server · ${getEngine().runtimePolicy?.sandbox?.type||'policy checked'}`);note(`WiFi monitor: ${getSnapshot().network?.source||'unavailable'} · Voice: ${settings.voiceService?'configured':'needs /voice setup'} · Training: ${settings.trainingService?'configured':'needs /training setup'}`);return true;}
+    if(name==='/doctor'){note(`Engine: ${getEngine()?'connected native app-server · '+getEngine().runtimePolicy?.sandbox?.type:'offline; use sudocli doctor for executable diagnostics'}`);note(`WiFi monitor: ${getSnapshot().network?.source||'unavailable'} · Voice: ${settings.voiceService?'configured':'needs /voice setup'} · Training: ${settings.trainingService?'configured':'needs /training setup'}`);return true;}
     if(name==='/stop'){stop();return true;}
     if(name==='/steer'){note('Use /steer MESSAGE while the AI is working. At this prompt, enter a new task normally.');return true;}
     return false;

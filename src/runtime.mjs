@@ -2,6 +2,7 @@ import { accessSync, constants, readdirSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
+import {permissionPolicy} from './permission-scope.mjs';
 
 const windows = process.platform === 'win32';
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -10,7 +11,14 @@ const controlCharacters = /[\u0000-\u001f\u007f]/;
 // Pinned native ReasoningEffort strings. A provider may additionally declare
 // its own values; accepting a native value is not a claim of model support.
 export const REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']);
+export const CAPABILITY_NAMES = Object.freeze(['text', 'streaming', 'tools', 'vision', 'reasoning', 'audio', 'structuredOutput', 'hostedSearch', 'training', 'modelDiscovery']);
 const effortIdentifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
+
+export function validateCapabilities(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > CAPABILITY_NAMES.length || Object.entries(value).some(([name, supported]) => !CAPABILITY_NAMES.includes(name) || typeof supported !== 'boolean')) throw new Error('Model capabilities must be known boolean declarations.');
+  return { ...value };
+}
 
 export function validateSupportedEfforts(value) {
   if (value === undefined) return undefined;
@@ -124,7 +132,7 @@ export function validateConnection(connection) {
   if (!connection || typeof connection !== 'object' || Array.isArray(connection)) {
     throw new Error('A model connection is required.');
   }
-  const { transport, model, baseUrl, apiKeyEnv, apiKey, contextWindow, supportedEfforts } = connection;
+  const { transport, model, baseUrl, apiKeyEnv, apiKey, contextWindow, supportedEfforts, capabilities } = connection;
   if (!['responses', 'chat-completions'].includes(transport)) {
     throw new Error('Transport must be responses or chat-completions.');
   }
@@ -132,6 +140,7 @@ export function validateConnection(connection) {
     throw new Error('Model must be a nonempty identifier without control characters.');
   }
   const normalized = { transport, model, baseUrl: validatedUrl(baseUrl) };
+  if (capabilities !== undefined) normalized.capabilities = validateCapabilities(capabilities);
   if (supportedEfforts !== undefined) normalized.supportedEfforts = validateSupportedEfforts(supportedEfforts);
   if (apiKeyEnv !== undefined) normalized.apiKeyEnv = validatedEnvironmentName(apiKeyEnv);
   if (apiKey !== undefined) {
@@ -157,9 +166,10 @@ export function validateRuntimeOptions(options = {}) {
 }
 
 /** TOML basic strings use the same escapes as JSON for these validated values. */
-export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv = 'SUDO_CLI_SESSION_KEY', permissions = 'ask', webAccess = false } = {}) {
+export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv = 'SUDO_CLI_SESSION_KEY', permissions = 'ask', webAccess = false,scope,writableRoots=[] } = {}) {
   const normalized = validateConnection(connection);
   const runtime = validateRuntimeOptions({ permissions, webAccess });
+  const policy=permissionPolicy({...runtime,scope:scope||(permissions==='allow-everything'?'full':'project'),writableRoots});
   const options = {
     model: normalized.model,
     model_provider: 'sudo_session',
@@ -170,14 +180,18 @@ export function providerArgs(connection, { baseUrl = connection.baseUrl, keyEnv 
     'model_providers.sudo_session.requires_openai_auth': false,
     'model_providers.sudo_session.supports_websockets': false,
     approval_policy: runtime.permissions === 'ask' ? 'on-request' : 'never',
-    sandbox_mode: runtime.permissions === 'ask' ? 'workspace-write' : 'danger-full-access',
-    'sandbox_workspace_write.network_access': runtime.webAccess,
+    sandbox_mode: policy.sandbox,
+    'sandbox_workspace_write.network_access': policy.networkAccess,
     // Chat Completions has no native hosted-search equivalent. Network-enabled
     // commands and explicitly supplied MCP servers remain available when on.
-    web_search: runtime.webAccess && normalized.transport === 'responses' ? 'live' : 'disabled',
+    web_search: policy.networkAccess && normalized.transport === 'responses' && normalized.capabilities?.hostedSearch !== false ? 'live' : 'disabled',
     model_supports_reasoning_summaries: false,
+    'shell_environment_policy.inherit': 'core',
+    'shell_environment_policy.ignore_default_excludes': false,
+    'shell_environment_policy.exclude': ['SUDO_CLI_SESSION_KEY','SUDO_MCP_*','CODEX_HOME'],
   };
   if (normalized.contextWindow !== undefined) options.model_context_window = normalized.contextWindow;
+  if(policy.writableRoots.length)options['sandbox_workspace_write.writable_roots']=policy.writableRoots;
   return Object.entries(options).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]);
 }
 

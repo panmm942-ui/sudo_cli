@@ -139,7 +139,7 @@ test('actual Codex engine executes a model tool call inside the selected workspa
     const message = tool ? { role: 'assistant', content: 'Workspace file created.' } : {
       role: 'assistant', content: null, tool_calls: [{ id: 'call_workspace_test', type: 'function', function: {
         name: 'exec_command', arguments: JSON.stringify({
-          cmd: process.platform === 'win32' ? "Set-Content -LiteralPath proof.txt -Value 'sudo tool verified'" : "printf 'sudo tool verified\\n' > proof.txt",
+          cmd: process.platform === 'win32' ? "Set-Content -LiteralPath proof.txt -Value 'sudo tool verified'; Set-Content -LiteralPath env-proof.txt -Value (-not (Test-Path env:SUDO_CLI_SESSION_KEY) -and -not (Test-Path env:SUDO_MCP_FIXTURE))" : "printf 'sudo tool verified\\n' > proof.txt; if test -z \"${SUDO_CLI_SESSION_KEY-}\" && test -z \"${SUDO_MCP_FIXTURE-}\"; then printf 'True' > env-proof.txt; else printf 'False' > env-proof.txt; fi",
           workdir: workspace, login: false, max_output_tokens: 1000,
         }),
       } }],
@@ -156,8 +156,9 @@ test('actual Codex engine executes a model tool call inside the selected workspa
   bridge = await startBridge(connection);
   const approvals = [];
   engine = await createEngine({ codexPath: enginePath, cwd: workspace, model: connection.model,
-    providerArgs: providerArgs(connection, { baseUrl: bridge.baseUrl }),
-    env: { ...process.env, CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: bridge.token },
+    scope:'full',webAccess:true,
+    providerArgs: providerArgs(connection, { baseUrl: bridge.baseUrl,scope:'full',webAccess:true }),
+    env: { ...process.env, CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: bridge.token,SUDO_MCP_FIXTURE:'fixture-bearer-not-for-tools' },
     onApproval: async ({ method, params }) => {
       approvals.push({ method, command: params.command });
       // This local fixture is explicitly allowed to perform only its known workspace write.
@@ -170,6 +171,7 @@ test('actual Codex engine executes a model tool call inside the selected workspa
   assert.ok(completed.items.some(item => item.type === 'agentMessage' && item.text.includes('Workspace file created')));
   const proof = await readFile(join(workspace, 'proof.txt'), 'utf8').catch(error => { throw new Error(`${error.code}: ${JSON.stringify(requests[1].messages.filter(msg => msg.role === 'tool'))}`); });
   assert.match(proof, /sudo tool verified/);
+  assert.match(await readFile(join(workspace,'env-proof.txt'),'utf8'),/True/);
   assert.ok(requests[1].messages.some(msg => msg.role === 'tool' && msg.tool_call_id === 'call_workspace_test'));
 });
 
@@ -206,7 +208,7 @@ test('native Responses monitoring passes through real engine output and retains 
   let child;
   t.after(async () => { child?.kill(); server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(workspace, { recursive: true, force: true }); });
   const run = async () => {
-    child = spawn(process.execPath, [fileURLToPath(new URL('../bin/sudo-cli.mjs', import.meta.url)), '--once', 'Test the native stream.', '--model', 'fixture-model', '--transport', 'responses', '--base-url', `http://127.0.0.1:${server.address().port}/v1`, '--cwd', workspace], {
+    child = spawn(process.execPath, [fileURLToPath(new URL('../bin/sudo-cli.mjs', import.meta.url)), '--once', 'Test the native stream.', '--model', 'fixture-model', '--context-window','131072','--transport', 'responses', '--base-url', `http://127.0.0.1:${server.address().port}/v1`, '--cwd', workspace], {
       env: { ...process.env, SUDO_CLI_CODEX: enginePath, SUDO_CLI_API_KEY: key, SUDO_CLI_STATE_DIR: stateDir, NO_COLOR: '1' }, shell: false, windowsHide: true,
     });
     let stdout = '', stderr = '';
@@ -227,7 +229,7 @@ test('native Responses monitoring passes through real engine output and retains 
   await run();
   assert.equal(requests.length, 2);
   const replay=JSON.stringify(requests[1].body);
-  assert.match(replay,/complete visible conversation/);
+  assert.match(replay,/prior conversation/);
   assert.match(replay,/Native stream \[redacted\] verified/);
   const {createChatStore}=await import('../src/chat-store.mjs');const chats=await createChatStore({stateDir,cwd:workspace});const saved=await chats.last();
   assert.equal(saved.history.messages.length,4,'Both launches must append to the same automatically saved chat.');

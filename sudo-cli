@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+sudo_cli_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$sudo_cli_directory/runtime/node" ]; then
+  exec "$sudo_cli_directory/runtime/node" "$sudo_cli_directory/bin/sudo-cli.mjs" "$@"
+fi
+if ! command -v node >/dev/null 2>&1; then
+  printf '%s\n' 'sudo cli requires Node.js 22 or newer on PATH.' >&2
+  exit 1
+fi
+exec node "$sudo_cli_directory/bin/sudo-cli.mjs" "$@"

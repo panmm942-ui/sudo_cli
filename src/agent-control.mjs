@@ -5,8 +5,12 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { requireElevated } from './privileges.mjs';
-import { validateConnection, validateRuntimeOptions, validateReasoningEffort } from './runtime.mjs';
+import { validateConnection, validateCapabilities, validateRuntimeOptions, validateReasoningEffort } from './runtime.mjs';
+import { createToolPolicy } from './provider-capabilities.mjs';
 import { defaultWorkStateDir } from './work-meter.mjs';
+import { normalizeBudgetPolicy, normalizePricing } from './budget.mjs';
+import { validateGpuHook } from './gpu-control.mjs';
+import { permissionPolicy } from './permission-scope.mjs';
 
 const recordLimit = 16384;
 const controls = /[\u0000-\u001f\u007f]/;
@@ -80,14 +84,7 @@ async function writeWorkerRecord(location, record) {
 }
 
 function hook(value) {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' || typeof value.url !== 'string' || controls.test(value.url)) throw new Error('GPU lifecycle hook requires a valid URL.');
-  let url;
-  try { url = new URL(value.url); } catch { throw new Error('GPU lifecycle hook URL is invalid.'); }
-  if (url.username || url.password || value.url.includes('?') || value.url.includes('#') || !['https:', 'http:'].includes(url.protocol)
-    || (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw new Error('GPU lifecycle hook requires HTTPS or loopback HTTP without URL credentials.');
-  if (value.apiKey !== undefined && (typeof value.apiKey !== 'string' || !value.apiKey.trim() || value.apiKey.length > 16384 || controls.test(value.apiKey))) throw new Error('GPU lifecycle hook key must be bounded text without control characters.');
-  return { url: url.toString(), ...(value.apiKey === undefined ? {} : { apiKey: value.apiKey }) };
+  return validateGpuHook(value);
 }
 /** Allowlisted startup data travels over IPC and is never written to the control record. */
 export function validateAgentConfig(config) {
@@ -96,6 +93,16 @@ export function validateAgentConfig(config) {
   if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(localConnection.baseUrl).hostname)) throw new Error('The 24/7 guardian must use a local loopback AI endpoint.');
   const settings = validateRuntimeOptions(config.settings);
   const selected = config.settings ?? {};
+  // A local guardian must never inherit another model's capability declarations.
+  localConnection.capabilities = localConnection.capabilities ?? {};
+  cloudConnection.capabilities = validateCapabilities(cloudConnection.capabilities ?? selected.capabilities) ?? {};
+  settings.capabilities = { ...cloudConnection.capabilities };
+  const policy = permissionPolicy({ ...settings, scope: selected.scope ?? (settings.permissions === 'allow-everything' ? 'full' : 'project'), writableRoots: selected.writableRoots });
+  settings.scope = policy.scope;
+  settings.writableRoots = policy.writableRoots;
+  createToolPolicy({ toolsAllowed: cloudConnection.capabilities.tools !== false, toolAllowlist: selected.toolAllowlist });
+  if (selected.toolAllowlist !== undefined) settings.toolAllowlist = [...selected.toolAllowlist];
+  if (cloudConnection.capabilities.reasoning === false && selected.effort !== undefined) throw new Error('The working model declares reasoning unavailable; omit the explicit reasoning effort.');
   if (selected.effort !== undefined) settings.effort = validateReasoningEffort(selected.effort, { supportedEfforts: cloudConnection.supportedEfforts });
   const entries = selected.mcp instanceof Map ? [...selected.mcp] : Object.entries(selected.mcp ?? {});
   settings.mcp = Object.fromEntries(entries.map(([name, value]) => {
@@ -113,6 +120,20 @@ export function validateAgentConfig(config) {
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name) || !Array.isArray(tools) || tools.length > 1000 || tools.some(tool => typeof tool !== 'string' || !tool || tool.length > 512 || controls.test(tool))) throw new Error('Worker disabled computer tool selection is invalid.');
     return [name, [...tools]];
   }));
+  if (!Array.isArray(selected.checks ?? []) || (selected.checks ?? []).length > 16) throw new Error('Worker acceptance checks must be a list of up to 16 explicit commands.');
+  settings.checks = (selected.checks ?? []).map(check => {
+    if (!check || typeof check !== 'object' || Array.isArray(check) || (check.command === undefined) === (check.shellCommand === undefined) || check.label !== undefined && (typeof check.label !== 'string' || check.label.length > 200 || controls.test(check.label))) throw new Error('Worker acceptance check requires bounded command text and label.');
+    const result = check.label === undefined ? {} : { label: check.label };
+    if (check.shellCommand !== undefined) {
+      if (typeof check.shellCommand !== 'string' || !check.shellCommand.trim() || check.shellCommand.length > 32768 || Buffer.byteLength(check.shellCommand) > 65536 || check.shellCommand.includes('\0') || check.args !== undefined) throw new Error('Worker shell acceptance check is invalid.');
+      result.shellCommand = check.shellCommand;
+    } else {
+      if (typeof check.command !== 'string' || !check.command.trim() || check.command.length > 4096 || controls.test(check.command) || !Array.isArray(check.args ?? []) || (check.args ?? []).length > 256 || (check.args ?? []).some(arg => typeof arg !== 'string' || arg.length > 32768 || arg.includes('\0'))) throw new Error('Worker argv acceptance check is invalid.');
+      result.command = check.command; result.args = [...(check.args ?? [])];
+    }
+    if (Buffer.byteLength(JSON.stringify(result)) > 128 * 1024) throw new Error('Worker acceptance check is too large.');
+    return result;
+  });
   const value = { localConnection, cloudConnection, settings, watchPaths: [] };
   for (const name of ['developerInstructions', 'localDeveloperInstructions', 'standingGoal']) if (config[name] !== undefined) {
     if (typeof config[name] !== 'string' || Buffer.byteLength(config[name]) > 65536 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(config[name])) throw new Error('Worker instructions and standing goal must be bounded text without terminal controls.');
@@ -120,7 +141,11 @@ export function validateAgentConfig(config) {
   }
   if (!Array.isArray(config.watchPaths ?? []) || (config.watchPaths ?? []).length > 20 || (config.watchPaths ?? []).some(path => typeof path !== 'string' || !path || controls.test(path))) throw new Error('Worker watch paths must be a bounded list of selected directories.');
   value.watchPaths = [...(config.watchPaths ?? [])];
-  for (const name of ['wake', 'sleep']) { const selectedHook = hook(config[name]); if (selectedHook) value[name] = selectedHook; }
+  for (const name of ['wake', 'sleep', 'gpuStatus']) { const selectedHook = hook(config[name]); if (selectedHook) value[name] = selectedHook; }
+  if (config.budget !== undefined || selected.budget !== undefined) value.budget = normalizeBudgetPolicy(config.budget ?? selected.budget);
+  if (config.pricing !== undefined) value.pricing = normalizePricing(config.pricing);
+  if (config.localPricing !== undefined) value.localPricing = normalizePricing(config.localPricing);
+  if (config.maxOutputTokens !== undefined) { if (!Number.isSafeInteger(config.maxOutputTokens) || config.maxOutputTokens < 1 || config.maxOutputTokens > 1000000) throw new Error('Worker maximum output tokens are invalid.'); value.maxOutputTokens = config.maxOutputTokens; }
   for (const [name, minimum, maximum] of [['pollMs', 100, 60000], ['idleSleepMs', 100, 3600000], ['heartbeatMs', 1000, 3600000]]) if (config[name] !== undefined) {
     if (!Number.isSafeInteger(config[name]) || config[name] < minimum || config[name] > maximum) throw new Error('Worker scheduling interval is outside its supported range.');
     value[name] = config[name];

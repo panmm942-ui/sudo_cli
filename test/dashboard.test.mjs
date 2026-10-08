@@ -8,7 +8,7 @@ const example = { cwd: '/projects/demo', working: false, status: 'Offline', conn
 test('connection thresholds, permissions, web switch and worked totals are visible', async () => {
   const { renderDashboard } = await import('../src/dashboard.mjs');
   for (const [percent, code, label] of [[100, '32', 'Good'], [71, '32', 'Good'], [70, '38;5;208', 'Fair'], [51, '38;5;208', 'Fair'], [50, '31', 'Bad'], [0, '31', 'Bad']]) {
-    const text = renderDashboard({ state: { ...example, permissions: 'allow-everything', webAccess: true, health: { percent, latencyMs: 900 }, worked: { sessionMs: 3723000, totalMs: 18623000 } }, columns: 132, rows: 32, color: true }).lines.join('\n');
+    const text = renderDashboard({ state: { ...example,healthPercent:true, permissions: 'allow-everything', webAccess: true, health: { percent, latencyMs: 900 }, worked: { sessionMs: 3723000, totalMs: 18623000 } }, columns: 132, rows: 32, color: true }).lines.join('\n');
     assert.ok(text.includes(`\x1b[${code}m${percent}% ${label}`));
     assert.match(stripVTControlCharacters(text), /Permissions: Allow Everything/);
     assert.match(stripVTControlCharacters(text), /Web Access: On/);
@@ -35,7 +35,7 @@ test('dashboard shows the requested fields next to a large ASCII logo', async ()
   assert.match(text, /Status: Not Working/);
   assert.doesNotMatch(text, /Working:|Status: Offline|Status: Online/);
   assert.match(text, /WiFi Connection: Unknown/);
-  assert.match(text, /Connected AI: No AI connected/);
+  assert.match(text, /Connected AI: test-model \(unconfirmed\)/);
   assert.match(text, /Context: Unknown/);
   assert.ok(view.lines[0].includes('____') && view.lines[0].includes('Time:'), 'Logo and details must share a row');
   assert.doesNotMatch(text, /\x1b/);

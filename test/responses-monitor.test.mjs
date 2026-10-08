@@ -83,3 +83,131 @@ test('client interruption cancels a request without counting a model failure', a
   assert.deepEqual(metrics.map(value => value.phase), ['started', 'cancelled']);
   await monitor.close(); await monitor.close();
 });
+
+test('native monitor applies budget caps and accounts reported usage without changing response bytes', async t => {
+  const before = [], usage = [], after = [];
+  const source = 'data: {"type":"response.output_text.delta","delta":"Hi"}\n\ndata: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\n\n';
+  const { metrics, post } = await fixture(t, async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    assert.equal(JSON.parse(raw).max_output_tokens, 6);
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(source);
+  }, { requestHooks: { beforeRequest: async event => { before.push(event); return { maxOutputTokens: 6 }; }, onUsage: async event => usage.push(event), afterRequest: async event => after.push(event) } });
+  assert.equal(await (await post()).text(), source);
+  assert.equal(before[0].estimated, true);
+  assert.equal(usage[0].outputTokens, 2);
+  assert.equal(usage[0].estimated, false);
+  assert.equal(after[0].outcome, 'succeeded');
+  assert.equal(after[0].id, before[0].id);
+  assert.ok(metrics.at(-1).totalLatencyMs >= 0);
+});
+
+test('native budget failure prevents model work and duration caps abort outbound requests', async t => {
+  let calls = 0;
+  const blocked = await fixture(t, () => { calls++; }, { timeoutMs: 80, requestHooks: { beforeRequest: () => { const error = new Error('private-secret'); error.code = 'BUDGET_EXCEEDED'; throw error; } } });
+  const response = await blocked.post(); assert.equal(response.status, 429);
+  assert.doesNotMatch(await response.text(), /private-secret/); assert.equal(calls, 0);
+  const after = [];
+  const bounded = await fixture(t, () => { calls++; }, { timeoutMs: 80, requestHooks: { beforeRequest: () => ({ timeoutMs: 40 }), afterRequest: event => after.push(event) } });
+  const timed = await bounded.post(); assert.equal(timed.status, 504); await timed.text();
+  assert.equal(after[0].outcome, 'failed');
+});
+
+async function capture(response) {
+  let source = ''; const reader = response.body.getReader(), decoder = new TextDecoder();
+  try { for (;;) { const part = await reader.read(); if (part.done) break; source += decoder.decode(part.value, { stream: true }); } }
+  catch { /* A policy-rejected stream can end its already-started native response. */ }
+  return source + decoder.decode();
+}
+
+test('tools-off native monitor strips tool definitions and blocks split executable SSE events', async t => {
+  for (const type of ['function_call', 'custom_tool_call', 'web_search_call', 'mcp_call']) {
+    let request;
+    const initial = 'event: response.created\r\ndata: {"type":"response.created"}\r\n\r\n';
+    const rogue = 'event: response.output_item.done\r\ndata: ' + JSON.stringify({ type: 'response.output_item.done', output_index: 0, item: { id: 'rogue', type, call_id: 'x', name: 'run', arguments: '{}' } }) + '\r\n\r\n';
+    const { post, metrics } = await fixture(t, async (req, res) => {
+      let source = ''; for await (const chunk of req) source += chunk; request = JSON.parse(source);
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(initial);
+      // Split the JSON/event boundary so inspection must precede forwarding any event bytes.
+      res.write(rogue.slice(0, 73)); await delay(10); res.end(rogue.slice(73));
+    }, { toolsAllowed: false });
+    const source = await capture(await post({ body: JSON.stringify({ model: 'fixture', stream: true, tools: [{ type: 'function', name: 'run' }], tool_choice: 'required', parallel_tool_calls: true }) }));
+    assert.ok(!source.includes('response.output_item.done'), type);
+    assert.ok(!Object.hasOwn(request, 'tools'));
+    assert.ok(!Object.hasOwn(request, 'tool_choice'));
+    assert.ok(!Object.hasOwn(request, 'parallel_tool_calls'));
+    assert.equal(metrics.at(-1).phase, 'failed');
+  }
+});
+
+test('tools-off native monitor blocks tool items hidden in JSON or completed Responses envelopes', async t => {
+  for (const sse of [false, true]) {
+    const response = { object: 'response', status: 'completed', output: [{ type: 'mcp_call', name: 'run', arguments: '{}' }] };
+    const source = sse ? 'data: ' + JSON.stringify({ type: 'response.completed', response }) + '\n\n' : JSON.stringify(response);
+    const { post, metrics } = await fixture(t, (_req, res) => { res.writeHead(200, { 'content-type': sse ? 'text/event-stream' : 'application/json' }); res.end(source); }, { toolsAllowed: false });
+    const result = await capture(await post());
+    assert.ok(!result.includes('mcp_call'));
+    assert.ok(!result.includes('"status":"completed"'));
+    assert.equal(metrics.at(-1).phase, 'failed');
+  }
+});
+
+test('tools-off native monitor preserves safe UTF-8 text events with multiline data', async t => {
+  const source = 'event: response.output_text.delta\r\ndata: {"type":"response.output_text.delta",\r\ndata: "delta":"Hello α🙂"}\r\n\r\ndata: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n';
+  const { post, metrics } = await fixture(t, (_req, res) => {
+    const bytes = Buffer.from(source); const middle = bytes.indexOf(Buffer.from('🙂')) + 1;
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(bytes.subarray(0, middle)); res.end(bytes.subarray(middle));
+  }, { toolsAllowed: false });
+  assert.equal(await (await post()).text(), source);
+  assert.equal(metrics.at(-1).phase, 'succeeded');
+});
+
+test('native allowlist filters exact function names and hosted types and exposes a content-free catalog', async t => {
+  let request;
+  const { post, monitor } = await fixture(t, async (req, res) => {
+    let source = ''; for await (const chunk of req) source += chunk; request = JSON.parse(source);
+    res.end('{"object":"response","status":"completed","output":[]}');
+  }, { toolAllowlist: ['allowed', 'web_search'] });
+  await (await post({ body: JSON.stringify({ model: 'fixture', tools: [{ type: 'function', name: 'allowed', description: 'private description' }, { type: 'function', name: 'excluded' }, { type: 'web_search' }, { type: 'mcp', server_label: 'private-server-label' }], tool_choice: { type: 'function', name: 'excluded' } }) })).text();
+  assert.deepEqual(request.tools.map(tool => tool.name ?? tool.type), ['allowed', 'web_search']);
+  assert.ok(!Object.hasOwn(request, 'tool_choice'));
+  assert.deepEqual(monitor.getToolCatalog(), ['allowed', 'excluded', 'mcp', 'web_search']);
+  assert.doesNotMatch(JSON.stringify(monitor.getToolCatalog()), /private/);
+});
+
+test('native allowlist preserves allowed tools and blocks excluded executable SSE items', async t => {
+  for (const name of ['allowed', 'excluded']) {
+    const item = { id: 'tool-policy', type: 'function_call', name, call_id: 'c', arguments: '{}' };
+    const source = 'data: ' + JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '' } }) + '\n\ndata: ' + JSON.stringify({ type: 'response.function_call_arguments.delta', item_id: item.id, output_index: 0, delta: '{}' }) + '\n\ndata: ' + JSON.stringify({ type: 'response.output_item.done', output_index: 0, item }) + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [item] } }) + '\n\n';
+    const { post, metrics } = await fixture(t, (_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(source); }, { toolAllowlist: ['allowed'] });
+    const received = await capture(await post({ body: JSON.stringify({ model: 'fixture', stream: true, tools: [{ type: 'function', name: 'allowed' }, { type: 'function', name: 'excluded' }] }) }));
+    if (name === 'allowed') { assert.equal(received, source); assert.equal(metrics.at(-1).phase, 'succeeded'); }
+    else { assert.ok(!received.includes('response.output_item.done')); assert.equal(metrics.at(-1).phase, 'failed'); }
+  }
+});
+
+test('native namespace allowlists prevent same-leaf provider calls from crossing namespaces', async t => {
+  for (const namespace of ['first', 'second', undefined]) {
+    let outgoing;
+    const item = { id: 'namespace-policy', type: 'function_call', namespace, name: 'run', call_id: 'c', arguments: '{}' };
+    const source = 'data: ' + JSON.stringify({ type: 'response.output_item.done', output_index: 0, item }) + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [item] } }) + '\n\n';
+    const { post, monitor, metrics } = await fixture(t, async (req, res) => {
+      let raw = ''; for await (const chunk of req) raw += chunk; outgoing = JSON.parse(raw);
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(source);
+    }, { toolAllowlist: ['first.run'] });
+    const received = await capture(await post({ body: JSON.stringify({ model: 'fixture', stream: true, tools: ['first', 'second'].map(name => ({ type: 'namespace', name, tools: [{ type: 'function', name: 'run' }] })) }) }));
+    assert.deepEqual(outgoing.tools?.map(tool => tool.name), ['first']);
+    assert.deepEqual(monitor.getToolCatalog(), ['first.run', 'second.run']);
+    if (namespace === 'first') { assert.equal(received, source); assert.equal(metrics.at(-1).phase, 'succeeded'); }
+    else { assert.ok(!received.includes('response.output_item.done')); assert.equal(metrics.at(-1).phase, 'failed'); }
+  }
+});
+
+test('native monitor signals sanitized tool policy errors before retry', async t => {
+  const errors = [];
+  const { post } = await fixture(t, (_req, res) => res.end(JSON.stringify({ object: 'response', status: 'completed', output: [{ type: 'function_call', name: 'fixture-key', arguments: '{}' }] })), { toolsAllowed: false, onPolicyError: error => errors.push(error) });
+  const response = await post(); await response.text();
+  assert.equal(response.status, 502);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'TOOLS_DISABLED');
+  assert.doesNotMatch(JSON.stringify(errors), /fixture-key/);
+});

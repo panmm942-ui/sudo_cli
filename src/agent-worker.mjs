@@ -33,7 +33,7 @@ function authorized(req, token) {
 }
 function statusFields(value) {
   const result = {};
-  for (const name of ['state', 'cloudState']) if (typeof value?.[name] === 'string') result[name] = value[name].slice(0, 32);
+  for (const name of ['state', 'cloudState', 'cloudBilling']) if (typeof value?.[name] === 'string') result[name] = value[name].slice(0, 32);
   for (const name of ['activeJobId', 'startedAt', 'lastActivityAt', 'nextHeartbeatAt']) result[name] = typeof value?.[name] === 'string' ? value[name].slice(0, 100) : null;
   for (const name of ['completed', 'blocked', 'failed']) result[name] = Number.isSafeInteger(value?.[name]) && value[name] >= 0 ? value[name] : 0;
   if (value?.lastError) result.lastError = 'The last background operation failed. Inspect /247 list for its saved result.';
@@ -45,7 +45,7 @@ async function initialize(message) {
   let coordinator, server, location, shuttingDown, registered = false;
   let config, startedAt, registrationTimer;
   const events = [];
-  const secrets = [message.token, message.config?.localConnection?.apiKey, message.config?.cloudConnection?.apiKey, message.config?.wake?.apiKey, message.config?.sleep?.apiKey].filter(value => typeof value === 'string' && value);
+  const secrets = [message.token, message.config?.localConnection?.apiKey, message.config?.cloudConnection?.apiKey, message.config?.wake?.apiKey, message.config?.sleep?.apiKey, message.config?.gpuStatus?.apiKey].filter(value => typeof value === 'string' && value);
   const clean = text => { const redactor = createRedactor({ secrets: () => secrets }); return (redactor.write(String(text)) + redactor.flush()).slice(0, 1000); };
   function log(type, text) { events.push({ at: new Date().toISOString(), type, message: clean(text) }); if (events.length > 16) events.shift(); }
   function send(value) { if (process.connected) process.send({ id, ...value }, () => {}); }
@@ -69,10 +69,14 @@ async function initialize(message) {
     if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id) || typeof message.token !== 'string' || !/^[0-9a-f]{64}$/.test(message.token)) throw new Error('Detached worker startup identity is invalid.');
     config = validateAgentConfig(message.config);
     location = await workerLocation({ stateDir: message.stateDir, cwd: message.cwd, create: true });
-    const [{ createTaskInbox }, { createAlwaysOn }, { runAgentTask, gpuHook }] = await Promise.all([
-      import('./task-inbox.mjs'), import('./always-on.mjs'), import('./agent-runtime.mjs'),
+    const [{ createTaskInbox }, { createAlwaysOn }, { runAgentTask }, { createBudgetLedger }, { createScheduler }, { createGpuController }] = await Promise.all([
+      import('./task-inbox.mjs'), import('./always-on.mjs'), import('./agent-runtime.mjs'), import('./budget.mjs'), import('./scheduler.mjs'), import('./gpu-control.mjs'),
     ]);
     const inbox = await createTaskInbox({ stateDir: location.stateDir, cwd: location.cwd, secrets: () => secrets });
+    const scheduler = await createScheduler({ inbox });
+    const budget = await createBudgetLedger({ stateDir: location.stateDir, cwd: location.cwd, policy: config.budget ?? {} });
+    const {createBackgroundWork}=await import('./background-work.mjs');const work=await createBackgroundWork({stateDir:location.stateDir,cwd:location.cwd,secrets:()=>secrets,settings:config.settings,checks:config.settings.checks||[]});
+    const gpu = createGpuController({ wake: config.wake, sleep: config.sleep, status: config.gpuStatus });
     async function backgroundTask(options) {
       let approvalNeeded = false, result;
       const blocked = () => {
@@ -86,15 +90,17 @@ async function initialize(message) {
     }
     coordinator = createAlwaysOn({
       inbox,
+      scheduler, beginTask: async id => {const limits=await budget.beginTask(id);try{await work.beginTask(id);}catch(error){await budget.endTask(id);throw error;}return limits;}, endTask: async id => {try{await work.endTask(id);}finally{await budget.endTask(id);}},onTaskResult:(job,patch,options)=>work.result(job,patch,options),
       ...Object.fromEntries(['pollMs', 'idleSleepMs', 'heartbeatMs', 'standingGoal', 'watchPaths'].filter(name => config[name] !== undefined).map(name => [name, config[name]])),
       onState() { /* Status is sampled on authenticated requests without writing prompts to logs. */ },
       onError(error) { log('error', error?.message ?? 'A background task failed.'); },
-      ...(config.wake ? { wake: ({ signal } = {}) => gpuHook({ ...config.wake, action: 'wake', signal }) } : {}),
-      ...(config.sleep ? { sleep: ({ signal } = {}) => gpuHook({ ...config.sleep, action: 'sleep', signal }) } : {}),
+      ...(config.wake ? { wake: options => gpu.wake(options) } : {}),
+      ...(config.sleep ? { sleep: options => gpu.sleep(options) } : {}),
       assess: async (job, { signal }) => {
         const result = await backgroundTask({ connection: config.localConnection, cwd: location.cwd,
           settings: { ...config.settings, effort: undefined }, developerInstructions: [config.localDeveloperInstructions, guardianInstructions].filter(Boolean).join('\n\n'),
           prompt: JSON.stringify({ task: job.prompt, source: job.source ?? 'inbox', project: location.cwd }), signal,
+          runtime: { requestHooks: budget.requestHooks({ taskId: job.id, pricing: config.localPricing, maxOutputTokens: config.maxOutputTokens ?? 4096 }) },
         });
         return parseDecision(result.text);
       },
@@ -102,6 +108,7 @@ async function initialize(message) {
         const result = await backgroundTask({ connection: config.cloudConnection, cwd: location.cwd,
           settings: config.settings, developerInstructions: config.developerInstructions,
           prompt: job.prompt, signal,
+          runtime: { requestHooks: budget.requestHooks({ taskId: job.id, pricing: config.pricing, maxOutputTokens: config.maxOutputTokens ?? 4096 }) },
         });
         return { result: result.text };
       },

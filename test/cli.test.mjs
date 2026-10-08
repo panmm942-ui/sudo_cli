@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {isElevated} from '../src/privileges.mjs';
+import {VERSION} from '../src/version.mjs';
 
 const cli = fileURLToPath(new URL('../bin/sudocli.mjs', import.meta.url));
 const run = (args, env = {}) => spawnSync(process.execPath, [cli, ...args], {
@@ -20,7 +21,7 @@ test('branded help works without connecting a model or modifying app settings', 
 test('version works with no runtime installed', () => {
   const result = run(['--version'], { SUDO_CLI_CODEX: 'missing-runtime' });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /0\.5\.0/);
+  assert.equal(result.stdout,`codexcli ${VERSION} | sudocli\n`);
 });
 
 test('missing settings in noninteractive mode are actionable and do not initiate a model request', () => {

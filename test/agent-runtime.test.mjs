@@ -14,7 +14,7 @@ async function fixture(t, scenario = 'normal') {
   const homes = join(directory, 'homes'); await mkdir(homes);
   t.after(() => rm(directory, { recursive: true, force: true }));
   const module = await import('../src/agent-runtime.mjs');
-  return { ...module, directory, homes, options: { connection, cwd: directory, prompt: 'Run an isolated task.', runtime: { codexPath: [process.execPath, engineFixture], env: { ...process.env, ENGINE_SCENARIO: scenario }, baseDir: homes, requestTimeoutMs: 1000 } } };
+  return { ...module, directory, homes, options: { connection, cwd: directory, prompt: 'Run an isolated task.', runtime: { codexPath: [process.execPath, engineFixture, scenario], baseDir: homes, requestTimeoutMs: 1000 } } };
 }
 async function httpFixture(t, handler) {
   const server = createServer(handler); server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -42,15 +42,35 @@ test('agent runtime creates a private native thread, returns authoritative final
   assert.deepEqual(await readdir(homes), []);
 });
 
-test('headless Ask declines requests while an explicit foreground callback can approve once', async t => {
+test('headless out-of-scope approvals reject the job while an explicit foreground callback can approve once', async t => {
   const { runAgentTask, options, homes } = await fixture(t, 'approvals');
-  const declined = JSON.parse((await runAgentTask(options)).text);
-  assert.deepEqual(declined['item/commandExecution/requestApproval'], { decision: 'decline' });
-  assert.deepEqual(declined['item/permissions/requestApproval'].permissions, {});
-  const approved = JSON.parse((await runAgentTask({ ...options, onApproval: async ({ method }) => method === 'item/commandExecution/requestApproval' })).text);
+  await assert.rejects(runAgentTask(options), { code: 'APPROVAL_REQUIRED' });
+  const approved = JSON.parse((await runAgentTask({ ...options, settings: { scope: 'full', webAccess: true }, onApproval: async ({ method }) => method === 'item/commandExecution/requestApproval' })).text);
   assert.deepEqual(approved['item/commandExecution/requestApproval'], { decision: 'accept' });
   assert.deepEqual(approved['item/fileChange/requestApproval'], { decision: 'decline' });
   assert.deepEqual(await readdir(homes), []);
+});
+
+test('agent policy validates scoped folders and tools before startup and honors connection capability precedence', async t => {
+  const { runAgentTask, options, homes } = await fixture(t);
+  for (const settings of [{ toolAllowlist: 'run' }, { toolAllowlist: ['run', 'run'] }, { writableRoots: ['relative'] }, { capabilities: { reasoning: false }, effort: 'high' }]) {
+    await assert.rejects(runAgentTask({ ...options, settings }), /permission|folder|reasoning/i);
+    assert.deepEqual(await readdir(homes), []);
+  }
+  const audit = JSON.parse((await runAgentTask({ ...options, connection: { ...connection, transport: 'responses', capabilities: { hostedSearch: false, reasoning: true } }, settings: { webAccess: true, effort: 'high', capabilities: { reasoning: false }, writableRoots: [options.cwd], toolAllowlist: ['exec_command'] } })).text);
+  assert.ok(audit.argv.includes('web_search="disabled"'));
+  assert.ok(audit.argv.includes(`sandbox_workspace_write.writable_roots=${JSON.stringify([options.cwd])}`));
+  assert.equal(audit.params.effort, 'high');
+});
+
+test('fresh agent context rejects known capacity overflow before startup and marks the estimate', async t => {
+  const { runAgentTask, options, homes } = await fixture(t);
+  for (const patch of [{ prompt: 'x'.repeat(10000) }, { developerInstructions: 'x'.repeat(10000) }]) {
+    await assert.rejects(runAgentTask({ ...options, connection: { ...connection, contextWindow: 6000 }, ...patch }), /estimated.*capacity|capacity.*estimate/i);
+    assert.deepEqual(await readdir(homes), []);
+  }
+  const unknown = { ...connection }; delete unknown.contextWindow;
+  assert.equal((await runAgentTask({ ...options, connection: unknown })).threadId, 'thread-1');
 });
 
 test('Web Off omits MCP servers; computer Off retains only classified noncomputer tools', async t => {
@@ -67,7 +87,7 @@ test('Web Off omits MCP servers; computer Off retains only classified noncompute
 
 test('explicit unrestricted permissions remain opt-in and invalid options fail before startup', async t => {
   const { runAgentTask, options, homes } = await fixture(t);
-  const audit = JSON.parse((await runAgentTask({ ...options, settings: { permissions: 'allow-everything' } })).text);
+  const audit = JSON.parse((await runAgentTask({ ...options, settings: { permissions: 'allow-everything', scope: 'full', webAccess: true } })).text);
   assert.equal(audit.thread.sandbox, 'danger-full-access');
   assert.equal(audit.thread.approvalPolicy, 'never');
   for (const settings of [{ permissions: 'unknown-secret-permission' }, { webAccess: 'on' }, { effort: 'low' }, { mcp: { 'invalid.name': 'https://example.test/mcp' } }, { mcp: { server: 'https://key-secret@example.test/mcp' } }]) {
@@ -79,7 +99,7 @@ test('explicit unrestricted permissions remain opt-in and invalid options fail b
 test('native startup failures and task failures always clean the owned session home', async t => {
   const { runAgentTask, options, homes } = await fixture(t);
   for (const scenario of ['bad-thread', 'failed-turn', 'exit-turn']) {
-    await assert.rejects(runAgentTask({ ...options, runtime: { ...options.runtime, env: { ...process.env, ENGINE_SCENARIO: scenario } } }));
+    await assert.rejects(runAgentTask({ ...options, runtime: { ...options.runtime, codexPath: [process.execPath, engineFixture, scenario] } }));
     assert.deepEqual(await readdir(homes), []);
   }
 });
@@ -111,8 +131,8 @@ test('GPU hook performs authenticated wake/sleep POSTs without returning remote 
     requests.push({ method: req.method, auth: req.headers.authorization, body: JSON.parse(body) });
     res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"private":"do-not-return"}');
   });
-  assert.deepEqual(await gpuHook({ url, apiKey: 'gpu-private-key' }), { ok: true, status: 200 });
-  assert.deepEqual(await gpuHook({ url, action: 'sleep' }), { ok: true, status: 200 });
+  assert.deepEqual(await gpuHook({ url, apiKey: 'gpu-private-key' }), { ok: true, status: 200, verified: false, state: 'unknown', billing: 'unknown' });
+  assert.deepEqual(await gpuHook({ url, action: 'sleep' }), { ok: true, status: 200, verified: false, state: 'unknown', billing: 'unknown' });
   assert.deepEqual(requests, [{ method: 'POST', auth: 'Bearer gpu-private-key', body: { action: 'wake' } }, { method: 'POST', auth: undefined, body: { action: 'sleep' } }]);
 });
 
@@ -150,7 +170,7 @@ test('agent runtime uses real native Codex workspace tools through a loopback mo
     };
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ id: 'chatcmpl-agent', object: 'chat.completion', model: connection.model, choices: [{ index: 0, message, finish_reason: tool ? 'stop' : 'tool_calls' }] }));
   });
-  const result = await runAgentTask({ ...options, connection: { ...connection, baseUrl: `${url}/v1` }, developerInstructions: 'Use the native workspace tools.', runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 }, onApproval: async ({ method, params }) => method === 'item/commandExecution/requestApproval' && String(params.command).includes('agent-proof.txt') });
+  const result = await runAgentTask({ ...options, settings: { scope: 'full', webAccess: true }, connection: { ...connection, baseUrl: `${url}/v1` }, developerInstructions: 'Use the native workspace tools.', runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 }, onApproval: async ({ method, params }) => method === 'item/commandExecution/requestApproval' && String(params.command).includes('agent-proof.txt') });
   assert.match(result.text, /Native agent task finished/);
   assert.match(await readFile(join(options.cwd, 'agent-proof.txt'), 'utf8'), /native runtime proof/);
   assert.equal(requests.length, 2);
@@ -188,4 +208,25 @@ test('native Responses agent tasks use the selected API key and redact final out
   assert.match(result.text, /Native response \[redacted\] done/);
   assert.ok(!result.text.includes(connection.apiKey));
   assert.deepEqual(await readdir(homes), []);
+});
+
+test('background native tasks enforce tools-off and exact allowlists before executable output', { timeout: 30000 }, async t => {
+  const { localCodex } = await import('../src/local-engine.mjs');
+  let codexPath; try { codexPath = localCodex(); } catch { t.skip('Install the native Codex runtime'); return; }
+  const { runAgentTask, options, homes } = await fixture(t);
+  for (const mode of ['chat-off', 'chat-list', 'responses-off']) {
+    const requests = [], executable = [];
+    const url = await httpFixture(t, async (req, res) => {
+      let raw = ''; for await (const chunk of req) raw += chunk; requests.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const item = { type: 'function_call', id: 'rogue', call_id: 'c', name: 'rogue_outside_permission', arguments: '{}' };
+      res.end(mode === 'responses-off' ? JSON.stringify({ object: 'response', status: 'completed', output: [item] }) : JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'c', type: 'function', function: { name: item.name, arguments: '{}' } }] }, finish_reason: 'tool_calls' }] }));
+    });
+    await assert.rejects(runAgentTask({ ...options, connection: { ...connection, baseUrl: `${url}/v1`, transport: mode === 'responses-off' ? 'responses' : 'chat-completions', capabilities: { tools: mode === 'chat-list' } }, settings: mode === 'chat-list' ? { toolAllowlist: ['exec_command'] } : {}, runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 }, onEvent: event => { if (event.method === 'item/completed' && ['commandExecution', 'fileChange', 'mcpToolCall'].includes(event.params?.item?.type)) executable.push(event); } }), { code: 'APPROVAL_REQUIRED' });
+    assert.equal(requests.length, 1, 'the policy error interrupts before a charged native retry');
+    if (mode === 'chat-list') assert.deepEqual(requests[0].tools.map(tool => tool.function.name), ['exec_command']);
+    else assert.ok(!Object.hasOwn(requests[0], 'tools'));
+    assert.deepEqual(executable, []);
+    assert.deepEqual(await readdir(homes), []);
+  }
 });

@@ -20,6 +20,7 @@ Options:
   --cwd DIRECTORY          Project directory (default: current directory)
   --mcp NAME=URL            Connect an HTTP MCP tool server; repeatable
   --permissions MODE        ask (default) or allow-everything
+  --scope MODE              read-only, project (default), or full
   --web on|off              Agent web tools/network access (default: off)
   --once PROMPT             Run one task without the interactive UI
   doctor                    Check the local engine without calling a model
@@ -36,7 +37,7 @@ Model sessions require administrator/root. Help/version/doctor/setup do not elev
 function parse(args) {
   if (args[0] === 'cli') args = args.slice(1);
   const opts = { mcp: [] };
-  const values = { '--model': 'model', '--base-url': 'baseUrl', '--transport': 'transport', '--api-key-env': 'apiKeyEnv', '--context-window': 'contextWindow', '--effort':'effort', '--cwd': 'cwd', '--once': 'once', '--permissions': 'permissions', '--web': 'web' };
+  const values = { '--model': 'model', '--base-url': 'baseUrl', '--transport': 'transport', '--api-key-env': 'apiKeyEnv', '--context-window': 'contextWindow', '--effort':'effort', '--cwd': 'cwd', '--once': 'once', '--permissions': 'permissions','--scope':'scope', '--web': 'web' };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') opts.help = true;
@@ -50,6 +51,7 @@ function parse(args) {
     } else throw new Error(`Unknown option: ${arg.startsWith('--') ? arg : '(positional argument)'}. Use --help.`);
   }
   if (opts.permissions && !['ask', 'allow-everything'].includes(opts.permissions)) throw new Error('Use --permissions ask or allow-everything.');
+  if(opts.scope&&!['read-only','project','full'].includes(opts.scope))throw new Error('Use --scope read-only, project or full.');
   if (opts.web && !['on', 'off'].includes(opts.web)) throw new Error('Use --web on or off.');
   if(opts.effort)opts.effort=validateReasoningEffort(opts.effort==='default'?undefined:opts.effort);
   return opts;

@@ -27,20 +27,26 @@ export function createAlwaysOn({
   inbox, assess, runCloud, onState = () => {}, onError = () => {}, wake, sleep,
   idleSleepMs = 30000, pollMs = 1000, standingGoal, heartbeatMs = 60000,
   watchPaths = [], watchDebounceMs = 500,
+  scheduler, beginTask, endTask,onTaskResult,
 } = {}) {
   if (!inbox || typeof inbox.list !== 'function' || typeof inbox.submit !== 'function' || typeof inbox.acquireWorker !== 'function'
     || typeof assess !== 'function' || typeof runCloud !== 'function' || typeof onState !== 'function' || typeof onError !== 'function'
-    || (wake !== undefined && typeof wake !== 'function') || (sleep !== undefined && typeof sleep !== 'function')) throw new Error('Always-on mode requires a durable inbox, local assessor and cloud worker callbacks.');
+    || (wake !== undefined && typeof wake !== 'function') || (sleep !== undefined && typeof sleep !== 'function') || scheduler !== undefined && typeof scheduler?.tick !== 'function'
+    || beginTask !== undefined && typeof beginTask !== 'function' || endTask !== undefined && typeof endTask !== 'function') throw new Error('Always-on mode requires a durable inbox, local assessor and cloud worker callbacks.');
   interval(idleSleepMs, 'Idle sleep interval'); interval(pollMs, 'Poll interval'); interval(heartbeatMs, 'Heartbeat interval'); interval(watchDebounceMs, 'Watch debounce interval');
   if (standingGoal !== undefined && (typeof standingGoal !== 'string' || !standingGoal.trim() || Buffer.byteLength(standingGoal) > 1024 * 1024)) throw new Error('Standing goal must be nonempty bounded text.');
   if (!Array.isArray(watchPaths) || watchPaths.length > 32 || watchPaths.some(value => typeof value !== 'string' || !value || /[\u0000-\u001f\u007f]/.test(value))) throw new Error('Watch paths must be a bounded list of project directories.');
-  let state = 'stopped', cloudState = 'unknown', activeJobId = null, startedAt = null, lastActivityAt = null, nextHeartbeatAt = null;
+  let state = 'stopped', cloudState = 'unknown', cloudBilling = 'unknown', activeJobId = null, startedAt = null, lastActivityAt = null, nextHeartbeatAt = null;
   let completed = 0, blocked = 0, failed = 0, lastError = null, controller, lease, loop, starting, stopping;
   let lastCloudActivity = 0, sleepAttempted = false, nextHeartbeat = 0, watchTimer, ignoreWatchUntil = 0;
   let lastStandingPrompt;
   const watchers = [], watchBatch = new Map();
   const clean = value => typeof inbox.redact === 'function' ? inbox.redact(String(value)) : String(value);
-  function snapshot() { return { state, cloudState, activeJobId, startedAt, lastActivityAt, nextHeartbeatAt, completed, blocked, failed, lastError }; }
+  function snapshot() { return { state, cloudState, cloudBilling, activeJobId, startedAt, lastActivityAt, nextHeartbeatAt, completed, blocked, failed, lastError }; }
+  function observedCloud(result) {
+    cloudState = result?.verified === true && result.state === 'running' ? 'awake' : result?.verified === true && ['stopped', 'deallocated'].includes(result.state) ? 'asleep' : 'unknown';
+    cloudBilling = result?.verified === true && ['active', 'storage-only', 'stopped'].includes(result.billing) ? result.billing : 'unknown';
+  }
   function report(error) {
     lastError = 'The coordinator could not complete an operation. Review its error log.';
     const visible = new Error(clean(error?.message || 'Always-on operation failed.'));
@@ -50,6 +56,12 @@ export function createAlwaysOn({
     try { const result = onState(snapshot()); result?.catch?.(report); } catch (error) { report(error); }
   }
   function setState(value) { state = value; emit(); }
+  async function closeTaskBudget(id) { try { await endTask?.(id); } catch (error) { report(error); } }
+  function budgetSignal(signal, limit) {
+    if (limit?.timeoutMs === undefined) return signal;
+    if (!Number.isSafeInteger(limit.timeoutMs) || limit.timeoutMs < 1 || limit.timeoutMs > 2147483647) throw new Error('Task duration budget returned an invalid timeout.');
+    return AbortSignal.any([signal, AbortSignal.timeout(limit.timeoutMs)]);
+  }
   function activity() { lastActivityAt = new Date().toISOString(); }
   function clearWatchBatch() { clearTimeout(watchTimer); watchTimer = undefined; watchBatch.clear(); }
   function closeWatchers() { clearWatchBatch(); for (const watcher of watchers.splice(0)) watcher.close(); }
@@ -108,14 +120,16 @@ export function createAlwaysOn({
   async function sleepCloud(signal) {
     if (!sleep || sleepAttempted || cloudState === 'asleep') return;
     sleepAttempted = true;
-    try { await sleep({ signal }); cloudState = 'asleep'; }
+    try { observedCloud(await sleep({ signal })); }
     catch (error) {
+      cloudBilling = 'unknown';
       if (signal?.aborted) { cloudState = 'unknown'; sleepAttempted = false; }
       else { cloudState = 'error'; report(error); }
     }
     emit();
   }
-  async function finishJob(job, patch) {
+  async function finishJob(job, patch,signal) {
+    if(onTaskResult)patch=await onTaskResult(job,patch,{signal});
     await inbox.update(job.id, patch);
     if (patch.status === 'completed') completed++;
     else if (patch.status === 'blocked') blocked++;
@@ -126,28 +140,32 @@ export function createAlwaysOn({
       await finishJob(job, { status: 'blocked', reason: selected.reason || 'The local supervisor needs more information. Review and explicitly retry this task when it is ready.' }); return;
     }
     if (selected.action === 'local') {
-      await finishJob(job, { status: 'completed', result: selected.result ?? selected.reason ?? 'Handled by the local supervisor.', ...(selected.reason ? { reason: selected.reason } : {}) }); return;
+      await finishJob(job, { status: 'completed', result: selected.result ?? selected.reason ?? 'Handled by the local supervisor.', ...(selected.reason ? { reason: selected.reason } : {}) },signal); return;
     }
     try {
       if (signal.aborted) throw signal.reason;
       // Wake is an explicit provider hook, never a synthetic health score.
-      if (wake) await wake({ signal });
+      if (wake) observedCloud(await wake({ signal }));
+      else { cloudState = 'unknown'; cloudBilling = 'unknown'; }
       if (signal.aborted) throw signal.reason;
-      cloudState = 'awake'; sleepAttempted = false; emit();
+      sleepAttempted = false; emit();
     } catch (error) {
-      cloudState = 'error'; report(error);
-      await finishJob(job, { status: 'blocked', reason: signal.aborted ? 'Stopped before the cloud worker could start. Review and retry explicitly.' : `The cloud worker could not wake: ${clean(error?.message || 'wake failed')}` }); return;
+      cloudState = 'error'; cloudBilling = 'unknown'; report(error);
+      await finishJob(job, { status: 'blocked', reason: signal.aborted ? signal.reason?.name === 'TimeoutError' ? 'The task reached its duration budget before the cloud worker could start. Review and explicitly retry it after changing the limit if appropriate.' : 'Stopped before the cloud worker could start. Review and retry explicitly.' : `The cloud worker could not wake: ${clean(error?.message || 'wake failed')}` }); return;
     }
     await inbox.update(job.id, { status: 'running', ...(selected.reason ? { reason: selected.reason } : {}) });
+    if (signal.aborted) throw signal.reason;
     setState('working');
     const result = await runCloud({ ...job, prompt: selected.prompt ?? job.prompt, status: 'running' }, { signal });
     if (signal.aborted) throw signal.reason;
-    await finishJob(job, { status: 'completed', result: typeof result === 'string' ? result : typeof result?.result === 'string' ? result.result : 'Cloud task completed.' });
+    await finishJob(job, { status: 'completed', result: typeof result === 'string' ? result : typeof result?.result === 'string' ? result.result : 'Cloud task completed.' },signal);
     lastCloudActivity = Date.now();
   }
   async function processJob(job, signal, preselected) {
+    const coordinatorSignal = signal;
     activeJobId = job.id; activity(); clearWatchBatch(); setState('assessing');
     try {
+      signal = budgetSignal(signal, await beginTask?.(job.id));
       await inbox.update(job.id, { status: 'assessing' });
       let selected;
       try { selected = decision(preselected ?? await assess(job, { signal })); }
@@ -158,21 +176,26 @@ export function createAlwaysOn({
       if (signal.aborted) throw signal.reason;
       await execute(job, selected, signal);
     } catch (error) {
-      const isBlocked = signal.aborted || error?.code === 'APPROVAL_REQUIRED';
-      await finishJob(job, { status: isBlocked ? 'blocked' : 'failed', reason: signal.aborted ? 'The worker was stopped during this task. Review and explicitly retry it if needed.' : clean(error?.message || 'The worker failed to complete the task.') }).catch(report);
+      const isBlocked = signal.aborted || ['APPROVAL_REQUIRED', 'BUDGET_EXCEEDED', 'BUDGET_STORAGE_INVALID'].includes(error?.code);
+      await finishJob(job, { status: isBlocked ? 'blocked' : 'failed', reason: signal.aborted ? coordinatorSignal.aborted ? 'The worker was stopped during this task. Review and explicitly retry it if needed.' : 'The task reached its duration budget. Review its result and explicitly retry it after changing the limit if appropriate.' : clean(error?.message || 'The worker failed to complete the task.') }).catch(report);
       if (!signal.aborted) report(error);
     } finally {
+      await closeTaskBudget(job.id);
       activeJobId = null; activity(); ignoreWatchUntil = Date.now() + watchDebounceMs * 2;
-      if (!signal.aborted) setState('idle');
+      if (!coordinatorSignal.aborted) setState('idle');
     }
   }
   async function heartbeat(signal) {
     nextHeartbeat = Date.now() + heartbeatMs; nextHeartbeatAt = new Date(nextHeartbeat).toISOString();
     setState('assessing'); clearWatchBatch();
+    let job;
     try {
       const now = new Date().toISOString();
-      const job = { version: 1, id: randomUUID(), cwd: inbox.cwd, prompt: standingGoal, source: 'standing-goal', status: 'assessing', createdAt: now, updatedAt: now };
-      const selected = decision(await assess(job, { signal }));
+      job = { version: 1, id: randomUUID(), cwd: inbox.cwd, prompt: standingGoal, source: 'standing-goal', status: 'assessing', createdAt: now, updatedAt: now };
+      const assessmentSignal = budgetSignal(signal, await beginTask?.(job.id));
+      const selected = decision(await assess(job, { signal: assessmentSignal }));
+      if (assessmentSignal.aborted) throw assessmentSignal.reason;
+      await closeTaskBudget(job.id);
       if (signal.aborted) return;
       if (selected.action === 'cloud') {
         const selectedPrompt = clean(selected.prompt ?? standingGoal);
@@ -182,12 +205,13 @@ export function createAlwaysOn({
         await processJob(durable, signal, selected);
       } else lastStandingPrompt = undefined;
     } catch (error) { if (!signal.aborted) report(error); }
-    finally { if (!signal.aborted) setState('idle'); }
+    finally { if (job) await closeTaskBudget(job.id); if (!signal.aborted) setState('idle'); }
   }
   async function main(signal) {
     setState('idle');
     while (!signal.aborted) {
       try {
+        await scheduler?.tick();
         const job = (await inbox.list()).find(value => value.status === 'pending');
         if (signal.aborted) break;
         if (job) { await processJob(job, signal); continue; }
@@ -204,11 +228,12 @@ export function createAlwaysOn({
       setState('starting');
       try {
         const roots = await validatedWatchRoots();
-        lease = await inbox.acquireWorker(); await inbox.recoverInterrupted();
+        lease = await inbox.acquireWorker(); const interrupted = await inbox.recoverInterrupted();
+        for (const job of interrupted) await endTask?.(job.id);
         lastStandingPrompt = (await inbox.list()).filter(job => job.source === 'standing-goal').at(-1)?.prompt;
         controller = new AbortController();
         startedAt = new Date().toISOString(); activity(); lastCloudActivity = Date.now(); sleepAttempted = false;
-        cloudState = 'unknown'; lastError = null; nextHeartbeat = standingGoal ? Date.now() : 0;
+        cloudState = 'unknown'; cloudBilling = 'unknown'; lastError = null; nextHeartbeat = standingGoal ? Date.now() : 0;
         nextHeartbeatAt = standingGoal ? new Date(nextHeartbeat).toISOString() : null;
         installWatchers(roots); loop = main(controller.signal);
         return snapshot();

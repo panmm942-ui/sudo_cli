@@ -1,5 +1,7 @@
 # Verification — codexcli 0.5 / sudocli
 
+This is the historical v0.5 verification/archive record. Current release results are recorded in [v0.6 verification](verification-v0.6.md), with [native terminal evidence](v0.6-terminal-evidence.md) and the [22-area evidence table](v0.6-feature-evidence.md). The counts and archive observations below apply only to v0.5.
+
 October 7, 2026; Node.js 24.19.0; unchanged official Codex 0.160.1. Fresh complete `node --test` results:
 
 | Host | Tests | Passed | Skipped | Failed |

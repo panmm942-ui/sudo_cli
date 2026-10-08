@@ -77,23 +77,27 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
   const qualityColor = quality == null ? 90 : quality > 70 ? 32 : quality > 50 ? '38;5;208' : 31;
   const qualityLabel = quality == null ? 'Not measured' : `${quality}% ${quality > 70 ? 'Good' : quality > 50 ? 'Fair' : 'Bad'}`;
   const latency = state.health?.latencyMs;
-  const qualityText = qualityLabel + (latency == null ? '' : ` | ${(latency / 1000).toFixed(1)}s`) + (state.health?.pending ? ' waiting' : '');
+  const measured=state.health?.firstTokenLatencyMs??latency;
+  const qualityText = (state.healthPercent?qualityLabel+' | ':'')+(measured==null?'Not measured':`First token ${(measured/1000).toFixed(2)}s`)+(state.health?.errorRate==null?'':` | Errors ${Math.round(state.health.errorRate*100)}%`)+(state.health?.pending?' waiting':'');
   const fields = [
     field('Time', clock(now, timeZone)),
     field('Software System', describeSystem({ platform, arch })),
     field('Status', state.working ? 'Working' : 'Not Working', state.working ? 32 : 31),
     field('WiFi Connection', state.network?.wifi || 'Unknown', state.network?.wifi === 'Yes' ? 32 : state.network?.wifi === 'No' ? 31 : 90),
-    ...(state.network?.wifi === 'Yes' ? [field('Download', `${trafficRate(state.network.downloadBps)} | Upload: ${trafficRate(state.network.uploadBps)}`)] : []),
-    field('Connected AI', state.connectedAI || 'No AI connected'),
+    ...(state.network?.wifi === 'Yes' ? [field('Live Traffic', `Download: ${trafficRate(state.network.downloadBps)} | Upload: ${trafficRate(state.network.uploadBps)}`)] : []),
+    field('Connected AI', state.connectedAI || (state.configuredModel?`${state.configuredModel} (unconfirmed)`:'No AI selected')),
     field('AI Connection', qualityText, qualityColor),
+    ...(state.health?.generationTokensPerSecond==null?[]:[field('Generation',state.health.generationTokensPerSecond.toFixed(1)+' tokens/s (reported)')]),
     field('Context', contextText(state.context, available - 9)),
     field('Permissions', state.permissions === 'allow-everything' ? 'Allow Everything' : 'Ask', state.permissions === 'allow-everything' ? '38;5;208' : 37),
+    ...(state.scope?[field('Scope',state.scope)]:[]),
     field('Web Access', state.webAccess ? 'On' : 'Off', state.webAccess ? 32 : 90),
     field('Effort', state.effort || 'Provider default'),
     field('Worked', `${workedTime(state.worked?.sessionMs)} | In Total: ${workedTime(state.worked?.totalMs)}`),
     ...(state.chatTitle?[field('Chat',state.chatTitle)]:[]),
     ...(state.voice?[field('Voice',state.voice.status|| (state.voice.running?'Listening':'Off'),state.voice.running?32:90)]:[]),
     ...(state.agent?[field('24/7 Agent',state.agent.state||state.agent.phase||state.agent.status||'Idle')]:[]),
+    ...(state.verification?[field('Last Check',state.verification,state.verification==='Verified'?32:state.verification==='Failed'?31:'38;5;208')]:[]),
     field('Activity', activity),
     field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
   ];
@@ -107,7 +111,7 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
     });
     lines.push('');
   } else lines = [paint(LOGO_COLOR, 'SUDO CLI'), ...fields];
-  lines.push(paint(90, fit(`v${VERSION} | / for commands | Connection: estimate | Context: reported`, columns)), paint(90, fit(columns >= CREDITS.length ? CREDITS : SHORT_CREDITS, columns)), paint(90, '-'.repeat(columns)));
+  lines.push(paint(90, fit(`v${VERSION} | / for commands | Live Traffic is usage | Context: reported`, columns)), paint(90, fit(columns >= CREDITS.length ? CREDITS : SHORT_CREDITS, columns)), paint(90, '-'.repeat(columns)));
   if (color) lines[0] = BACKGROUND_STYLE + lines[0];
   if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [paint(LOGO_COLOR, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
   return { lines, height: lines.length, sticky: true };

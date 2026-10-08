@@ -53,15 +53,15 @@ test('runs an isolated ephemeral thread and streams intact UTF-8 notifications',
   assert.equal(events.filter(({ method }) => method === 'turn/completed').length, 2);
 });
 
-test('explicit full access reaches the native thread while web off still disables hosted search', async (t) => {
+test('Web Off full access remains sandboxed and disables hosted search', async (t) => {
   const engine = await createEngine(options('normal', { permissions: 'allow-everything', webAccess: false }));
   t.after(() => engine.close());
   const audit = JSON.parse((await engine.startTurn('Audit full access')).items[0].text);
   assert.equal(audit.thread.approvalPolicy, 'never');
-  assert.equal(audit.thread.sandbox, 'danger-full-access');
+  assert.equal(audit.thread.sandbox, 'workspace-write');
   assert.equal(audit.thread.config.web_search, 'disabled');
   assert.equal(audit.thread.config['sandbox_workspace_write.network_access'], false);
-  assert.equal(engine.runtimePolicy.sandbox.type, 'dangerFullAccess');
+  assert.equal(engine.runtimePolicy.sandbox.type, 'workspaceWrite');
 });
 
 test('web on enables sandboxed command networking without changing ask permissions', async (t) => {
@@ -103,7 +103,7 @@ test('a workspace sandbox cannot silently ignore enabled command networking', as
 
 test('explicit full access handles recognized approvals without showing permission prompts', async (t) => {
   let prompted = false;
-  const engine = await createEngine(options('approvals', { permissions: 'allow-everything', onApproval: async () => { prompted = true; return false; } }));
+  const engine = await createEngine(options('approvals', { permissions: 'allow-everything', scope:'full',webAccess:true,onApproval: async () => { prompted = true; return false; } }));
   t.after(() => engine.close());
   const responses = JSON.parse((await within(engine.startTurn('full access approvals'))).items[0].text);
   assert.equal(prompted, false);
@@ -171,6 +171,7 @@ test('maps approvals to one-time protocol decisions and declines unsupported sen
   const reviewed = [];
   const notifications = [];
   const engine = await createEngine(options('approvals', {
+    scope:'full',webAccess:true,
     onEvent: (event) => notifications.push(event),
     onApproval: async (request) => {
       reviewed.push(request);
@@ -251,7 +252,9 @@ test('rejects a runtime request when the app-server stops responding', async (t)
 test('bounds incomplete JSON lines instead of retaining unlimited server output', async (t) => {
   const engine = await createEngine(options('oversized-line'));
   t.after(() => engine.close());
-  await assert.rejects(within(engine.startTurn('large output')), /output exceeded/);
+  // The outer harness must outlast the engine's own 2-second request bound
+  // while the child transfers this 8 MiB fixture under concurrent CI load.
+  await assert.rejects(within(engine.startTurn('large output'),5000), /output exceeded/);
 });
 
 test('rejects empty input before sending a model request', async (t) => {

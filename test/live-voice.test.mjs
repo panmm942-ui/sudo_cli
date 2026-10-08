@@ -135,6 +135,11 @@ test('speech onset interrupts streamed playback without stopping microphone capt
   assert.equal(voice.snapshot().speaking, false);
   assert.equal(transcripts[0], 'Stop and do this instead.');
 });
+test('speaker echo mode ignores capture during playback and keeps a manual interruption', async t => {
+  const {createLiveVoice}=await import('../src/live-voice.mjs');let asr=0,onset=0;const baseUrl=await service(t,async(req,res)=>{for await(const _ of req){}if(req.url.endsWith('/transcriptions')){asr++;res.end('{"text":"echo"}');}else{res.writeHead(200,{'content-type':'audio/mpeg'});res.write('voice');}});
+  const voice=createLiveVoice({transcription:{baseUrl,model:'asr'},speech:{baseUrl,model:'tts'},echoMode:'speaker',platform:'linux',captureCommand:recorder([{delay:350,frames:20}]),playbackCommand:[process.execPath,'-e',"process.stdin.resume();process.stdin.on('end',()=>process.exit(0));",'--'],onSpeechStart:()=>onset++});t.after(()=>voice.stop());await voice.start();const reply=voice.speak('Reply still playing.');await waitFor(()=>voice.snapshot().speaking);await new Promise(resolve=>setTimeout(resolve,750));assert.equal(asr,0);assert.equal(onset,0);voice.interruptSpeech();assert.equal((await reply).interrupted,true);assert.equal(voice.snapshot().listening,true);assert.equal(voice.snapshot().speaking,false);
+});
+
 test('transcription backlog retains one pending phrase and reports overflow while recording continues', async t => {
   const { createLiveVoice } = await import('../src/live-voice.mjs');
   const pending = [], errors = [], transcripts = [];
