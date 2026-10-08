@@ -1,15 +1,23 @@
-import {mkdir,lstat,open,rename,rm} from 'node:fs/promises';
+import {mkdir,lstat,realpath,open,rename,rm} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {resolve,join,parse,relative} from 'node:path';
 import {randomUUID} from 'node:crypto';
 
-export async function privateDirectory(path){
+async function directoryPath(path,create){
   const root=resolve(path),parts=relative(parse(root).root,root).split(/[\\/]/).filter(Boolean);
-  let current=parse(root).root;
-  for(const part of parts){current=join(current,part);try{await mkdir(current,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
-    const info=await lstat(current);if(!info.isDirectory()||info.isSymbolicLink())throw new Error('Private state requires real directories; symbolic links are refused.');}
-  return root;
+  const checked=[];let current=parse(root).root;
+  for(const part of parts){current=join(current,part);if(create)try{await mkdir(current,{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
+    const info=await lstat(current);if(!info.isDirectory()||info.isSymbolicLink())throw new Error('Private state requires real directories; symbolic links are refused.');checked.push({path:current,info});}
+  // Resolve case/8.3 spelling only after refusing links, then recheck every
+  // original ancestor so native canonicalization cannot conceal a replacement.
+  const canonical=await realpath(root);
+  for(const entry of checked){const actual=await lstat(entry.path);if(!actual.isDirectory()||actual.isSymbolicLink()||actual.dev!==entry.info.dev||actual.ino!==entry.info.ino)throw new Error('Private state directory changed while resolving.');}
+  const before=checked.at(-1)?.info||await lstat(root),actual=await lstat(canonical);
+  if(!actual.isDirectory()||actual.isSymbolicLink()||actual.dev!==before.dev||actual.ino!==before.ino)throw new Error('Private state directory changed while resolving.');
+  return canonical;
 }
+export const privateDirectory=path=>directoryPath(path,true);
+export const canonicalRealDirectory=path=>directoryPath(path,false);
 export async function createPrivateRecord({directory,filename,maxBytes=65536}){
   if(!/^[a-zA-Z0-9._-]+$/.test(filename)||filename==='.'||filename==='..')throw new Error('Invalid state record name.');
   const root=await privateDirectory(directory),path=join(root,filename);

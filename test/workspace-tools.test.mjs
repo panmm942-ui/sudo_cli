@@ -3,11 +3,22 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink } from 'node:fs/promises';
 import { tmpdir } from './fixtures/temp-root.mjs';
 import { join } from 'node:path';
+import {createRequire,syncBuiltinESMExports} from 'node:module';
+import {execFile} from 'node:child_process';
+import {isolatedEnvironment} from '../src/permission-scope.mjs';
 
 async function stillRunning(pid) {
   if (process.platform === 'linux') {
     try { const stat = await readFile(`/proc/${pid}/stat`, 'utf8'); return !['Z','X'].includes(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]); }
     catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  }
+  if(process.platform==='darwin'){
+    const state=await new Promise((success,failure)=>execFile('/bin/ps',['-p',String(pid),'-o','stat='],{shell:false,encoding:'utf8',timeout:1000,maxBuffer:4096,env:isolatedEnvironment(process.env,{LC_ALL:'C'})},(error,stdout)=>{
+      if(error&&!(error.code===1&&!stdout.trim()))failure(error);else success(stdout.trim());
+    }));
+    if(!state)return false;
+    assert.match(state,/^[A-Za-z+<>]+$/,'The owned descendant must have a readable process state');
+    return state[0]!=='Z';
   }
   try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
 }
@@ -163,6 +174,48 @@ for (const reason of ['timed-out','cancelled']) test(`${reason} checks stop a SI
   assert.equal(await stillRunning(pid), false, 'runChecks must finish terminating the owned process group before returning');
 });
 
+for (const observation of ['zombie','live','invalid','unavailable']) test(`Darwin group EPERM requires bounded ${observation} process-state evidence before cancellation is accepted`,{skip:process.platform==='win32',timeout:5000},async t=>{
+  const {workspace}=await fixture(t),childProcess=createRequire(import.meta.url)('node:child_process');
+  const platform=Object.getOwnPropertyDescriptor(process,'platform'),originalKill=process.kill,originalExecFile=childProcess.execFile;
+  let group,inspections=0;
+  const kill=t.mock.method(process,'kill',(pid,signal)=>{
+    if(pid<0&&signal===0){group=-pid;throw Object.assign(new Error('Synthetic Darwin zombie group denial.'),{code:'EPERM'});}
+    return originalKill(pid,signal);
+  });
+  const inspect=t.mock.method(childProcess,'execFile',(file,args,options,callback)=>{
+    if(file!=='/bin/ps')return originalExecFile(file,args,options,callback);
+    inspections++;assert.deepEqual(args,['-A','-o','pgid=,stat=']);assert.equal(options.shell,false);
+    assert.ok(options.timeout<=1000);assert.equal(options.env.OPENAI_API_KEY,undefined);
+    const states=observation==='zombie'?`${group} Z+\n${group+1} S\n`:observation==='live'?`${group} S\n${group} Z\n`:'unparseable process state';
+    queueMicrotask(()=>callback(observation==='unavailable'?Object.assign(new Error('Synthetic unavailable process table.'),{code:'EACCES'}):null,states,''));
+  });
+  Object.defineProperty(process,'platform',{...platform,value:'darwin'});syncBuiltinESMExports();
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),50);
+  let result;
+  try{
+    [result]=await workspace.runChecks([{command:process.execPath,args:['-e','setInterval(()=>{},1000)']}],{signal:controller.signal,timeoutMs:3000});
+    assert.equal(result.status,observation==='zombie'?'cancelled':'error');
+    assert.equal(result.terminationIncomplete,observation==='zombie'?undefined:true);
+    assert.ok(inspections>0,'Darwin EPERM must be resolved by actual process-state inspection');
+  }finally{
+    clearTimeout(timer);Object.defineProperty(process,'platform',platform);kill.mock.restore();inspect.mock.restore();syncBuiltinESMExports();
+    if(group)try{originalKill(-group,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
+  }
+});
+
+test('Darwin process-state inspection confirms actual SIGTERM-ignoring descendants are stopped',{skip:process.platform==='win32',timeout:5000},async t=>{
+  const {workspace}=await fixture(t),platform=Object.getOwnPropertyDescriptor(process,'platform');let pid;
+  const descendant='process.on("SIGTERM",()=>{});process.send("ready");process.disconnect();setInterval(()=>{},1000)';
+  const script=`const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore","ignore","ignore","ipc"]});c.once("message",()=>console.log(c.pid));setInterval(()=>{},1000)`;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),1000);let result;
+  Object.defineProperty(process,'platform',{...platform,value:'darwin'});
+  try{[result]=await workspace.runChecks([{command:process.execPath,args:['-e',script]}],{signal:controller.signal,timeoutMs:4000});pid=Number(result.stdout.trim());}
+  finally{clearTimeout(timer);Object.defineProperty(process,'platform',platform);}
+  t.after(async()=>{if(pid>0&&await stillRunning(pid))try{process.kill(pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}});
+  assert.equal(result.status,'cancelled');assert.equal(result.terminationIncomplete,undefined);assert.ok(pid>0);
+  assert.equal(await stillRunning(pid),false,'Only exited or zombie descendants count as stopped');
+});
+
 test('untrusted checkpoint record paths are rejected before changing project files', async t => {
   const { cwd, stateDir, workspace } = await fixture(t);
   await writeFile(join(cwd, 'code.js'), 'before'); const { id } = await workspace.beginCheckpoint(); await writeFile(join(cwd, 'code.js'), 'after'); await workspace.completeCheckpoint(id);
@@ -218,4 +271,14 @@ test('credential redaction cannot amplify captured check output past its byte bo
   const { workspace } = await fixture(t, { secrets: () => ['x'] });
   const [result] = await workspace.runChecks([{ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(20))'] }], { maxOutputBytes: 64 });
   assert.equal(result.status, 'output-limit'); assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 64); assert.ok(!result.stdout.includes('x'));
+});
+
+test('Windows workspace and state spelling aliases retain the same checkpoint scope',{skip:process.platform!=='win32'},async t=>{
+  const root=await mkdtemp(join(tmpdir(),'sudo-checkpoint-case-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const cwd=join(root,'PrOjEcT'),stateDir=join(root,'PrIvAtE-StAtE');await mkdir(cwd);await mkdir(stateDir);
+  await writeFile(join(cwd,'file.txt'),'before');const {createWorkspaceTools}=await import('../src/workspace-tools.mjs');
+  const workspace=await createWorkspaceTools({cwd:join(root,'pRoJeCt'),stateDir:join(root,'pRiVaTe-sTaTe')});
+  const {id}=await workspace.beginCheckpoint('Native spelling alias');await writeFile(join(cwd,'file.txt'),'after');await workspace.completeCheckpoint(id);
+  const reopened=await createWorkspaceTools({cwd,stateDir});assert.equal((await reopened.listCheckpoints())[0].id,id);
+  const undo=await reopened.undoCheckpoint(id);assert.deepEqual(undo.conflicts,[]);assert.equal(await readFile(join(cwd,'file.txt'),'utf8'),'before');
 });

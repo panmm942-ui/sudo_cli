@@ -157,3 +157,14 @@ test('saved reports reject linked records and substituted symbolic storage', asy
   catch (error) { if (error.code === 'EPERM') { t.skip('Host does not permit symbolic links'); return; } throw error; }
   await assert.rejects(store.save({ task: 'unsafe', results: [] }), /storage changed/); assert.deepEqual(await readdir(outside), []);
 });
+
+test('Windows agent result storage accepts a native case alias without losing project or record identity', {skip:process.platform!=='win32'},async t=>{
+  const {root,cwd}=await fixture(t),stateDir=join(root,'PrIvAtE-StAtE'),alias=join(root,'pRiVaTe-sTaTe');
+  await mkdir(stateDir);const original=await lstat(stateDir),aliased=await lstat(alias);
+  assert.equal(original.dev,aliased.dev);assert.equal(original.ino,aliased.ino);
+  assert.notEqual(alias,await realpath(alias),'this fixture must exercise a real native spelling alias');
+  const store=await createAgentResults({cwd,stateDir:alias}),saved=await store.save({task:'Case alias result',results:[]});
+  const reopened=await createAgentResults({cwd,stateDir});assert.equal((await reopened.get(saved.id)).task,'Case alias result');
+  assert.deepEqual((await store.list()).map(row=>row.id),[saved.id]);
+  await reopened.remove(saved.id);assert.deepEqual(await store.list(),[]);
+});

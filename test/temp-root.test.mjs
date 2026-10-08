@@ -24,3 +24,14 @@ test('trusted OS temporary aliases produce canonical fixture paths while explici
     await assert.rejects(()=>getAgentWorker({cwd,stateDir:join(alias,'state')}),/storage/);
   }finally{for(const [name,value]of before)if(value===undefined)delete process.env[name];else process.env[name]=value;}
 });
+
+test('Windows native temp and private state paths normalize filesystem spelling without weakening link refusal', {skip:process.platform!=='win32'},async t=>{
+  const root=await mkdtemp(join(tmpdir(),'sudo-temp-case-test-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const real=join(root,'PrIvAtE-TeMp'),alias=join(root,'pRiVaTe-tEmP');await mkdir(real);
+  const names=['TEMP','TMP','TMPDIR'],before=new Map(names.map(name=>[name,process.env[name]]));
+  try{
+    for(const name of names)process.env[name]=alias;
+    assert.notEqual(alias,await realpath(alias));assert.equal(tmpdir(),await realpath(alias));
+    const privatePath=join(alias,'state');assert.equal(await privateDirectory(privatePath),await realpath(privatePath));
+  }finally{for(const [name,value]of before)if(value===undefined)delete process.env[name];else process.env[name]=value;}
+});

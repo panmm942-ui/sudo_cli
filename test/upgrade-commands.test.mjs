@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp} from 'node:fs/promises';
+import {mkdtemp,mkdir,realpath,symlink,rm} from 'node:fs/promises';
 import {tmpdir} from './fixtures/temp-root.mjs';
 import {join} from 'node:path';
 import {createUpgradeCommands} from '../src/upgrades.mjs';
@@ -14,3 +14,14 @@ test('offline upgrade commands keep memory and readable preferences usable witho
   await assert.rejects(commands.handle({name:'/test-connection',args:[]}),/connect/i);
 });
 test('a newer narrowed scope survives leaving a read-only planning workflow',async()=>{const root=await mkdtemp(join(tmpdir(),'sudocli-workflow-scope-'));const settings={scope:'full'},workflow={mode:'edit',setMode(mode){this.mode=mode;},snapshot(){return {mode:this.mode};}};const commands=await createUpgradeCommands({cwd:root,stateDir:join(root,'state'),settings,workflow,note:()=>{},ask:async()=>'',getConnection:()=>undefined,stopBackground:async()=>{}});await commands.handle({name:'/workflow',args:['plan']});assert.equal(settings.scope,'read-only');await commands.handle({name:'/permissions',args:['scope','project']});assert.equal(settings.scope,'read-only');await commands.handle({name:'/workflow',args:['edit']});assert.equal(settings.scope,'project');});
+
+test('Windows write-folder spelling aliases are canonicalized while junction ancestors remain refused',{skip:process.platform!=='win32'},async t=>{
+  const root=await mkdtemp(join(tmpdir(),'sudo-write-folder-case-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const folder=join(root,'WrItE-FoLdEr'),alias=join(root,'wRiTe-fOlDeR');await mkdir(folder);
+  const settings={},commands=await createUpgradeCommands({cwd:root,stateDir:join(root,'state'),settings,note:()=>{},ask:async()=>'',getConnection:()=>undefined,stopBackground:async()=>{}});
+  await commands.handle({name:'/permissions',args:['folders','add',alias]});
+  assert.deepEqual(settings.writableRoots,[await realpath(folder)]);
+  const outside=join(root,'outside'),junction=join(root,'junction');await mkdir(outside);await mkdir(join(outside,'nested'));await symlink(outside,junction,'junction');
+  await assert.rejects(commands.handle({name:'/permissions',args:['folders','add',join(junction,'nested')]}),/real folder/);
+  assert.deepEqual(settings.writableRoots,[await realpath(folder)]);
+});

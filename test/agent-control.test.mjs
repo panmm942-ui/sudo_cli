@@ -32,6 +32,14 @@ test('fixture server closes even when worker storage cleanup rejects',async t=>{
   await assert.rejects(()=>closeFixtureServer(server,async()=>{throw new Error('Synthetic worker storage cleanup failure.');}),/Synthetic worker storage/);
   assert.equal(server.listening,false);
 });
+
+test('Windows project and private state spelling aliases identify the existing exact worker record',{skip:process.platform!=='win32'},async t=>{
+  const {workerLocation,getAgentWorker}=await import('../src/agent-control.mjs');const {mkdir}=await import('node:fs/promises');
+  const root=await directory(t),cwd=join(root,'PrOjEcT'),stateDir=join(root,'PrIvAtE-StAtE');await mkdir(cwd);await mkdir(stateDir);
+  const location=await workerLocation({cwd,stateDir,create:true}),id=randomUUID();
+  await writeFile(location.path,JSON.stringify({version:1,id,cwd:location.cwd,pid:2147483647,port:1,token:'a'.repeat(64),startedAt:new Date().toISOString()}));
+  assert.deepEqual(await getAgentWorker({cwd:join(root,'pRoJeCt'),stateDir:join(root,'pRiVaTe-sTaTe')}),{running:false,stale:true,id,pid:2147483647});
+});
 async function waitFor(predicate, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 50)); }

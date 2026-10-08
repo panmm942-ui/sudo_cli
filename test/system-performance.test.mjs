@@ -336,7 +336,9 @@ function Get-Item {
 }
 `;
     const script = mocks + windowsGpuInventory.replace("Add-Type -TypeDefinition @'", "throw 'DXGI fixture unavailable'\nAdd-Type -TypeDefinition @'");
-    return JSON.parse(await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 4000, maxBytes: 32768 }));
+    // Cold CI PowerShell startup is outside this identity/type correctness
+    // assertion. Production sampling bounds and timeout failures stay separate.
+    return JSON.parse(await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 10000, maxBytes: 32768 }));
   }
   const valid = await readFixture('QWord');
   assert.equal(valid.complete, false, 'installed devices survive an independent DXGI failure');

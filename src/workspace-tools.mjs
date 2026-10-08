@@ -3,10 +3,11 @@ import { lstat, stat, realpath, open, opendir, readFile, writeFile, mkdir, mkdte
 import { resolve, relative, join, dirname, basename, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { defaultWorkStateDir } from './work-meter.mjs';
 import { createRedactor } from './redactor.mjs';
+import { isolatedEnvironment } from './permission-scope.mjs';
 
 const excludedDirectories = new Set(['.git', '.sudocli', '.codex', '.ssh', '.aws', '.azure', '.config', '.gnupg', '.docker', '.kube', '.cache', 'node_modules', 'runtime', 'upstream', 'secrets', 'credentials']);
 const sensitiveFile = /^(?:\.env(?:\..*)?|\.npmrc|\.netrc|\.pypirc|\.pgpass|\.my\.cnf|kubeconfig|credentials(?:\..*)?|id_(?:rsa|ed25519|ecdsa)|.*\.(?:pem|key|pfx|p12|kdbx))$/i;
@@ -26,9 +27,25 @@ const limit = (value, fallback, maximum, name) => {
   if (!Number.isSafeInteger(result) || result < 1 || result > maximum) throw new Error(`${name} must be a positive bounded integer.`);
   return result;
 };
-async function ownedGroupStillRunning(pid) {
+async function ownedGroupStillRunning(pid, timeoutMs = 1000) {
   try { process.kill(-pid, 0); }
-  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  catch (error) { if (error.code === 'ESRCH') return false; if (process.platform !== 'darwin' || error.code !== 'EPERM') throw error; }
+  if (process.platform === 'darwin') {
+    // XNU can report EPERM for an existing group containing only zombies.
+    // Read group/state metadata, never arguments or environment. A live member,
+    // malformed output or failed inspection must not become cleanup success.
+    const text = await new Promise((success, failure) => execFile('/bin/ps', ['-A', '-o', 'pgid=,stat='], {
+      shell: false, windowsHide: true, encoding: 'utf8', timeout: Math.min(1000, timeoutMs), maxBuffer: 256 * 1024,
+      env: isolatedEnvironment(process.env, { PATH: '/usr/bin:/bin', LC_ALL: 'C' })
+    }, (error, stdout) => error ? failure(error) : success(stdout)));
+    let live = false;
+    for (const line of text.split('\n').filter(line => line.trim())) {
+      const row = /^\s*(\d+)\s+([A-Za-z+<>]+)\s*$/.exec(line);
+      if (!row) throw new Error('Process group state could not be verified.');
+      if (Number(row[1]) === pid && row[2][0] !== 'Z') live = true;
+    }
+    return live;
+  }
   if (process.platform !== 'linux') return true;
   // Linux can retain a killed descendant as a zombie until its new parent
   // reaps it. Inspect only group membership/state; a zombie cannot run or
@@ -339,7 +356,7 @@ export async function createWorkspaceTools({ cwd = process.cwd(), stateDir = def
             terminate(true);
             const deadline = performance.now() + 1000;
             try {
-              while (await ownedGroupStillRunning(child.pid)) {
+              while (await ownedGroupStillRunning(child.pid, Math.max(1, Math.ceil(deadline - performance.now())))) {
                 if (performance.now() >= deadline) { cleanupFailed = true; break; }
                 await new Promise(resolve => setTimeout(resolve, 10));
               }
