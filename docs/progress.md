@@ -1,6 +1,10 @@
 # sudo cli progress
 
-Current release: **0.6.3**. Saved lower chat colors with contrast correction, runtime reset targets, GitHub release checks with confirmed verified updates, custom model editing tools, MiMo-shaped stream parsing, native command termination and loop/timeout protection are implemented. See [terminal colors](terminal-colors.md), [GitHub updates](github-updates.md), [model compatibility](model-compatibility.md), [reset settings](reset-settings.md) and [current verification](verification-v0.6.3.md).
+Current release: **0.6.5**. This release adds live local CPU/RAM/GPU/VRAM readings, bright-green user text with separate soft-white replies, direct color resets, a Search-line cursor and spaced command choices. The selected reasoning effort is applied at both provider boundaries; default omits an effort override.
+
+See [performance support](performance.md), [terminal colors](terminal-colors.md), [model compatibility](model-compatibility.md) and the [user guide](user-guide.md). Windows and WSL/Linux host probes read actual local counters; macOS GPU parsing uses fixtures. Real model inference remains a separate endpoint test. Historical verification records still describe their named releases.
+
+Version 0.6.4 added conversation scrolling, `/chat`, fresh-chat display resets and signed source integrity. Version 0.6.3 added saved lower chat colors, runtime reset targets, GitHub release checks, custom model editing tools, MiMo-shaped stream parsing, command termination and loop protection. See [0.6.4 verification](verification-v0.6.4.md) and [0.6.3 verification](verification-v0.6.3.md).
 
 Version 0.6.2 added green prompt accents, a selectable slash menu and local model file inspection/import. Any extension can be inspected; actual loading depends on the model format, installed runner and hardware. See [local model files](local-model-files.md) and [previous verification](verification-v0.6.2.md). Version 0.6.1 added local setup, per-AI personalization and saved specialists: [local AI and agents](local-ai-and-agents.md). Version 0.6.0 implemented the 22 approved roadmap areas: [feature evidence](v0.6-feature-evidence.md) and [user guide](user-guide.md).
 

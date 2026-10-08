@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { VERSION } from './version.mjs';
 import { ANTENNA_ROWS, renderAntenna, createAntennaClock, BACKGROUND_STYLE, FPS } from './antenna.mjs';
 import {createChatViewport} from './chat-viewport.mjs';
+import {performanceFields} from './performance-view.mjs';
 
 const LOGO = [
   ' ____  _   _ ____   ___      ____ _     ___ ',
@@ -72,7 +73,9 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
   const artWidth = Math.max(...ANTENNA_ROWS.map(line => line.length));
   const leftWidth = big ? logoWidth : artWidth;
   const beside = columns >= leftWidth + 36;
-  const available = beside ? columns - leftWidth - 3 : columns;
+  const performancePanel=!!state.performance&&beside&&columns>=leftWidth+3+58+3+28;
+  const panelWidth=performancePanel?Math.min(40,Math.max(28,Math.floor((columns-leftWidth-6)*0.32))):0;
+  const available = beside ? columns - leftWidth - 3 - (performancePanel?panelWidth+3:0) : columns;
   const field = (label, value, code = 37) => paint(90, `${label}: `) + paint(code, fit(value, Math.max(0, available - label.length - 2)));
   const quality = state.health?.percent;
   const qualityColor = quality == null ? 90 : quality > 70 ? 32 : quality > 50 ? '38;5;208' : 31;
@@ -101,14 +104,18 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
     ...(state.verification?[field('Last Check',state.verification,state.verification==='Verified'?32:state.verification==='Failed'?31:'38;5;208')]:[]),
     field('Activity', activity),
     field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
+    ...(!performancePanel&&state.performance?['',field('Performance','This PC'),...performanceFields(state.performance).map(item=>field(item.label,item.value))]:[]),
   ];
   let lines;
   if (beside) {
     const antenna = renderAntenna({ elapsed: antennaElapsed, idle: antennaIdle, color });
     const left = big ? [...LOGO.map(line => paint(LOGO_COLOR, line)), '', ...antenna] : [paint(LOGO_COLOR, 'SUDO CLI'), ...antenna];
-    lines = Array.from({ length: Math.max(left.length, fields.length) }, (_, index) => {
+    const performanceStart=big?LOGO.length+1:1;
+    const panel=performancePanel?[paint(37,'Performance (This PC)'),'',...performanceFields(state.performance).flatMap((item,index)=>[...(index?['']:[]),paint(90,item.label+': ')+paint(37,fit(item.value,Math.max(0,panelWidth-item.label.length-2)))])]:[];
+    lines = Array.from({ length: Math.max(left.length, fields.length,performancePanel?performanceStart+panel.length:0) }, (_, index) => {
       const value = left[index] || '';
-      return value + ' '.repeat(Math.max(0, leftWidth-width(value))) + '   ' + (fields[index] || '');
+      const status=fields[index]||'';
+      return value + ' '.repeat(Math.max(0, leftWidth-width(value))) + '   ' + status + (performancePanel?' '.repeat(Math.max(0,available-width(status)))+'   '+(panel[index-performanceStart]||''):'');
     });
     lines.push('');
   } else lines = [paint(LOGO_COLOR, 'SUDO CLI'), ...fields];

@@ -11,6 +11,10 @@ Reset one setting directly by name:
 /reset updates
 ```
 
+For colors, `/bgcolor reset` and `/txtcolor reset` are direct shortcuts. They
+restore near-black (`#0B0F14`) and bright-green user text (`#00FF00`) independently.
+Assistant replies keep their separate readable soft-white foreground.
+
 Target names are case insensitive. Each reset reports completion after its setting change finishes. Unknown targets, extra arguments and flags are rejected before any setting changes. The descriptions shown by `/reset list` identify exactly what each target restores or clears; unavailable actions are omitted.
 
 `/reset all` shows the concrete setting changes it will apply and asks `y/n`. Only `y` or `yes` approves that displayed group. Other responses cancel without changing settings. The group restores eligible interface and runtime settings; individual color targets are omitted when the combined `colors` target is included, so colors reset once.

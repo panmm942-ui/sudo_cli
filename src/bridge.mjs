@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { once } from 'node:events';
 import { createToolPolicy } from './provider-capabilities.mjs';
+import { applyReasoningPolicy } from './reasoning-policy.mjs';
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_HISTORY_CALLS = 1024;
@@ -490,13 +491,14 @@ async function readUpstream(response) {
 }
 
 /** Start a private, authenticated Responses-to-Chat-Completions adapter. */
-export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,streaming=true, toolsAllowed = true, toolAllowlist, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
+export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,streaming=true, toolsAllowed = true, toolAllowlist, reasoningPolicy, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
   const url = endpoint(baseUrl);
   if (!validModel(model)) throw new Error('A nonempty model identifier without control characters is required.');
   if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || /[\r\n]/.test(apiKey))) throw new Error('If provided, the API key must be a nonempty string without line breaks.');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new Error('timeoutMs must be a positive integer within the timer range.');
   createToolPolicy({ toolsAllowed, toolAllowlist });
   if (typeof onPolicyError !== 'function') throw new Error('The model policy callback must be a function.');
+  if (reasoningPolicy !== undefined && typeof reasoningPolicy !== 'function') throw new Error('The reasoning policy must be a function.');
   const token = randomBytes(32).toString('hex');
   const expectedAuth = Buffer.from(`Bearer ${token}`);
   const reasoning = new Map();
@@ -539,7 +541,8 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,s
       const body = await readRequest(req);
       const { request: preparedRequest, custom, toolNames } = modelRequest(body, model, reasoning, toolsAllowed);
       const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist });
-      const request = toolPolicy.filterRequest(preparedRequest, { format: 'chat-completions' });
+      let request = toolPolicy.filterRequest(preparedRequest, { format: 'chat-completions' });
+      if(reasoningPolicy)request=applyReasoningPolicy(request,reasoningPolicy(),{format:'chat-completions'});
       if(!streaming){request.stream=false;delete request.stream_options;}
       latestToolCatalog = toolPolicy.getToolCatalog().filter(name => !apiKey || !name.includes(apiKey));
       if (controller.signal.aborted) throw new Error('Aborted');
@@ -595,6 +598,7 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,s
       }
       const failure = timedOut ? new BridgeError(504, 'Model request timed out.', 'upstream_timeout')
         : hookFailure ? new BridgeError(String(error?.code).toUpperCase() === 'BUDGET_EXCEEDED' ? 429 : 503, String(error?.code).toUpperCase() === 'BUDGET_EXCEEDED' ? 'The configured model budget is exhausted.' : 'The model budget could not be verified.', 'budget_error')
+        : ['INVALID_REASONING_REQUEST','INVALID_REASONING_POLICY'].includes(policyCode) ? new BridgeError(400,error.message)
         : ['TOOLS_DISABLED', 'TOOL_NOT_ALLOWED'].includes(policyCode) ? new BridgeError(502, 'The model returned a tool call outside the configured tool permissions.', 'tool_policy_error')
         : error instanceof BridgeError ? error : new BridgeError(502, 'Unable to reach the model endpoint.', 'upstream_error');
       const writer = streamWriter ?? error?.streamWriter;

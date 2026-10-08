@@ -5,6 +5,40 @@ import { stripVTControlCharacters } from 'node:util';
 
 const example = { cwd: '/projects/demo', working: false, status: 'Offline', connectionState: 'pending', configuredModel: 'test-model', connectedAI: null, context: { used: null, limit: 200000, percent: null } };
 
+test('local performance is readable beside the antenna on wide terminals and below status on smaller ones',async()=>{
+  const {renderDashboard}=await import('../src/dashboard.mjs');
+  const {ANTENNA_ROWS}=await import('../src/antenna.mjs');
+  const performance={cpu:{status:'available',percent:12.5},ram:{status:'available',usedBytes:8*1024**3,totalBytes:32*1024**3,percent:25},gpu:{status:'unavailable',adapters:[]},vram:{status:'unavailable'}};
+  for(const columns of [150,110,70,48]){
+    const view=renderDashboard({state:{...example,performance,scope:'project',chatTitle:'New chat',network:{wifi:'Yes',downloadBps:1024,uploadBps:2048}},columns,rows:44,color:true});
+    assert.equal(view.sticky,true,`Useful layout at ${columns} columns`);
+    const lines=view.lines.map(stripVTControlCharacters),text=lines.join('\n');
+    for(const field of ['Performance','CPU: 12.5%','RAM: 8.0/32.0 GiB (25.0%)','GPU: Unavailable','VRAM: Unavailable'])assert.ok(text.includes(field),`${columns} columns missing ${field}`);
+    assert.ok(lines.every(line=>[...line].length<columns),`${columns}: ${text}`);
+    if(columns===150){
+      const first=lines.findIndex(line=>line.includes('Performance (This PC)'));
+      assert.ok(first>=0&&lines[first].includes(ANTENNA_ROWS[0]),'Performance begins beside the antenna');
+      assert.equal(lines[first+1].slice(lines[first].indexOf('Performance')).trim(),'','Heading has breathing room');
+    }else assert.match(text,/Performance: This PC/);
+    assert.doesNotMatch(text,/GPU: 0\.0%|VRAM: 0[\/.]/,'Unknown counters cannot look idle');
+    assert.ok(44-view.height>=4,'Input remains usable');
+  }
+});
+
+test('performance resize keeps the input outside the header and falls back safely on tiny terminals',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const state={...example,performance:{cpu:{status:'warming-up'},ram:{status:'unavailable'},gpu:{status:'unavailable'},vram:{status:'unavailable'}}};
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:150,rows:44,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>state,env:{TERM:'xterm'},tickMs:0});
+  dashboard.start();assert.ok(dashboard.inputArea().rows>=4);
+  out.columns=35;out.rows=8;out.text='';out.emit('resize');
+  assert.equal(dashboard.inputArea().top,2);assert.match(out.text,/Enlarge terminal/);
+  assert.doesNotMatch(out.text,/\x1b\[\d+;\d+r/);
+  out.columns=150;out.rows=44;out.text='';out.emit('resize');
+  assert.match(out.text,/Performance \(This PC\)/);assert.ok(dashboard.inputArea().rows>=4);
+  dashboard.stop();assert.ok(out.text.endsWith('\x1b[?1049l'));
+});
+
 test('command picker receives a bounded input area below the header after terminal resize',async()=>{
   const {createDashboard}=await import('../src/dashboard.mjs');
   const out=Object.assign(new EventEmitter(),{isTTY:true,columns:150,rows:44,text:'',write(value){this.text+=value;}});

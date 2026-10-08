@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validateConnection } from './runtime.mjs';
 import { createToolPolicy } from './provider-capabilities.mjs';
+import { applyReasoningPolicy } from './reasoning-policy.mjs';
 
 const MAX_REQUEST = 16 * 1024 * 1024;
 const MAX_EVENT_LINE = MAX_REQUEST;
@@ -18,11 +19,12 @@ const reportedUsage = usage => {
 };
 
 /** Private pass-through for native Responses. Content is neither logged nor saved. */
-export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 120000, toolsAllowed = true, toolAllowlist, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
+export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 120000, toolsAllowed = true, toolAllowlist, reasoningPolicy, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
   const connection = validateConnection({ model: 'responses-monitor', baseUrl, apiKey, transport: 'responses' });
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new Error('Invalid model timeout.');
   createToolPolicy({ toolsAllowed, toolAllowlist });
   if (typeof onPolicyError !== 'function') throw new Error('The model policy callback must be a function.');
+  if (reasoningPolicy !== undefined && typeof reasoningPolicy !== 'function') throw new Error('The reasoning policy must be a function.');
   const endpoint = connection.baseUrl.replace(/\/$/, '') + '/responses';
   const token = randomBytes(32).toString('hex');
   const expected = Buffer.from(`Bearer ${token}`);
@@ -71,8 +73,9 @@ export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 12000
       if (!request || typeof request !== 'object' || Array.isArray(request)) return json(res, 400, 'Model requests must contain a JSON object.');
       const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist });
       request = toolPolicy.filterRequest(request);
+      if(reasoningPolicy)request=applyReasoningPolicy(request,reasoningPolicy());
       latestToolCatalog = toolPolicy.getToolCatalog().filter(name => !connection.apiKey || !name.includes(connection.apiKey));
-      if (!toolPolicy.unrestricted) outgoing = Buffer.from(JSON.stringify(request));
+      if (!toolPolicy.unrestricted || reasoningPolicy) outgoing = Buffer.from(JSON.stringify(request));
       model = request.model;
       requestId = randomUUID(); started = performance.now();
       let reservation;
@@ -182,7 +185,8 @@ export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 12000
       if (toolViolation) {
         try { Promise.resolve(onPolicyError({ code: error.code, message: 'The model returned a tool call outside the configured tool permissions.' })).catch(() => {}); } catch { /* The provider response remains rejected even if notification fails. */ }
       }
-      if (!res.headersSent) json(res, timedOut ? 504 : hookFailure ? exhausted ? 429 : 503 : 502, timedOut ? 'Model request timed out.' : hookFailure ? exhausted ? 'The configured model budget is exhausted.' : 'The model budget could not be verified.' : toolViolation ? 'The model returned a tool call outside the configured tool permissions.' : 'Unable to reach the model endpoint.', hookFailure ? 'budget_error' : toolViolation ? 'tool_policy_error' : 'upstream_error');
+      const invalidReasoning=['INVALID_REASONING_REQUEST','INVALID_REASONING_POLICY'].includes(error?.code);
+      if (!res.headersSent) json(res, timedOut ? 504 : invalidReasoning ? 400 : hookFailure ? exhausted ? 429 : 503 : 502, timedOut ? 'Model request timed out.' : invalidReasoning ? error.message : hookFailure ? exhausted ? 'The configured model budget is exhausted.' : 'The model budget could not be verified.' : toolViolation ? 'The model returned a tool call outside the configured tool permissions.' : 'Unable to reach the model endpoint.', invalidReasoning ? 'invalid_request_error' : hookFailure ? 'budget_error' : toolViolation ? 'tool_policy_error' : 'upstream_error');
       else res.destroy();
     } finally {
       clearTimeout(timer); controllers.delete(controller); req.off('aborted', abort); res.off('close', abort);

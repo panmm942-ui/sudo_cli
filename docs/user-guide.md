@@ -1,6 +1,10 @@
-# Using sudocli 0.6.4
+# Using sudocli 0.6.5
 
-Use `/bgcolor COLOR` and `/txtcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability. `/reset` lets you choose settings to restore.
+Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/txtcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
+
+`/bgcolor reset` restores the default background. `/txtcolor reset` restores green user text. `/reset` lets you choose other settings to restore. Existing saved color choices remain saved until you change or reset them.
+
+The Search line in the command picker now holds the cursor, with blank lines between choices when space permits. **Performance (This PC)** shows live local CPU, RAM, GPU and VRAM beside the antenna. The selected AI can run locally or in the cloud; these readings always describe the computer running SUDO CLI.
 
 `/update check` checks stable releases from `panmm942-ui/sudo_cli`. Launch checks are enabled by default; installation requires your **y/n** answer and a verified compatible package. `/update off` disables launch checks.
 
@@ -50,13 +54,26 @@ Use the model's actual capacity; the number above is an example. Selected AI and
 
 Saved profiles retain nonsecret model/endpoint/protocol metadata, optional capacity and explicitly declared effort/capability information. They do not contain API-key values. `/switch remove NAME` removes a profile. `/switch` alone lists choices; switching sends no chat until your next task.
 
-`/capabilities` distinguishes observed facts, declarations and unknown support for text, streaming, tools, vision, reasoning, audio, structured output, hosted search, training and model discovery. `/capabilities declare FEATURE on|off` records your known service support. An observation from one model is not proof about another model. Unsupported declared features are refused; unknown support stays labelled. For reasoning, `/effort supported low,medium,high` declares permitted values; `/effort default` reconnects without an override. A model name or parameter count never proves these capabilities.
+`/capabilities` distinguishes observed facts, declarations and unknown support for text, streaming, tools, vision, reasoning, audio, structured output, hosted search, training and model discovery. `/capabilities declare FEATURE on|off` records your known service support. An observation from one model is not proof about another model. Unsupported declared features are refused; unknown support stays labelled.
+
+For reasoning, `/effort supported low,medium,high` declares permitted values. `/effort default` omits the effort override from the provider request, even if the native model catalog suggested a level. An explicit supported selection replaces that suggestion on each request. A model name or parameter count never proves these capabilities. See [model compatibility](model-compatibility.md).
 
 The default credential lifetime is this process. `/credentials status` reports the backend; `/credentials save` explicitly uses Windows DPAPI, macOS Keychain or Linux Secret Service when installed/available. Protected storage belongs to that OS account and connection identity; a startup service may run as a different account. `/credentials forget` removes the stored credential while an already-connected session retains its in-memory key.
 
 ## Enter readable prompts and search
 
-Enter a normal task, such as `Explain this project and identify its main entry point.` Type `/` at an empty idle prompt to open all commands in a selectable menu. Type to filter, use arrows or Page Up/Down, and press Enter to fill a command. Add arguments if needed and press Enter again to run it. Escape restores your slash query. `/help` prints the complete list; `TERM=dumb` uses `/` followed by Enter for that list. `/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
+Enter a normal task, such as `Explain this project and identify its main entry point.`
+
+To find a command:
+
+1. Type `/` at an empty idle prompt.
+2. Type a name or description on the **Search** line. The cursor stays beside your query.
+3. Use arrows or Page Up/Down to browse the spaced choices.
+4. Press Enter to fill a command. Add arguments, then Enter again to run it.
+
+Escape restores your slash query. Narrow or short terminals reduce spacing and visible choices while keeping search usable. `/help` prints the complete list; `TERM=dumb` uses `/` followed by Enter for that list.
+
+`/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
 
 Browse the conversation under the fixed dashboard with **PgUp/PgDn** or the mouse wheel. **Ctrl+Home** jumps to the first retained text; **Ctrl+End** returns to the newest output and your input prompt. `/scroll up` and `/scroll down` move one page; `/scroll top` and `/scroll bottom` jump to the beginning or return live. When new replies arrive while you browse, the older view stays in place and shows **New output**. Typing or pasting returns to live input. The command picker owns PgUp/PgDn while open, and secret questions and multiline prompts keep their own input behavior. See [chat scrolling](chat-scrolling.md) for terminal support, selection and display limits.
 
@@ -74,6 +91,22 @@ function total(values) {
 `/prompt` preserves multiline text until `/end`. On terminals supporting bracketed paste, pasted text is queued as a literal prompt; embedded slash lines do not change permissions or execute commands. Unbracketed terminals should use `/prompt` for multiline content.
 
 Prompts submitted during work queue in order. `/stop` or Ctrl+C interrupts model work without deleting the queue. `/steer TEXT` guides an active native turn when it accepts steering. Other commands entered while busy wait for the current work. Ctrl+C exits when idle.
+
+## Read local performance
+
+```text
+/performance
+/performance status
+/performance refresh
+```
+
+The first two print the cached **This PC** readings. `refresh` requests a fresh sample. Monitoring continues while the interactive CLI is idle, with no model request.
+
+CPU and RAM refresh every 1.5 seconds; GPU and graphics memory every 3 seconds. GPU reports the busiest measured adapter/engine. When its memory usage and capacity are known, the VRAM pair describes that same adapter.
+
+**Measuring** means a delta needs another sample. **Unavailable** means the OS or driver has not supplied usable counters. A real idle reading can be 0%; unknown usage is never changed to zero. Shared/unified graphics memory is labeled **Shared**. A measured byte count may appear with **total unavailable**.
+
+These are computer readings, including other programs. They remain local when an AI runs in the cloud. In WSL or a container, they describe the OS-visible environment. See [performance support and limits](performance.md).
 
 ## Use explicit coding checks and safe undo
 
@@ -220,7 +253,7 @@ Training is under `/help advanced`. `/training export` creates a bounded JSONL d
 
 `/update stage PACKAGE_OR_HTTPS_URL TRUSTED_SHA256` verifies a supplied trusted hash and stages a bounded ZIP. `/update install` validates compatible paths/package/runtime metadata, installs beside the old release and changes the registered launcher. `/update rollback` points it to the retained prior release. Review the checksum through a trusted channel and restart after switching versions. This is explicit update/rollback, not an automatic downloaded-code startup step.
 
-Official 0.6.4 packages check an Ed25519-signed manifest before startup. Altered or missing signed files, including credits, licenses and upstream notices, refuse startup. A deliberate fork can replace the verifier, so signing cannot prevent someone modifying a fork. Preserve the included credits, license texts and upstream notices when distributing packages. See [signed release integrity](release-integrity.md) for the publishing process and limits.
+Official 0.6.5 packages check an Ed25519-signed manifest before startup. Altered or missing signed files, including credits, licenses and upstream notices, refuse startup. A deliberate fork can replace the verifier, so signing cannot prevent someone modifying a fork. Preserve the included credits, license texts and upstream notices when distributing packages. See [signed release integrity](release-integrity.md) for the publishing process and limits.
 
 ## What persists and what was tested
 
@@ -237,5 +270,7 @@ Official 0.6.4 packages check an Ed25519-signed manifest before startup. Altered
 `SUDO_CLI_STATE_DIR` selects independent persistent storage. Normal `/quit` saves state/work totals, stops live audio and foreground background work, closes the private engine and restores the terminal. A deliberately detached worker continues until stopped.
 
 Actual Linux x64 PTY acceptance used the native Codex engine and 22 loopback streamed model requests with isolated HOME/XDG/state/project; all four CLI children exited 0. Multiline input and bracketed paste reached the model literally without changing permissions. Local Windows/Linux automated checks and actual Windows browser CDP acceptance are distinct from the six-target CI definition. macOS/ARM CI jobs, physical audio, external desktop services, production providers and rented GPU billing remain unverified here. See [terminal evidence](v0.6-terminal-evidence.md), [22-area evidence](v0.6-feature-evidence.md) and [release verification](verification-v0.6.md).
+
+Those linked receipts describe their named earlier releases. For 0.6.5, focused tests cover the color defaults/resets, command Search cursor and spacing, reasoning request boundaries, and performance sampling/cleanup. Actual Windows and WSL/Linux probes read local counters; macOS GPU parsing uses fixtures. Deterministic native tool fixtures verify transport and command/edit execution, without loading real model weights or establishing a model's quality.
 
 The frontend is MIT; bundled OpenAI Codex 0.160.1 and its matching source/notices retain Apache-2.0, and Node.js 24.19.0 retains its license/dependency notices. [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui). See [THIRD_PARTY.md](../THIRD_PARTY.md).

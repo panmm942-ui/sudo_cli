@@ -75,6 +75,31 @@ The CLI preserves declared reasoning levels, honors explicitly disabled vision,
 and does not invent a context-window size. Models must use the tools actually
 declared in their request.
 
+## Reasoning effort and provider defaults
+
+```text
+/effort default
+/effort supported low,medium,high
+/effort low
+```
+
+`default` leaves the effort choice to your provider. In version 0.6.5, the current
+selection is applied again at the provider boundary for every request. A default
+selection removes a native catalog's suggested effort before sending the request.
+
+For Responses, the CLI omits `reasoning.effort` and retains other valid reasoning
+options. For Chat Completions, it omits `reasoning_effort`. It does not send an
+invented effort named `default` or silently choose `high`.
+
+An explicit supported selection replaces the catalog suggestion. Invalid levels,
+levels outside your declared list, and overrides for an AI with reasoning
+explicitly disabled are refused before contacting the model endpoint. Switching
+to a model that cannot use the previous level restores provider default.
+
+Declare only levels supported by your real endpoint. The native engine, model
+metadata and transport fixtures cannot establish which reasoning modes a
+particular hosted model or local runner implements.
+
 ## Stopping commands and repeated actions
 
 `/stop` interrupts the current turn and asks the native engine to terminate its
@@ -103,6 +128,14 @@ also have a 120-second ceiling. Review the interrupted task before retrying or
 raising a limit. `/reset loopguard` restores the guard defaults.
 
 ## Regression evidence and its limits
+
+Version 0.6.5 adds focused loopback tests for both reasoning request boundaries:
+default omission, explicit selection, changed selections and invalid requests.
+These inspect the actual request sent to a deterministic local fixture. They do
+not run inference or establish how a provider interprets reasoning effort.
+
+The native tool-loop evidence below belongs to version 0.6.3. Retaining its
+receipt does not turn it into a 0.6.5 real-model test.
 
 `test/manual/verify-v0.6.3-model-loop-linux.py` runs the real interactive CLI,
 readline, the pinned native Linux engine and both provider paths inside real

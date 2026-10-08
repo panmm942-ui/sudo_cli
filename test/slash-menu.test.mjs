@@ -99,6 +99,58 @@ test('resizing clips every menu row and safely redraws even in a one-cell termin
   assert.ok(view.lines.length<=1);assert.deepEqual(view.lines,['']);
 });
 
+test('renders keep the editing cursor after the query on a dedicated search row',t=>{
+  const term=terminal();t.after(term.close);term.send('/');term.send('local');
+  const view=term.renders.at(-1);
+  assert.deepEqual(view.cursor,{row:1,column:14});
+  assert.equal(view.lines[view.cursor.row],'Search: /local');
+  assert.ok(view.cursor.row<view.lines.length-1);
+  term.send('\x7f');assert.deepEqual(term.renders.at(-1).cursor,{row:1,column:13});
+  term.stream.closeMenu();assert.equal(term.stream.snapshot().cursor,undefined);
+});
+
+test('blank rows separate command options while paging fits the resized viewport',t=>{
+  const commands=Array.from({length:12},(_,index)=>({name:`/command-${index}`,usage:'ARG',description:`Option ${index}`}));
+  const term=terminal({commands,size:{columns:60,rows:10}});t.after(term.close);term.send('/');
+  let view=term.stream.snapshot(),optionRows=view.lines.map((line,row)=>/^[ >] \/command-/.test(line)?row:-1).filter(row=>row>=0);
+  assert.ok(optionRows.length>=2);
+  for(let index=1;index<optionRows.length;index++)assert.equal(view.lines[optionRows[index]-1],'');
+  assert.equal(view.lines[view.cursor.row+1],'');
+  const firstPage=view.visibleEnd;term.send('\x1b[6~');view=term.stream.snapshot();
+  assert.equal(view.index,firstPage);assert.ok(view.lines.some(line=>line.startsWith(`> /command-${firstPage} `)));
+  term.size.rows=2;term.stream.refresh();view=term.stream.snapshot();
+  assert.equal(view.lines.length,2);assert.equal(view.cursor.row,0);
+  assert.equal(view.lines[0],'Search: /');assert.ok(view.lines[1].startsWith(`> /command-${firstPage} `));
+  term.send('\x1b[6~');assert.equal(term.stream.snapshot().index,firstPage+1);
+  term.size.rows=1;term.stream.refresh();view=term.stream.snapshot();
+  assert.deepEqual(view.lines,['Search: /']);assert.deepEqual(view.cursor,{row:0,column:9});
+});
+
+test('long Unicode queries show their editable tail and use terminal cell cursor columns',t=>{
+  const term=terminal({size:{columns:16,rows:8}});t.after(term.close);term.send('/');term.send('abcdef界e\u0301👩‍💻');
+  let view=term.stream.snapshot();
+  assert.equal(view.query,'abcdef界e\u0301👩‍💻');
+  assert.ok(view.cursor,'active query rendering supplies cursor coordinates');
+  assert.equal(view.lines[view.cursor.row],'Search: /~界e\u0301👩‍💻');
+  assert.deepEqual(view.cursor,{row:1,column:15});
+  term.size.columns=11;term.stream.refresh();view=term.stream.snapshot();
+  assert.equal(view.lines[view.cursor.row],'/~def界e\u0301👩‍💻');
+  assert.equal(view.cursor.column,10);
+  term.size.columns=9;term.stream.refresh();view=term.stream.snapshot();
+  assert.equal(view.lines[view.cursor.row],'/~f界e\u0301👩‍💻');
+  assert.equal(view.cursor.column,8);
+  term.size.columns=1;term.size.rows=1;term.stream.refresh();view=term.stream.snapshot();
+  assert.deepEqual(view.lines,['']);assert.deepEqual(view.cursor,{row:0,column:0});
+});
+
+test('flag and keycap emoji occupy two cells in search cursors and clipped options',t=>{
+  const term=terminal({commands:[{name:'/example',usage:'',description:'👩‍💻🇬🇷1️⃣界 extra'}]});t.after(term.close);
+  term.send('/');term.send('λ界e\u0301👩‍💻🇬🇷1️⃣');
+  assert.deepEqual(term.stream.snapshot().cursor,{row:1,column:19});
+  term.send('\x15');term.size.columns=19;term.stream.refresh();
+  assert.ok(term.stream.snapshot().lines.includes('> /example  👩‍💻🇬🇷~'));
+});
+
 test('bracketed slash paste stays literal and never opens the menu',async()=>{
   const input=new PassThrough(),pastes=[];
   const paste=createPasteInput({input,onPaste:text=>{pastes.push(text);return '';}}),term=terminal({source:paste});

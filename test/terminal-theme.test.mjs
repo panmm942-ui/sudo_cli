@@ -5,6 +5,27 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {stripVTControlCharacters} from 'node:util';
 
+test('live user prompts keep the same requested color as retained user text',async()=>{
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});
+  await theme.set('txtcolor','red');
+  for(const text of ['\x1b[92m  you › \x1b[0mhello','\x1b[38;5;46msearch\x1b[0m','\x1b[38;2;0;255;0mtyped']) {
+    const live=theme.styleUserInput(text);
+    assert.equal(stripVTControlCharacters(live),stripVTControlCharacters(text));
+    assert.doesNotMatch(live,/38;2;0;255;0m|\x1b\[92m/);
+    assert.match(live,/38;2;255;0;0m/);
+  }
+});
+
+test('reset is accepted by both color commands and restores only the requested setting',async()=>{
+  const {createTerminalTheme,DEFAULT_TERMINAL_COLORS}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});
+  await theme.set('bgcolor','white');await theme.set('txtcolor','red');
+  await theme.set('bgcolor','reset');
+  assert.equal(theme.get().bgcolor,DEFAULT_TERMINAL_COLORS.bgcolor);assert.equal(theme.get().txtcolor,'#ff0000');
+  await theme.set('txtcolor','reset');assert.equal(theme.get().txtcolor,DEFAULT_TERMINAL_COLORS.txtcolor);
+});
+
 test('saved lower-chat colors survive restart and reset independently',async()=>{
   const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
   const directory=await mkdtemp(join(tmpdir(),'sudo-theme-'));
@@ -13,10 +34,10 @@ test('saved lower-chat colors survive restart and reset independently',async()=>
     await theme.load();await theme.set('bgcolor','white');await theme.set('txtcolor','#114488');
     const restarted=createTerminalTheme({directory,color:true,env:{TERM:'xterm'}});await restarted.load();
     assert.equal(restarted.get().bgcolor,'#ffffff');assert.equal(restarted.get().txtcolor,'#114488');
-    await restarted.reset('txtcolor');assert.equal(restarted.get().bgcolor,'#ffffff');assert.equal(restarted.get().txtcolor,'#dce3eb');
+    await restarted.reset('txtcolor');assert.equal(restarted.get().bgcolor,'#ffffff');assert.equal(restarted.get().txtcolor,'#00ff00');
     await restarted.reset('bgcolor');assert.equal(restarted.get().bgcolor,'#0b0f14');
     const record=JSON.parse(await readFile(join(directory,'terminal-theme.json'),'utf8'));
-    assert.deepEqual(record,{version:1,bgcolor:'#0b0f14',txtcolor:'#dce3eb'});
+    assert.deepEqual(record,{version:1,bgcolor:'#0b0f14',txtcolor:'#00ff00'});
   } finally {await rm(directory,{recursive:true,force:true});}
 });
 
@@ -63,7 +84,7 @@ test('live user input preserves readline cursor controls and restores requested 
   const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','black');await theme.set('txtcolor','#abcdef');
   const rendered=theme.styleUserInput('\x1b[1G\x1b[0J\x1b[92m  you › \x1b[0mtyped\x1b[39m next');
   assert.ok(rendered.includes('\x1b[1G\x1b[0J'));
-  assert.match(rendered,/\x1b\[38;2;0;255;0m  you › /);
+  assert.match(rendered,/\x1b\[38;2;171;205;239m  you › /);
   assert.match(rendered,/\x1b\[38;2;171;205;239mtyped/);
   assert.match(rendered,/\x1b\[38;2;171;205;239m next/);
   assert.ok(rendered.startsWith(theme.userStyle));assert.ok(rendered.endsWith(theme.userStyle));

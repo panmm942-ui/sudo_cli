@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { commandMenu, parseMcpEntry } from './commands.mjs';
 import { collectAttachments } from './attachments.mjs';
-import { validateConnection, validateReasoningEffort, REASONING_EFFORTS } from './runtime.mjs';
+import { validateConnection, validateReasoningEffort, resolveReasoningEffort, REASONING_EFFORTS } from './runtime.mjs';
 import { workedTime, trafficRate } from './dashboard.mjs';
 import { computerToolFilters, isComputerTool } from './computer-policy.mjs';
 import {isLocalEndpoint} from './wizard.mjs';
@@ -17,14 +17,15 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
   settings.computerServers ??= new Set(); settings.disabledComputerTools ??= new Map();
   const keys = new Map();
   const serviceModule = () => import('./external-services.mjs');
+  const needEngine = () => { const engine=getEngine();if(!engine)throw new Error('Connect an AI with /switch or /connect before discovering native tools.');return engine; };
   const cacheKey = connection => `${connection.baseUrl}\0${connection.model}\0${connection.transport}`;
   const localEndpoint=isLocalEndpoint;
   function remember(connection) { if (connection.apiKey) { keys.set(cacheKey(connection),connection.apiKey); rememberSecret(connection.apiKey); } }
   async function activate(selected, carry = true) {
     if(!selected)return;
     const validated = validateConnection(selected);
-    const supported = validated.supportedEfforts;
-    if (settings.effort && supported && !supported.includes(settings.effort)) { settings.effort = undefined; note('Effort reset to provider default for this model.'); }
+    const effort = resolveReasoningEffort(settings.effort,validated);
+    if (effort !== settings.effort) { settings.effort = effort; note('Effort reset to provider default for this model.'); }
     await reconnect(validated,{carryHistory:carry}); remember(validated);
   }
   async function serviceSetup(label) {
@@ -83,7 +84,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
   }
   async function skills(args) {
     if(args[0]==='clear'){settings.skills=[];note('Queued skills cleared.');return;}
-    const result=await getEngine().listSkills({cwd,forceReload:true});
+    const engine=needEngine();const result=await engine.listSkills({cwd,forceReload:true});
     const available=result.data.flatMap(entry=>entry.skills || []);
     for(const entry of result.data)for(const error of entry.errors||[])note(`Skill load error: ${error.message||'invalid skill'}`);
     if(args[0]==='load'){
@@ -93,17 +94,17 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     }else{
       if(!available.length)note('No skills found. Put SKILL.md under .agents/skills/NAME/ in this project, then /skills list.');
       for(const skill of available)note(`${skill.name}${skill.enabled===false?' [disabled]':''} · ${skill.description||''} · ${skill.path}`);
-      for(const path of getEngine().instructionSources || [])note(`Loaded instructions: ${path}`);
+      for(const path of engine.instructionSources || [])note(`Loaded instructions: ${path}`);
     }
   }
   async function mcp(args) {
     if(!args.length||args[0]==='list'){
       if(!settings.mcp.size)note('No HTTP MCP servers configured. Use /mcp add NAME URL.');
       for(const[name,url]of settings.mcp)note(`${name} · ${url} · ${!settings.webAccess?'disabled by Web Off':settings.computerUse===false && (settings.computerServers.has(name)||!settings.disabledComputerTools.has(name))?'disabled by Computer Off':'enabled'}`);
-      if(settings.webAccess){const result=await getEngine().listMcpServers();for(const server of result.data)note(`${server.name} · ${JSON.stringify(server.runtimeStatus||server.authStatus||'status available')}`);}
+      if(settings.webAccess){const engine=getEngine();if(engine){const result=await engine.listMcpServers();for(const server of result.data)note(`${server.name} · ${JSON.stringify(server.runtimeStatus||server.authStatus||'status available')}`);}else note('Connect an AI with /switch or /connect to discover MCP server status.');}
     }else if(args[0]==='tools'){
       if(!settings.webAccess)throw new Error('Use /web on to enable HTTP MCP tools.');
-      const tools=await getEngine().listMcpTools();for(const tool of tools)note(`${tool.serverName}/${tool.name} · ${tool.tool?.description||''}`);if(!tools.length)note('No connected MCP tools are available.');
+      const tools=await needEngine().listMcpTools();for(const tool of tools)note(`${tool.serverName}/${tool.name} · ${tool.tool?.description||''}`);if(!tools.length)note('No connected MCP tools are available.');
     }else if(args[0]==='add'){
       const{name,url}=parseMcpEntry(`${args[1]}=${args[2]}`);settings.mcp.set(name,url);settings.disabledComputerTools.delete(name);await activate(getConnection());note(`MCP server ${name} configured${!settings.webAccess?' (enable with /web on)':settings.computerUse===false?' (new server disabled until /computer-use on)':''}.`);
     }else if(args[0]==='remove'){
@@ -124,7 +125,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
       note(`Computer MCP tools ${settings.computerUse?'permitted':'disabled'} for this session. This controls MCP tools; /permissions controls terminal commands.`);return;
     }
     if(!settings.webAccess){note('Computer tools require your HTTP MCP server and /web on.');return;}
-    const tools=(await getEngine().listMcpTools()).filter(isComputerTool);
+    const tools=(await needEngine().listMcpTools()).filter(isComputerTool);
     for(const tool of tools)note(`${tool.serverName}/${tool.name}`);
     if(!tools.length)note('No computer-use tools detected. /computer-use setup NAME URL connects your running browser/desktop MCP service.');
     note(`Computer tool policy: ${settings.computerUse===false?'disabled':'permitted'}. Model vision/tool support and the MCP service determine capability.`);
@@ -169,7 +170,7 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     else throw new Error('Use /training export,setup,start FILE,status ID,or cancel ID.');
   }
   async function handle({name,args=[],rawArgs=args.join(' ')}) {
-    if(['/model','/effort','/upload','/skills','/compact'].includes(name)&&!getConnection())throw new Error('Connect an AI with /switch or /connect first.');
+    if((['/model','/compact'].includes(name)||name==='/skills'&&args[0]!=='clear'||name==='/effort'&&args.length&&args[0]!=='default')&&!getConnection())throw new Error('Connect an AI with /switch or /connect first.');
     if(name==='/effort'&&args[0]&&!['default','supported'].includes(args[0])&&settings.capabilities?.reasoning===false)throw new Error('Reasoning overrides are disabled for this AI. Use /effort default.');
     if(name==='/training'&&args[0]==='start'&&settings.capabilities?.training===false&&settings.trainingService?.model===getConnection()?.model&&settings.trainingService?.baseUrl===getConnection()?.baseUrl)throw new Error('Training is disabled for this AI. Select a supported training service first.');
     if(name==='/help'){note(commandMenu(rawArgs));return true;}
@@ -194,8 +195,8 @@ export function createFeatureCommands({cwd,settings,profiles,history,note,ask,ge
     if(name==='/connect'){await activate(await configure(true,...(args[0]==='local'?[{forceLocal:true}]:[])));return true;}
     if(name==='/effort'){
       if(args[0]==='supported'){const levels=args.slice(1).join(',').split(',').map(value=>value.trim()).filter(Boolean);const selected=validateConnection({...getConnection(),supportedEfforts:levels});await activate(selected);note(`Declared supported effort: ${levels.join(', ')||'none'}. /switch save NAME persists this metadata.`);}
-      else if(args.length){const chosen=args[0];settings.effort=validateReasoningEffort(chosen==='default'?undefined:chosen,{supportedEfforts:getConnection().supportedEfforts});if(chosen==='default')await activate(getConnection());note(`Effort: ${settings.effort||'Provider default'}.`);}
-      else{note(`Effort: ${settings.effort||'Provider default'}`);note(getConnection().supportedEfforts?`Model-declared levels: ${getConnection().supportedEfforts.join(', ')}`:`Support is unknown for this endpoint. Standard request values: ${REASONING_EFFORTS.join(', ')}. The provider may reject unsupported levels; Default sends no override.`);}return true;
+      else if(args.length){const chosen=args[0];settings.effort=validateReasoningEffort(chosen==='default'?undefined:chosen,{supportedEfforts:getConnection()?.supportedEfforts});if(chosen==='default')await activate(getConnection());note(`Effort: ${settings.effort||'Provider default'}.`);}
+      else{const selected=getConnection();note(`Effort: ${settings.effort||'Provider default'}`);note(!selected?'No AI selected. Select an AI to inspect or change its supported reasoning levels.':settings.capabilities?.reasoning===false?'Reasoning overrides are disabled for this AI.':selected.supportedEfforts?`Model-declared levels: ${selected.supportedEfforts.join(', ')||'none'}`:`Support is unknown for this endpoint. Standard request values: ${REASONING_EFFORTS.join(', ')}. The provider may reject unsupported levels; Default sends no override.`);}return true;
     }
     if(name==='/web'||name==='/permissions'){
       if(!args.length){note(name==='/web'?`Web Access: ${settings.webAccess?'On':'Off'}`:`Permissions: ${settings.permissions}`);return true;}

@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.4**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.5**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -82,7 +82,9 @@ The complete visible transcript stays archived. Before replaying it to a new nat
 
 `/memory edit` saves only rules, decisions and preferences you approve. `/personalize setup` saves optional preferences separately for each endpoint/model/protocol. `/personalize set persona TEXT` or `/preferences set language Greek` changes one field while preserving the rest. Other fields are tone, length, format and instructions; `unset FIELD` removes one. These are instructions, not model training or permission grants.
 
-Clear reading is on by default; `/readability off` disables it and `/details` requests more explanation. Type `/` at an empty idle prompt to open the green command picker immediately. Type to filter, use arrows or Page Up/Down to browse, then press Enter to fill the selected command. Add its arguments and press Enter again to run it. Escape returns your typed slash query to the prompt. All registered commands are available across pages. `TERM=dumb` uses `/` followed by Enter for a plain list.
+Clear reading is on by default; `/readability off` disables it and `/details` requests more explanation. Type `/` at an empty idle prompt to open the green command picker. Its cursor stays beside your query on the **Search** line. Blank lines separate choices when there is room.
+
+Type to filter by command name or description. Use arrows or Page Up/Down to browse, then Enter to fill the selected command. Add its arguments and press Enter again to run it. Escape returns your slash query to the prompt. All registered commands are available across pages. `TERM=dumb` uses `/` followed by Enter for a plain list.
 
 `/prompt` accepts multiple lines until `/end`. Supported terminals use bracketed paste to keep pasted slash text literal. `/help work`, `/help voice` and `/help SEARCH` narrow the list; `/search-chat TEXT` searches visible chat. Tab completes command names. Hidden keys, setup questions and active tasks retain their own input behavior.
 
@@ -122,11 +124,17 @@ Background jobs and results persist. Interrupted jobs require review/retry, and 
 
 ## Dashboard, updates and verification
 
-Use `/bgcolor #141414` for the lower chat background and `/txtcolor green` for your text. The upper dashboard keeps its original palette. Similar text and background colors are corrected automatically. `/reset txtcolor` restores your text; `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
+Your text defaults to bright green (`#00FF00`); assistant replies and notices use soft white. Use `/bgcolor #141414` for the lower chat background and `/txtcolor lime` for bright green text. The upper dashboard keeps its original palette. Similar text and background colors are corrected automatically.
+
+`/bgcolor reset` restores the default background. `/txtcolor reset` restores green user text. `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
+
+**Performance (This PC)** appears beside the antenna: CPU, RAM, GPU and VRAM for the computer running the CLI. `/performance status` prints the readings; `/performance refresh` requests a new sample. They remain local when your AI runs in the cloud. GPU reports the busiest measured adapter/engine, and a known VRAM pair follows that adapter. Missing counters stay **Unavailable**; shared memory is labeled. See [local performance](docs/performance.md).
 
 Every interactive launch checks stable public releases from `panmm942-ui/sudo_cli`, unless you choose `/update off`. A newer compatible ZIP is offered with **y/n**; downloads, checksum verification and installation happen after **y**. `/update check` checks now. The repository needs a published release with its ZIP and checksum assets. See [GitHub updates](docs/github-updates.md).
 
-Custom model IDs now receive the native editing tool catalog. Chat Completions is translated into Responses for the Codex engine; native Responses endpoints can also connect. MiMo-shaped streaming null fields and reasoning replay are supported. `/stop` cancels the turn and terminates its native background commands. `/loopguard` controls repeated tool action protection and the default 120-second command timeout. See [model compatibility](docs/model-compatibility.md) and [loop protection](docs/tool-loop-guard.md). Endpoint compatibility still requires a real test with your selected model.
+Custom model IDs receive the native editing tool catalog. Chat Completions is translated into Responses for the Codex engine; native Responses endpoints can also connect. MiMo-shaped streaming null fields and reasoning replay are supported. `/effort default` omits a reasoning-effort override at the provider boundary, including any level suggested by the native catalog. An explicit supported selection takes precedence on each request.
+
+`/stop` cancels the turn and terminates its native background commands. `/loopguard` controls repeated tool action protection and the default 120-second command timeout. See [model compatibility](docs/model-compatibility.md) and [loop protection](docs/tool-loop-guard.md). Endpoint compatibility still requires a real test with your selected model.
 
 The supplied antenna characters, spacing and timing remain unchanged: 30 FPS, a 1.5-second pulse and 0.20-second wave delay. Only the six red waves animate; the tower/tip remain soft white on near-black. Animation freezes between tasks and resumes from the same phase. Narrow windows use a compact layout; very small windows show **Enlarge terminal**.
 
@@ -144,6 +152,8 @@ Version 0.6.2 added green input accents, the live command picker and local model
 
 Version 0.6.4 adds conversation scrolling, the canonical `/chat` command, fresh-chat display resets and signed source integrity. See [version 0.6.4 verification](docs/verification-v0.6.4.md) for the checks and their limits. Earlier release evidence remains in [version 0.6.3 verification](docs/verification-v0.6.3.md). Real model inference and physical macOS/ARM terminal behavior require separate validation.
 
+Version 0.6.5 adds live local performance, green user text with separate soft-white replies, direct color resets, a Search-line cursor and spaced command choices. It also applies the current reasoning selection at both provider boundaries. Windows and Linux host probes verified local counters; macOS performance parsing uses fixtures. Native tool-loop fixtures test transport and execution behavior, not a real model's decisions or every provider. Historical verification receipts remain evidence for their named releases.
+
 ## Launch options, source and licenses
 
 ```sh
@@ -155,7 +165,7 @@ Other options include `--permissions ask|allow-everything`, `--scope read-only|p
 
 The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
 
-Official 0.6.4 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
+Official 0.6.5 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
 
 ## Credits
 

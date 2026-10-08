@@ -1,5 +1,6 @@
 export const COMMANDS = [
   {name:'/help',usage:'',description:'All commands; / also opens this menu'},
+  {name:'/performance',usage:'[status|refresh]',description:'Live CPU, RAM, GPU and VRAM for this computer'},
   {name:'/status',usage:'',description:'Session, model, WiFi, context and timers'},
   {name:'/switch',usage:'[NAME|add|local|save NAME|remove NAME]',description:'Saved cloud/local AIs; transfer full chat on switch'},
   {name:'/model',usage:'[ID|list]',description:'Current model or endpoint model list'},
@@ -50,7 +51,7 @@ export const COMMANDS = [
   {name:'/gpu',usage:'[setup|status|wake|sleep]',description:'GPU hooks with actual provider state verification'},
   {name:'/schedule',usage:'[add|list|remove ID|pause ID|resume ID]',description:'Persistent scheduled work; idempotent task enqueue'},
   {name:'/startup',usage:'[setup|plan|install|remove]',description:'Explicit OS background service with protected credential loading'},
-  {name:'/credentials',usage:'[save|forget|status]',description:'Optional OS-protected keys; memory-only remains the default'},
+  {name:'/credentials',usage:'[status|help|backend|list|save|forget]',description:'Optional OS-protected keys; memory-only remains the default'},
   {name:'/memory',usage:'[show|edit|on|off|clear]',description:'Only user-approved project rules, decisions and preferences'},
   {name:'/readability',usage:'[on|off]',description:'Short answers, spaced actions and clearer reading'},
   {name:'/details',usage:'',description:'Ask for details about the last AI answer'},
@@ -58,8 +59,8 @@ export const COMMANDS = [
   {name:'/search-chat',usage:'TEXT',description:'Literal search of the complete saved conversation'},
   {name:'/search',usage:'QUERY',description:'Guided source-linked search through supported web/MCP tools'},
   {name:'/browser',usage:'[start|stop|status|executable PATH]',description:'Dedicated scoped Chromium browser MCP adapter'},
-  {name:'/bgcolor',usage:'[COLOR|status]',description:'Saved chat background; keep the upper dashboard palette'},
-  {name:'/txtcolor',usage:'[COLOR|status]',description:'Saved user text color with automatic readable contrast'},
+  {name:'/bgcolor',usage:'[COLOR|reset|status]',description:'Saved chat background; keep the upper dashboard palette'},
+  {name:'/txtcolor',usage:'[COLOR|reset|status]',description:'Saved user text color with automatic readable contrast'},
   {name:'/reset',usage:'[TARGET|list|all]',description:'Choose settings to restore; keep saved chats and AI profiles'},
   {name:'/loopguard',usage:'[status|on|off|timeout SECONDS|repeats COUNT]',description:'Stop repeated tool actions and bound native terminal command lifetimes'},
   {name:'/update',usage:'[check|repo OWNER/REPO|on|off|stage PACKAGE_OR_URL SHA256|install|rollback|status]',description:'GitHub launch check, confirmed verified updates and rollback'},
@@ -71,7 +72,7 @@ const groups={
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
   'Voice':['/voice','/microphone','/live'],
   'Background':['/247','/schedule','/startup','/budget','/gpu'],
-  'Advanced':['/training','/update','/doctor','/status','/bgcolor','/txtcolor','/reset','/loopguard'],
+  'Advanced':['/performance','/training','/update','/doctor','/status','/bgcolor','/txtcolor','/reset','/loopguard'],
 };
 export function commandMenu(query='',{compact=false}={}) {
   if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chat   Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');

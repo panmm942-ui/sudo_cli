@@ -36,6 +36,15 @@ export function validateReasoningEffort(value, { supportedEfforts } = {}) {
   return value;
 }
 
+/** Retain an override only when it is compatible with the newly selected AI. */
+export function resolveReasoningEffort(value, {supportedEfforts,capabilities} = {}) {
+  const supported = validateSupportedEfforts(supportedEfforts);
+  const declared = validateCapabilities(capabilities);
+  if (declared?.reasoning === false) return undefined;
+  try { return validateReasoningEffort(value, {supportedEfforts:supported}); }
+  catch { return undefined; }
+}
+
 function environmentValue(env, name) {
   if (env[name] !== undefined) return env[name];
   if (windows) {

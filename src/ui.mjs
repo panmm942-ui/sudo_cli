@@ -5,7 +5,7 @@ import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createEngine } from './engine.mjs';
 import { startBridge } from './bridge.mjs';
-import { validateConnection, providerArgs, createSessionHome } from './runtime.mjs';
+import { validateConnection, providerArgs, createSessionHome, resolveReasoningEffort } from './runtime.mjs';
 import { localCodex } from './local-engine.mjs';
 import { createPromptQueue } from './prompts.mjs';
 import { configureConnection } from './wizard.mjs';
@@ -53,6 +53,8 @@ import {fileURLToPath} from 'node:url';
 import {createToolLoopGuard} from './tool-loop-guard.mjs';
 import {createCommandWatchdog} from './command-watchdog.mjs';
 import {createChatScrollInput} from './chat-scroll-input.mjs';
+import {createSystemPerformance} from './system-performance.mjs';
+import {performanceFields} from './performance-view.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -89,11 +91,12 @@ export async function runUI(opts) {
   const history = createChatHistory({secrets:()=>secrets});
   const liveKeys=new Map();
   const network = createNetworkStatus();
-  const snapshot = () => ({ ...session.snapshot(),working:session.snapshot().working||backgroundWorking, permissions: settings.permissions,scope:settings.scope, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(),healthPercent:settings.healthPercent,budget:budgetSnapshot,verification:settings.lastVerification?.status, worked: workMeter?.snapshot(), network: network.snapshot(),...assistantFeatures?.snapshot(),chatTitle:chatSession?.current()?.title });
+  const performanceMonitor=createSystemPerformance();
+  const snapshot = () => ({ ...session.snapshot(),working:session.snapshot().working||backgroundWorking, permissions: settings.permissions,scope:settings.scope, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(),healthPercent:settings.healthPercent,budget:budgetSnapshot,verification:settings.lastVerification?.status, worked: workMeter?.snapshot(), network: network.snapshot(),performance:performanceMonitor.snapshot(),...assistantFeatures?.snapshot(),chatTitle:chatSession?.current()?.title });
   let activity = 'Offline shell', currentPrompt = null;
 
   let muted = false;
-  const output = new Writable({ write(chunk, _encoding, done) { if (!muted&&!dashboard?.isScrolled()) {const text=Buffer.isBuffer(chunk)?chunk.toString('utf8'):String(chunk);process.stdout.write((currentPrompt?.input||!currentPrompt)?terminalTheme.styleUserInput(text):terminalTheme.styleBodyText(text));} done(); } });
+  const output = new Writable({ write(chunk, _encoding, done) { if (!muted&&!dashboard?.isScrolled()) {const text=Buffer.isBuffer(chunk)?chunk.toString('utf8'):String(chunk);process.stdout.write(terminalTheme.styleUserInput(text));} done(); } });
   output.isTTY = process.stdout.isTTY;
   Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
   let rl;
@@ -101,8 +104,8 @@ export async function runUI(opts) {
   const scrollAction=name=>{if(name==='page-up')return dashboard?.pageUp();if(name==='page-down')return dashboard?.pageDown();if(name==='top')return dashboard?.scrollToTop();if(name==='bottom')return dashboard?.scrollToBottom();return dashboard?.scroll(name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:1);};
   if(interactive)scrollInput=createChatScrollInput({input:pasteInput,getContext:()=>({enabled:process.env.TERM!=='dumb'&&!slashMenu?.snapshot().active&&(!currentPrompt||currentPrompt.input&&!currentPrompt.hidden&&!currentPrompt.raw),paused:!!dashboard?.isScrolled()}),onScroll:scrollAction,onLive:()=>dashboard?.scrollToBottom(),onError:error=>note(error.message)});
   const terminalInput=interactive?slashMenu=createSlashMenuInput({input:scrollInput,getContext:()=>({enabled:!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
-    getSize:()=>dashboard?.inputArea()||{columns:Math.max(1,(process.stdout.columns||80)-1),rows:Math.max(3,(process.stdout.rows||24)-2)},
-    onRender:view=>{const area=dashboard?.inputArea();if(!area)return;const lines=view.lines.slice(0,Math.max(1,area.rows-1)).map((line,index)=>index===0||line.startsWith('>')?green(line):line);process.stdout.write(terminalTheme.styleBodyText(`\x1b[${area.top};1H\x1b[J`+lines.map(line=>line+'\x1b[K').join('\r\n')));},
+    getSize:()=>{const area=dashboard?.inputArea()||{columns:Math.max(1,(process.stdout.columns||80)-1),rows:Math.max(3,(process.stdout.rows||24)-2)};return {...area,rows:Math.max(1,area.rows-1)};},
+    onRender:view=>{const area=dashboard?.inputArea();if(!area)return;const lines=view.lines.map((line,index)=>index===view.cursor?.row?terminalTheme.styleUserText(line):index===0||line.startsWith('>')?green(line):line);const cursor=view.cursor||{row:0,column:0};const row=Math.min(area.bottom,area.top+cursor.row),column=Math.min(area.columns,1+cursor.column);process.stdout.write(terminalTheme.styleBodyText(`\x1b[?25l\x1b[${area.top};1H\x1b[J`+lines.map(line=>line+'\x1b[K').join('\r\n'))+`\x1b[${row};${column}H${terminalTheme.userStyle}\x1b[?25h`);},
     onClose:({selected,query,restore})=>{dashboard?.redraw();if(currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&(selected||restore)){rl?.write(null,{ctrl:true,name:'u'});rl?.write(selected||'/'+query);}},onError:error=>note(error.message),
   }):undefined;
   rl = interactive ? createInterface({ input: terminalInput, output, terminal: true, completer: completeCommand }) : null;
@@ -122,7 +125,7 @@ export async function runUI(opts) {
   const queuedInputs = [];
   let saving=0;
   const checkpoint=()=>{if(!chatSession)return Promise.resolve();saving++;return chatSession.checkpoint().catch(()=>note('Chat could not be saved. Existing saved data was preserved.')).finally(()=>saving--);};
-  const enqueue=(text,options={})=>{if(quitting)return;queuedInputs.push({text,recorded:false,...options});void checkpoint();if(currentPrompt?.input)prompts.cancel();};
+  const enqueue=(text,options={})=>{if(quitting)return;const entry={text,recorded:false,displayed:false,...options};queuedInputs.push(entry);if(currentPrompt?.input)prompts.cancel();if(!entry.displayed&&dashboard){dashboard.write(`\n  you › ${safe(text)}\n`,{user:true});entry.displayed=true;}void checkpoint();};
   const displayed = new Set();
   if (interactive) dashboard = createDashboard({ snapshot, activity: () => activity, color,theme:()=>terminalTheme,
     onResize: () => {
@@ -172,12 +175,19 @@ export async function runUI(opts) {
   };
   const handleRuntimeCommands=async command=>{
     const {name,args=[]}=command;
+    if(name==='/performance'){
+      if(args.length>1||args.length&&!['status','refresh'].includes(args[0]))throw new Error('Use /performance [status|refresh].');
+      if(args[0]==='refresh')await performanceMonitor.sample();
+      const current=performanceMonitor.snapshot();note('Performance (This PC)\n\n'+performanceFields(current).map(item=>`${item.label}: ${item.value}`).join('\n\n'));
+      if(current.gpu?.adapters?.length>1)note('GPU shows the busiest measured adapter. VRAM uses that adapter when its capacity is available; otherwise it shows the available combined counters.');
+      for(const adapter of current.gpu?.adapters||[])if(adapter.identified)note(`GPU: ${adapter.name}${Number.isFinite(adapter.sharedUsedBytes)?'; shared RAM '+(adapter.sharedUsedBytes/1024**2).toFixed(0)+' MiB used':''}`);return true;
+    }
     if(name==='/scroll'){
       const action=args[0]||'up';if(args.length>1||!['up','down','top','bottom','live'].includes(action))throw new Error('Use /scroll up|down|top|bottom.');
       const handled=scrollAction(action==='up'?'page-up':action==='down'?'page-down':action==='top'?'top':'bottom');if(!handled)note('Use an interactive terminal and enlarge it to browse chat history.');return true;
     }
     if(name==='/bgcolor'||name==='/txtcolor'){
-      if(args.length>1)throw new Error(`Use ${name} COLOR or ${name} status.`);
+      if(args.length>1)throw new Error(`Use ${name} COLOR, ${name} reset, or ${name} status.`);
       const target=name.slice(1);let value=args[0];
       if(!value)value=await ask(`  ${target==='bgcolor'?'Chat background':'Your text'} color [name/#RRGGBB; Enter cancels] › `);
       if(!value)return true;
@@ -257,7 +267,8 @@ export async function runUI(opts) {
     if(selected.apiKey)liveKeys.set(credentialIdentity(selected),selected.apiKey);
     if(selected.apiKey&&!secrets.includes(selected.apiKey))secrets.push(selected.apiKey);
     const identity=credentialIdentity(selected);settings.capabilities={...(selected.capabilities||{}),...(settings.capabilityByIdentity?.[identity]||{})};selected={...selected,capabilities:settings.capabilities};settings.observedCapabilities={};
-    if(settings.capabilities.reasoning===false)settings.effort=undefined;
+    const nextEffort=resolveReasoningEffort(settings.effort,selected);
+    if(nextEffort!==settings.effort){settings.effort=nextEffort;note('Previous reasoning setting is unavailable for this AI; using provider default.');}
     const transfer = carryHistory && history.snapshot().messages.length ? history.toPrompt() : '';
     await cleanup();
     connection=undefined;
@@ -271,12 +282,12 @@ export async function runUI(opts) {
     const env = isolatedEnvironment(process.env,{ CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' });
     let baseUrl = selected.baseUrl;
     if (selected.transport === 'chat-completions') {
-      bridge = await startBridge({ baseUrl, model: selected.model, apiKey: selected.apiKey,streaming:settings.capabilities.streaming!==false, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError });
+      bridge = await startBridge({ baseUrl, model: selected.model, apiKey: selected.apiKey,streaming:settings.capabilities.streaming!==false, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
       baseUrl = bridge.baseUrl;
       env.SUDO_CLI_SESSION_KEY = bridge.token;
       secrets.push(bridge.token);
     } else {
-      bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError });
+      bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
       baseUrl = bridge.baseUrl; env.SUDO_CLI_SESSION_KEY = bridge.token; secrets.push(bridge.token);
     }
     const args = providerArgs(selected, { baseUrl, keyEnv: 'SUDO_CLI_SESSION_KEY', permissions:settings.permissions, webAccess:settings.webAccess,scope:settings.scope,writableRoots:settings.writableRoots });
@@ -402,7 +413,7 @@ export async function runUI(opts) {
       void checkpoint();
       engine?.steer(message).then(()=>note('Prompt sent to the active turn.')).catch(error=>note(error.message));return;
     }
-    enqueue(text);note(`Queued prompt ${queuedInputs.length}; current work continues. /stop interrupts it.`);
+    enqueue(text,{displayed:true});note(`Queued prompt ${queuedInputs.length}; current work continues. /stop interrupts it.`);
   });
   try {
     await terminalTheme.load();
@@ -474,7 +485,7 @@ export async function runUI(opts) {
       ai:resetAction('Disconnect this AI; preserve saved AIs, credentials and chat.',async()=>{await assistantFeatures.stopForPolicyChange();await cleanup();connection=undefined;settings.pendingContext=history.toPrompt();session.updateConnection(undefined);activity='Offline shell';dashboard?.refresh();},{includeInAll:false}),
     }});
     const handleReset=async command=>{resetRefresh=false;try{return await resetCommands.handle(command);}finally{if(resetRefresh&&connection)await connect(connection,{carryHistory:true});}};
-    if(interactive)await network.start();
+    if(interactive){await network.start();performanceMonitor.start();}
     if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chat remains available.`);}}
     else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chat.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
     if(resumed){dashboard?.replaceBody(chatBody());settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chat opens saved chats.`);}
@@ -489,6 +500,7 @@ export async function runUI(opts) {
       catch(error){if(error.name==='AbortError'){if(quitting)break;continue;}throw error;}
       if (!text) continue;
       if(!queued)dashboard?.remember(`\n  you › ${safe(text)}\n`,{user:true});
+      else if(!queued.displayed&&dashboard){dashboard.write(`\n  you › ${safe(text)}\n`,{user:true});queued.displayed=true;}
       if (!queued?.literal&&(text === '/quit' || text === '/exit')) break;
       try {
         const command=queued?.literal?null:parseCommand(text);
@@ -515,6 +527,7 @@ export async function runUI(opts) {
     await cleanup();
     await checkpoint();await chatSession?.flush().catch(()=>note('The final chat checkpoint could not be saved.'));
     network.stop();
+    await performanceMonitor.stop();
     await workMeter?.close().catch(() => note('Worked-time totals could not be saved.'));
     session.setWorking(false); session.markOffline(); activity = 'Session closed'; dashboard?.refresh(); dashboard?.stop();
     liveKeys.clear();secrets = [];

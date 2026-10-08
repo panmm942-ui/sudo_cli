@@ -6,16 +6,28 @@ import {COMMANDS} from './commands.mjs';
 const clean=value=>stripVTControlCharacters(String(value??'')).replace(/[\u0000-\u001f\u007f-\u009f]/g,' ');
 const cells=character=>{
   const code=character.codePointAt(0);
-  if(/\p{Mark}/u.test(character))return 0;
+  if(/\p{Mark}|\p{Default_Ignorable_Code_Point}/u.test(character))return 0;
   return code>=0x1100&&(code<=0x115f||code===0x2329||code===0x232a||(code>=0x2e80&&code<=0xa4cf)||(code>=0xac00&&code<=0xd7a3)||(code>=0xf900&&code<=0xfaff)||(code>=0xfe10&&code<=0xfe6f)||(code>=0xff01&&code<=0xff60)||(code>=0xffe0&&code<=0xffe6)||(code>=0x1f300&&code<=0x1faff)||code>=0x20000)?2:1;
 };
+const segmenter=new Intl.Segmenter(undefined,{granularity:'grapheme'});
+const characters=value=>[...segmenter.segment(clean(value))].map(item=>item.segment);
+const characterCells=character=>/\p{Emoji_Presentation}|\p{Regional_Indicator}|\u20e3/u.test(character)||character.includes('\ufe0f')&&/\p{Extended_Pictographic}/u.test(character)?2:[...character].reduce((total,part)=>total+cells(part),0);
+const width=value=>characters(value).reduce((total,character)=>total+characterCells(character),0);
 function clip(value,limit){
   if(limit<=0)return '';
-  const plain=clean(value),characters=[...plain];
-  if(characters.reduce((total,character)=>total+cells(character),0)<=limit)return plain;
+  const plain=clean(value),parts=characters(plain);
+  if(width(plain)<=limit)return plain;
   let result='',length=0;
-  for(const character of characters){const size=cells(character);if(length+size>limit-1)break;result+=character;length+=size;}
+  for(const character of parts){const size=characterCells(character);if(length+size>limit-1)break;result+=character;length+=size;}
   return result+'~';
+}
+function tail(value,limit){
+  if(limit<=0)return '';
+  const plain=clean(value);
+  if(width(plain)<=limit)return plain;
+  let result='',length=0;
+  for(const character of characters(plain).reverse()){const size=characterCells(character);if(length+size>limit-1)break;result=character+result;length+=size;}
+  return '~'+result;
 }
 const positive=(value,fallback,maximum)=>Number.isFinite(value)&&value>0?Math.max(1,Math.min(maximum,Math.floor(value))):fallback;
 
@@ -23,6 +35,7 @@ const positive=(value,fallback,maximum)=>Number.isFinite(value)&&value>0?Math.ma
  * A command picker placed after bracketed-paste filtering and before Readline.
  * Only an isolated, typed slash opens it. Selecting fills a command; it never
  * emits Enter. Hidden questions and changed prompts cannot receive menu text.
+ * Render cursor coordinates are zero-based rows and terminal-cell columns.
  */
 export function createSlashMenuInput({input,getContext=()=>({enabled:false}),getSize=()=>({columns:80,rows:12}),onRender=()=>{},onClose=()=>{},onError=()=>{},commands=COMMANDS}){
   if(!input?.pipe)throw new TypeError('Slash menu input must be a readable stream.');
@@ -43,18 +56,28 @@ export function createSlashMenuInput({input,getContext=()=>({enabled:false}),get
     }).filter(item=>Number.isFinite(item.rank)).sort((left,right)=>left.rank-right.rank||left.order-right.order).map(item=>item.command);
   };
   const view=()=>{
-    if(!active)return {active:false,query:'',selected:undefined,total:0,index:-1,page:0,pageCount:0,visibleStart:0,visibleEnd:0,lines:[]};
+    if(!active)return {active:false,query:'',selected:undefined,total:0,index:-1,page:0,pageCount:0,visibleStart:0,visibleEnd:0,cursor:undefined,lines:[]};
     const {columns,rows}=size(),limit=Math.max(0,columns-1),items=matches();
     index=items.length?Math.max(0,Math.min(index,items.length-1)):0;
-    const capacity=Math.max(1,Math.min(10,rows-(rows>=4?3:rows>=2?1:0)));
+    const status=rows>=4,separator=rows>=5,help=rows>=5,usage=rows>=7;
+    const reserved=1+Number(status)+Number(separator)+Number(help)+Number(usage);
+    const capacity=Math.max(1,Math.min(10,Math.floor((rows-reserved+1)/2)));
     const page=Math.floor(index/capacity),visibleStart=page*capacity,visibleEnd=Math.min(items.length,visibleStart+capacity),selected=items[index];
     const entries=items.slice(visibleStart,visibleEnd).map((command,offset)=>`${visibleStart+offset===index?'>':' '} ${command.name}  ${command.description}`);
     if(!entries.length)entries.push('No commands match. Backspace to change the filter.');
     const lines=[];
-    if(rows>=2)lines.push(`Commands ${items.length?visibleStart+1:0}-${visibleEnd} of ${items.length} | /${query}`);
-    lines.push(...entries);
-    if(rows>=4)lines.push(selected?`Use: ${selected.name}${selected.usage?' '+selected.usage:''}`:'Type a command name or its description.','Arrows / PgUp/PgDn | Enter select | Esc close');
-    return {active:true,query,selected:selected?{...selected}:undefined,total:items.length,index:items.length?index:-1,page:items.length?page+1:0,pageCount:Math.ceil(items.length/capacity),visibleStart,visibleEnd,capacity,lines:lines.slice(0,rows).map(line=>clip(line,limit))};
+    if(status)lines.push(`Commands ${items.length?visibleStart+1:0}-${visibleEnd} of ${items.length}`);
+    const prefix=limit>=12?'Search: /':limit>0?'/':'',search=prefix+tail(query,limit-width(prefix));
+    const cursor={row:lines.length,column:width(search)};
+    lines.push(search);
+    if(separator)lines.push('');
+    if(rows>1)entries.forEach((entry,offset)=>{if(offset)lines.push('');lines.push(entry);});
+    const footer=[];
+    if(usage)footer.push(selected?`Use: ${selected.name}${selected.usage?' '+selected.usage:''}`:'Type a command name or its description.');
+    if(help)footer.push('Arrows / PgUp/PgDn | Enter select | Esc close');
+    if(footer.length&&lines.length+footer.length<rows)lines.push('');
+    lines.push(...footer);
+    return {active:true,query,selected:selected?{...selected}:undefined,total:items.length,index:items.length?index:-1,page:items.length?page+1:0,pageCount:Math.ceil(items.length/capacity),visibleStart,visibleEnd,capacity,cursor,lines:lines.slice(0,rows).map(line=>clip(line,limit))};
   };
   const clearEscape=()=>{clearTimeout(escapeTimer);escapeTimer=undefined;};
   const render=()=>{const current=view();try{onRender(current);}catch(error){report(error);close({reason:'render',restore:true});}return active?current:view();};

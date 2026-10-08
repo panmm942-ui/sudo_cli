@@ -1,7 +1,8 @@
 import {stripVTControlCharacters} from 'node:util';
 import {createPrivateRecord} from './private-state.mjs';
 
-export const DEFAULT_TERMINAL_COLORS=Object.freeze({bgcolor:'#0b0f14',txtcolor:'#dce3eb'});
+export const DEFAULT_TERMINAL_COLORS=Object.freeze({bgcolor:'#0b0f14',txtcolor:'#00ff00'});
+const BODY_TEXT_COLOR='#dce3eb';
 const NAMED_COLORS=Object.freeze({
   black:'#000000',white:'#ffffff',red:'#ff0000',green:'#008000',lime:'#00ff00',blue:'#0000ff',
   cyan:'#00ffff',aqua:'#00ffff',magenta:'#ff00ff',fuchsia:'#ff00ff',yellow:'#ffff00',orange:'#ffa500',
@@ -25,7 +26,7 @@ export function parseTerminalColor(value,target='bgcolor'){
   validateTarget(target);
   if(typeof value!=='string'||/[\u0000-\u0020\u007f-\u009f]/u.test(value))throw new Error('Invalid color. Use a named color, #RRGGBB, or default.');
   const normalized=value.toLowerCase();
-  if(normalized==='default'||normalized==='normal')return DEFAULT_TERMINAL_COLORS[target];
+  if(['default','normal','reset'].includes(normalized))return DEFAULT_TERMINAL_COLORS[target];
   const result=NAMED_COLORS[normalized]||normalized;
   if(!/^#[a-f0-9]{6}$/.test(result))throw new Error('Invalid color. Use a named color, #RRGGBB, or default.');
   return result;
@@ -42,7 +43,7 @@ export function createTerminalTheme({directory,color=true,env=process.env,onChan
   let state={...DEFAULT_TERMINAL_COLORS},record,queue=Promise.resolve();
   const getRecord=async()=>record||(directory?(record=await createPrivateRecord({directory,filename:'terminal-theme.json',maxBytes:2048})):undefined);
   const get=()=>{
-    const effectiveTxtcolor=readable(state.txtcolor,state.bgcolor),bodyForeground=readable(DEFAULT_TERMINAL_COLORS.txtcolor,state.bgcolor);
+    const effectiveTxtcolor=readable(state.txtcolor,state.bgcolor),bodyForeground=readable(BODY_TEXT_COLOR,state.bgcolor);
     return {...state,effectiveTxtcolor,bodyForeground,adjusted:effectiveTxtcolor!==state.txtcolor,contrast:contrastRatio(effectiveTxtcolor,state.bgcolor)};
   };
   const bodyStyle=()=>enabled?background(state.bgcolor)+foreground(get().bodyForeground):'';
@@ -62,12 +63,12 @@ export function createTerminalTheme({directory,color=true,env=process.env,onChan
         if(code===39){result+=foreground(baselineForeground());continue;}
         if(code===49){result+=background(state.bgcolor);continue;}
         if((code>=40&&code<=47)||(code>=100&&code<=107)){result+=background(state.bgcolor);continue;}
-        if((code>=30&&code<=37)||(code>=90&&code<=97)){result+=foreground(readable(ANSI_COLORS[code>=90?code-90+8:code-30],state.bgcolor));continue;}
+        if((code>=30&&code<=37)||(code>=90&&code<=97)){result+=foreground(user?baselineForeground():readable(ANSI_COLORS[code>=90?code-90+8:code-30],state.bgcolor));continue;}
         if(code===38||code===48){
           let requested;
           if(parts[index+1]===2&&parts.slice(index+2,index+5).length===3&&parts.slice(index+2,index+5).every(n=>Number.isInteger(n)&&n>=0&&n<=255)){requested=hex(parts.slice(index+2,index+5));index+=4;}
           else if(parts[index+1]===5&&Number.isInteger(parts[index+2])&&parts[index+2]>=0&&parts[index+2]<=255){requested=paletteColor(parts[index+2]);index+=2;}
-          if(requested)result+=code===48?background(state.bgcolor):foreground(readable(requested,state.bgcolor));
+          if(requested)result+=code===48?background(state.bgcolor):foreground(user?baselineForeground():readable(requested,state.bgcolor));
           continue;
         }
         // Reverse, faint and conceal can defeat the foreground/background contrast guarantee.
