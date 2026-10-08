@@ -5,6 +5,17 @@ import {stripVTControlCharacters} from 'node:util';
 import {createDashboard,renderDashboard} from '../src/dashboard.mjs';
 
 const state={cwd:'/demo',working:false,permissions:'ask',performance:{cpu:{percent:12},ram:{usedBytes:1024,totalBytes:4096},gpu:{adapters:[]}}};
+for(const isTTY of [true,false]){
+  test(`plain terminal events remain separate from each other and the editable prompt: tty=${isTTY}`,t=>{
+    const output=Object.assign(new EventEmitter(),{isTTY,columns:150,rows:44,text:'',write(text){this.text+=text;}});
+    const dashboard=createDashboard({output,snapshot:()=>state,env:{TERM:'dumb'},color:false,tickMs:0});
+    dashboard.start();t.after(()=>dashboard.stop());output.text='';
+    dashboard.event('12:00 · Ready');dashboard.event('12:00 · Update checked\n');
+    output.write('12:00 01@you > ');
+    assert.equal(output.text,'12:00 · Ready\n12:00 · Update checked\n12:00 01@you > ');
+    assert.doesNotMatch(output.text,/\x1b/,'Plain terminal output must remain unpositioned');
+  });
+}
 function fixture(t,{columns=150,rows=44,...options}={}){
   const output=Object.assign(new EventEmitter(),{isTTY:true,columns,rows,text:'',write(text){this.text+=text;}});
   const dashboard=createDashboard({output,snapshot:()=>state,env:{TERM:'xterm'},color:false,tickMs:0,...options});

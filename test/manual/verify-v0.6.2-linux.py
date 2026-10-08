@@ -491,6 +491,7 @@ try:
                 extra.read_until(lambda raw: extra.view.composer() and extra.view.composer()['draft']=='/status', timeout=3, expectation=f'{label} Escape restoration')
                 marker = extra.send('\r')
                 extra.ready(marker)
+                latest_event_text(extra, starts_with='No AI selected.')
                 assert 'No AI selected' in plain(bytes(extra.transcript[marker:]))
             assert_no_requests(baseline, f'{label} offline picker')
             extra.finish()

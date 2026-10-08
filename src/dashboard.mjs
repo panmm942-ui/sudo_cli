@@ -294,7 +294,7 @@ export function createDashboard({output=process.stdout,snapshot,now=()=>new Date
     clearBody(){body.clear();if(started&&alternate&&!suspended)emit(rectangles.compact&&focus!=='chat'?'':drawPanel('chat'));},
     remember(text,{user=false}={}){body.append(String(text),{user:!!user});},
     write(text,{user=false}={}){const value=String(text);body.append(value,{user:!!user});if(suspended)return;if(started&&alternate){if(!rectangles.compact||focus==='chat')emit(drawPanel('chat',{indicatorOnly:body.isScrolled()}));}else output.write(style(value,!!user));},
-    event(text){const value=String(text);events.append(value.endsWith('\n')?value:value+'\n');if(suspended)return;if(started&&alternate){if(!rectangles.compact||focus==='events')emit(drawPanel('events',{indicatorOnly:events.isScrolled()}));}else output.write(style(value));},
+    event(text){const raw=String(text),value=raw.endsWith('\n')?raw:raw+'\n';events.append(value);if(suspended)return;if(started&&alternate){if(!rectangles.compact||focus==='events')emit(drawPanel('events',{indicatorOnly:events.isScrolled()}));}else output.write(style(value));},
     suspend(){if(suspended)return;suspended=true;if(alternate)output.write('\x1b[r\x1b[0m\x1b[?25h\x1b[?1049l');},
     resume(){if(!started||!suspended)return;suspended=false;if(alternate)output.write('\x1b[?1049h\x1b[?25l');redraw();if(alternate)output.write('\x1b[?25h');},
     stop(){if(!started)return;started=false;clearTimeout(timer);output.removeListener?.('resize',redraw);if(alternate&&!suspended)output.write('\x1b[r\x1b[0m\x1b[?25h\x1b[?1049l');alternate=false;input=undefined;menu=undefined;},
