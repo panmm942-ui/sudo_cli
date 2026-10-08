@@ -152,11 +152,72 @@ test('isolated source snapshots exclude private files and clean only owned copie
 });
 
 test('timeout terminates a selected check subprocess tree including descendants holding output pipes', { timeout: 5000 }, async t => {
-  const { workspace } = await fixture(t);
-  const script = 'const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","inherit","inherit"]});console.log(c.pid);setInterval(()=>{},1000)';
-  const result = await workspace.runChecks([{ command: process.execPath, args: ['-e', script] }], { timeoutMs: 200 });
-  assert.equal(result[0].status, 'timed-out');
-  const pid = Number(result[0].stdout.trim()); assert.ok(pid > 0); assert.equal(await waitUntilStopped(pid), true);
+  let releaseCleanup;
+  const cleanupFinished=new Promise(resolve=>releaseCleanup=resolve);
+  // Node can begin after-hooks while a timed-out callback drains its finally.
+  // Keep the private stop channel available until that bounded drain finishes.
+  t.after(async()=>{
+    let deadline;
+    try{await Promise.race([cleanupFinished,new Promise((resolve,reject)=>{deadline=setTimeout(()=>reject(new Error('Owned fixture cleanup did not finish within its existing teardown bounds.')),1000+1000);})]);}
+    finally{clearTimeout(deadline);}
+  });
+  try {
+  const { cwd,workspace } = await fixture(t);
+  const descendant='const fs=require("node:fs");setInterval(()=>{if(fs.existsSync("stop-timeout-fixture"))process.exit(0)},10)';
+  const script = `const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore","inherit","inherit"]});console.log(c.pid);setInterval(()=>{},1000)`;
+  const childProcess=createRequire(import.meta.url)('node:child_process'),nativeSpawn=childProcess.spawn,nativeSetTimeout=globalThis.setTimeout;
+  let selectedChild,expire,scheduled=0,fired=0,output='',pid,readyResolve,readyReject;
+  const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
+  const spawn=t.mock.method(childProcess,'spawn',function(command,args,options){
+    const child=nativeSpawn.call(this,command,args,options);
+    if(command===process.execPath&&args[0]==='-e'&&args[1]===script){
+      assert.equal(selectedChild,undefined);selectedChild=child;
+      child.stdout.on('data',chunk=>{
+        output+=chunk.toString();if(output.length>128){readyReject(new Error('Owned descendant readiness exceeded its fixture bound.'));return;}
+        const line=/^(\d+)\r?\n/.exec(output);if(!line)return;
+        const observed=Number(line[1]);if(!Number.isSafeInteger(observed)||observed<1||observed>2147483647){readyReject(new Error('Owned descendant readiness is invalid.'));return;}
+        pid=observed;readyResolve();
+      });
+    }
+    return child;
+  });syncBuiltinESMExports();
+  // Only this selected check's 200 ms callback is gated on fixture readiness.
+  // The real 500 ms force timer and 1000 ms group verification remain intact.
+  const timer=t.mock.method(globalThis,'setTimeout',function(callback,ms,...args){
+    if(selectedChild&&ms===200){scheduled++;assert.equal(scheduled,1);expire=()=>{fired++;callback(...args);};return nativeSetTimeout(()=>{},ms);}
+    return nativeSetTimeout(callback,ms,...args);
+  });
+  let failOnAbort;
+  const aborted=new Promise((resolve,reject)=>{failOnAbort=()=>reject(new Error('Owned timeout fixture did not finish within its original bound.'));t.signal.addEventListener('abort',failOnAbort,{once:true});});
+  try {
+    const pending=workspace.runChecks([{command:process.execPath,args:['-e',script]}],{timeoutMs:200});
+    await Promise.race([ready,aborted]);assert.ok(pid>0);assert.ok(expire);expire();
+    const result=await Promise.race([pending,aborted]);
+    assert.equal(scheduled,1);assert.equal(fired,1);assert.equal(result[0].status,'timed-out');
+    assert.equal(Number(result[0].stdout.trim()),pid);assert.equal(await waitUntilStopped(pid),true);
+  } finally {
+    t.signal.removeEventListener('abort',failOnAbort);timer.mock.restore();spawn.mock.restore();syncBuiltinESMExports();
+    try{if(selectedChild&&selectedChild.exitCode===null&&selectedChild.signalCode===null){
+      // Observe the original child handle before signalling, including failure
+      // paths where a missing timeout would otherwise retain this private tree.
+      let exit,exitError;
+      const stopped=new Promise((resolve,reject)=>{exit=()=>resolve();exitError=()=>reject(new Error('Owned fixture exit could not be observed.'));selectedChild.once('exit',exit);selectedChild.once('error',exitError);});
+      let deadline;
+      const bounded=new Promise((resolve,reject)=>{deadline=nativeSetTimeout(()=>reject(new Error('Owned fixture teardown exceeded its bound.')),1000);});
+      const observed=Promise.race([stopped,bounded]);observed.catch(()=>{});
+      try {
+        if(process.platform==='win32')await new Promise((resolve,reject)=>execFile('taskkill.exe',['/PID',String(selectedChild.pid),'/T','/F'],{shell:false,windowsHide:true,timeout:1000,env:isolatedEnvironment(process.env)},error=>error&&selectedChild.exitCode===null&&selectedChild.signalCode===null?reject(new Error('Owned fixture tree could not be stopped.')):resolve()));
+        else try{process.kill(-selectedChild.pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
+        await observed;
+      }finally{clearTimeout(deadline);selectedChild.removeListener('exit',exit);selectedChild.removeListener('error',exitError);}
+    }}finally{
+      // A failed parent-only cleanup must still fail its assertion. This private
+      // fixture channel then stops its known child without signalling a PID.
+      await writeFile(join(cwd,'stop-timeout-fixture'),'stop');
+      if(pid>0)assert.equal(await waitUntilStopped(pid),true);
+    }
+  }
+  } finally {releaseCleanup();}
 });
 
 for (const reason of ['timed-out','cancelled']) test(`${reason} checks stop a SIGTERM-ignoring owned descendant even after it closes captured output`, { skip: process.platform === 'win32', timeout: 5000 }, async t => {
