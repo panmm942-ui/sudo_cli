@@ -60,7 +60,8 @@ export const COMMANDS = [
   {name:'/search',usage:'QUERY',description:'Guided source-linked search through supported web/MCP tools'},
   {name:'/browser',usage:'[start|stop|status|executable PATH]',description:'Dedicated scoped Chromium browser MCP adapter'},
   {name:'/bgcolor',usage:'[COLOR|reset|status]',description:'Saved chat background; keep the upper dashboard palette'},
-  {name:'/txtcolor',usage:'[COLOR|reset|status]',description:'Saved user text color with automatic readable contrast'},
+  {name:'/textcolor',usage:'[COLOR|reset|status]',description:'Saved user text color with automatic readable contrast'},
+  {name:'/notify',usage:'[on|off|status|test approval|error|done|interrupted]',description:'Distinct non-speaking sounds for AI approval, errors, completion and stops'},
   {name:'/reset',usage:'[TARGET|list|all]',description:'Choose settings to restore; keep saved chats and AI profiles'},
   {name:'/loopguard',usage:'[status|on|off|timeout SECONDS|repeats COUNT]',description:'Stop repeated tool actions and bound native terminal command lifetimes'},
   {name:'/update',usage:'[check|repo OWNER/REPO|on|off|stage PACKAGE_OR_URL SHA256|install|rollback|status]',description:'GitHub launch check, confirmed verified updates and rollback'},
@@ -72,7 +73,7 @@ const groups={
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
   'Voice':['/voice','/microphone','/live'],
   'Background':['/247','/schedule','/startup','/budget','/gpu'],
-  'Advanced':['/performance','/training','/update','/doctor','/status','/bgcolor','/txtcolor','/reset','/loopguard'],
+  'Advanced':['/performance','/training','/update','/doctor','/status','/bgcolor','/textcolor','/notify','/reset','/loopguard'],
 };
 export function commandMenu(query='',{compact=false}={}) {
   if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chat   Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
@@ -87,7 +88,8 @@ export function parseCommand(line) {
   if (!line.startsWith('/')) return null;
   if (line.trim() === '/') return {name:'/help',args:[],rawArgs:''};
   const separator = line.search(/\s/);
-  const name = separator < 0 ? line.toLowerCase() : line.slice(0,separator).toLowerCase();
+  const typedName = separator < 0 ? line.toLowerCase() : line.slice(0,separator).toLowerCase();
+  const name = typedName==='/txtcolor'?'/textcolor':typedName;
   const rawArgs = separator < 0 ? '' : line.slice(separator).trim();
   const args = []; let token = '', quote = null, present = false;
   for (const character of rawArgs) {

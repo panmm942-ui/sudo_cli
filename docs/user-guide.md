@@ -1,8 +1,8 @@
 # Using sudocli 0.6.6
 
-Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/txtcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
+Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/textcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
-`/bgcolor reset` restores the default background. `/txtcolor reset` restores green user text. `/reset` lets you choose other settings to restore. Existing saved color choices remain saved until you change or reset them.
+`/bgcolor reset` restores the default background. `/textcolor reset` restores green user text. `/reset` lets you choose other settings to restore. Existing saved color choices remain saved until you change or reset them.
 
 The Search line in the command picker now holds the cursor, with blank lines between choices when space permits. **Performance (This PC)** shows live local CPU, RAM, GPU and VRAM beside the antenna. The selected AI can run locally or in the cloud; these readings always describe the computer running SUDO CLI.
 
@@ -274,3 +274,5 @@ Actual Linux x64 PTY acceptance used the native Codex engine and 22 loopback str
 Those linked receipts describe their named earlier releases. Version 0.6.6 adds checks for named GPU blocks, installed cards without counters, capacity above 4 GiB, and Windows device errors. Existing tests cover colors/resets, command Search cursor and spacing, reasoning request boundaries and performance sampling/cleanup. Actual Windows and WSL/Linux probes read local counters; macOS GPU parsing uses fixtures. Deterministic native tool fixtures verify transport and command/edit execution, without loading real model weights or establishing a model's quality.
 
 The frontend is MIT; bundled OpenAI Codex 0.160.1 and its matching source/notices retain Apache-2.0, and Node.js 24.19.0 retains its license/dependency notices. [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui). See [THIRD_PARTY.md](../THIRD_PARTY.md).
+
+Use `/notify on` or `/notify off` to save your sound preference. `/notify status` reports the sound backend, and `/notify test approval`, `error`, `done` or `interrupted` previews each motif when enabled. `/reset notify` enables notifications again. The antenna stays still during local commands and waiting; it animates during AI tasks and pauses while that AI awaits approval.

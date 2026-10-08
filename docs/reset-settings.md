@@ -5,13 +5,13 @@ Use `/reset` to see the available reset targets and choose a number or target na
 Reset one setting directly by name:
 
 ```text
-/reset txtcolor
+/reset textcolor
 /reset bgcolor
 /reset colors
 /reset updates
 ```
 
-For colors, `/bgcolor reset` and `/txtcolor reset` are direct shortcuts. They
+For colors, `/bgcolor reset` and `/textcolor reset` are direct shortcuts. They
 restore near-black (`#0B0F14`) and bright-green user text (`#00FF00`) independently.
 Assistant replies keep their separate readable soft-white foreground.
 

@@ -5,3 +5,17 @@ node_modules/
 .env.*
 __pycache__/
 *.pyc
+runtime/
+work/
+outputs/
+.sudocli/
+.codexcli/
+.state/
+*.pem
+*.key
+*.pfx
+*.p12
+auth.json
+credentials.json
+vault.json
+secrets.json

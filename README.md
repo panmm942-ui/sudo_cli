@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.6**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.7**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -124,9 +124,9 @@ Background jobs and results persist. Interrupted jobs require review/retry, and 
 
 ## Dashboard, updates and verification
 
-Your text defaults to bright green (`#00FF00`); assistant replies and notices use soft white. Use `/bgcolor #141414` for the lower chat background and `/txtcolor lime` for bright green text. The upper dashboard keeps its original palette. Similar text and background colors are corrected automatically.
+Your text defaults to bright green (`#00FF00`); assistant replies and notices use soft white. Use `/bgcolor #141414` for the lower chat background and `/textcolor lime` for bright green text. The upper dashboard keeps its original palette. Similar text and background colors are corrected automatically.
 
-`/bgcolor reset` restores the default background. `/txtcolor reset` restores green user text. `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
+`/bgcolor reset` restores the default background. `/textcolor reset` restores green user text. `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
 
 **Performance (This PC)** appears beside the antenna: CPU, RAM and named GPU blocks for the computer running the CLI. Each card has its own usage, dedicated VRAM and available shared-memory readings. An integrated card's 512 MiB is separate from a discrete card's 8 GiB. Installed cards keep a known capacity visible even if live readings are unavailable; Windows device errors are labeled. `/performance status` prints the full details; `/performance refresh` requests a new sample. These readings remain local when your AI runs in the cloud. See [local performance](docs/performance.md).
 
@@ -165,8 +165,10 @@ Other options include `--permissions ask|allow-everything`, `--scope read-only|p
 
 The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
 
-Official 0.6.6 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
+Official 0.6.7 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
 
 ## Credits
 
 [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui)
+
+Version 0.6.7 adds `/notify on|off` with separate non-speaking tones for approvals, errors, completion and interruption. The antenna and worked-time meter follow real AI task lifetimes; typing, update checks, local verification and setup leave them idle. See [notification sounds](docs/notifications.md).

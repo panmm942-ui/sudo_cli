@@ -14,17 +14,17 @@ Existing saved choices are retained. Use a reset command to return to these defa
 dashboard, logo and animated antenna keep their original colors. Empty rows in
 the lower area receive the new background, and visible chat redraws immediately.
 
-`/txtcolor COLOR` changes your typed text and your displayed conversation text.
+`/textcolor COLOR` changes your typed text and your displayed conversation text.
 Assistant responses and notices use a separate soft-white foreground. Both settings
 are saved privately and restored when the CLI starts again.
 
 ```text
 /bgcolor white
-/txtcolor navy
+/textcolor navy
 /bgcolor #182230
-/txtcolor #DCE3EB
+/textcolor #DCE3EB
 /bgcolor reset
-/txtcolor reset
+/textcolor reset
 ```
 
 Supported names are black, white, red, green, lime, blue, cyan/aqua,
@@ -32,8 +32,8 @@ magenta/fuchsia, yellow, orange, purple, pink, gray/grey, silver, darkgray/darkg
 lightgray/lightgrey, navy, teal, olive, maroon, brown and nearblack. Hex colors
 require all six digits: `#RRGGBB`. `reset`, `default` and `normal` restore a color's default.
 
-`/txtcolor lime` is bright green (`#00FF00`). The named color `green` is darker (`#008000`).
-`/bgcolor status` or `/txtcolor status` prints the current saved choices.
+`/textcolor lime` is bright green (`#00FF00`). The named color `green` is darker (`#008000`).
+`/bgcolor status` or `/textcolor status` prints the current saved choices.
 
 When the chosen text color is too similar to the background, the CLI temporarily
 uses black or white to reach a contrast ratio of at least 4.5:1. It retains your
@@ -43,13 +43,13 @@ contrast protection. On a light background, assistant replies and notices may
 use black instead of soft white for readability.
 
 ```text
-/reset txtcolor
+/reset textcolor
 /reset bgcolor
 /reset colors
 /reset
 ```
 
-`/bgcolor reset` and `/txtcolor reset` restore only their own setting. The first
+`/bgcolor reset` and `/textcolor reset` restore only their own setting. The first
 two `/reset` examples do the same. `/reset colors` restores both colors.
 `/reset` lists the available reset targets and asks for a number or name; Enter
 cancels. `/reset list` shows targets without asking. Color changes do not reset a model,

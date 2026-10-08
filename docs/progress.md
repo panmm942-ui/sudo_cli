@@ -1,6 +1,8 @@
 # sudo cli progress
 
-Current release: **0.6.6**. This release shows each graphics card by name, with its own VRAM capacity and readings. Installed cards remain visible when Windows cannot provide live usage, including a device-error label when reported. This avoids presenting an integrated card's 512 MiB as the capacity of a separate 8 GiB card. Version 0.6.5 introduced the local performance panel, consistent colors/resets, Search-line cursor, spaced command choices and reasoning-policy fixes.
+Current release: **0.6.7**. `/textcolor` is the canonical user-text command. `/notify on|off` saves separate non-speaking sounds for approvals, completion, interruption and errors. The antenna and worked-time meter follow AI tasks; local commands, update checks and setup stay idle. Waiting for approval pauses that AI's activity while other active AI tasks can continue.
+
+Version 0.6.6 shows each graphics card by name, with its own VRAM capacity and readings. Installed cards remain visible when Windows cannot provide live usage, including a device-error label when reported. This avoids presenting an integrated card's 512 MiB as the capacity of a separate 8 GiB card. Version 0.6.5 introduced the local performance panel, consistent colors/resets, Search-line cursor, spaced command choices and reasoning-policy fixes.
 
 See [performance support](performance.md), [terminal colors](terminal-colors.md), [model compatibility](model-compatibility.md) and the [user guide](user-guide.md). Windows and WSL/Linux host probes read actual local counters; macOS GPU parsing uses fixtures. Real model inference remains a separate endpoint test. Historical verification records still describe their named releases.
 

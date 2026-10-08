@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+test('textcolor is canonical and notification controls are discoverable offline',async()=>{
+  const {COMMANDS,commandMenu,completeCommand,parseCommand}=await import('../src/commands.mjs');
+  assert.deepEqual(completeCommand('/text')[0],['/textcolor']);
+  assert.equal(COMMANDS.some(command=>command.name==='/txtcolor'),false);
+  assert.match(commandMenu('advanced'),/\/textcolor/);assert.match(commandMenu('advanced'),/\/notify/);
+  assert.equal(parseCommand('/txtcolor red').name,'/textcolor');
+});
+
 test('slash registry includes requested features and one discoverable command menu', async () => {
   const { COMMANDS, commandMenu, completeCommand } = await import('../src/commands.mjs');
   for (const name of ['/switch','/handoff','/web','/upload','/permissions','/effort','/ide','/voice','/microphone','/mcp','/compact','/skills','/training','/computer-use']) assert.ok(COMMANDS.some(command => command.name === name), name);
