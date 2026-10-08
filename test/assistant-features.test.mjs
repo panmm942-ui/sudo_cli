@@ -1,4 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
+import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from './fixtures/temp-root.mjs';
 import {join} from 'node:path';
@@ -56,15 +57,24 @@ async function backgroundFixture(t,{assess,runCloud}={}){
   assert.equal(typeof module.createBackgroundResultReporter,'function','background terminal outcomes require the shared result reporter');
   const [{createTaskInbox},{createAlwaysOn},{createNotifications}]=await Promise.all([import('../src/task-inbox.mjs'),import('../src/always-on.mjs'),import('../src/notifications.mjs')]);
   const root=await mkdtemp(join(tmpdir(),'sudo-background-notifications-'));
-  const inbox=await createTaskInbox({cwd:root,stateDir:root}),events=[],outcomes=[];
+  const inbox=await createTaskInbox({cwd:root,stateDir:root}),events=[],outcomes=[],deliveries=[];
   const notifications=createNotifications({directory:join(root,'preferences'),interactive:true,cooldownMs:0,play:async({event})=>events.push(event)});
-  const reporter=module.createBackgroundResultReporter({work:{result:async(_job,patch)=>patch},modelFor:()=>connection.model,onResult:async outcome=>{
+  async function delivered(){
+    let timer;try{
+      // Audio has its existing 4s bound; preparation/receipt checks get a separate 1s allowance.
+      const receipts=await Promise.race([Promise.all(deliveries),new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('Background notification receipts did not settle')),5000);})]);
+      for(const receipt of receipts)assert.equal(receipt.error,undefined,'Background notification delivery rejected');
+      return receipts.map(receipt=>receipt.value);
+    }finally{clearTimeout(timer);}
+  }
+  const reporter=module.createBackgroundResultReporter({work:{result:async(_job,patch)=>patch},modelFor:()=>connection.model,onResult:outcome=>{
     outcomes.push(outcome);
-    await notifications.notify(module.backgroundNotificationEvent(outcome),{id:outcome.notificationId});
+    // The UI fires audio without delaying the durable terminal task transition.
+    deliveries.push(notifications.notify(module.backgroundNotificationEvent(outcome),{id:outcome.notificationId}).then(value=>({value}),error=>({error})));
   }});
   const agent=createAlwaysOn({inbox,pollMs:10,idleSleepMs:40,assess:assess||(async()=>({action:'local',result:'Actual task result'})),runCloud:runCloud||(async()=>''),beginTask:async id=>reporter.begin(id),onTaskResult:reporter.result});
-  t.after(async()=>{await agent.stop();await notifications.close();await rm(root,{recursive:true,force:true});});
-  return{agent,inbox,events,outcomes,reporter,notifications};
+  t.after(async()=>{try{await agent.stop();await notifications.close();await delivered();}finally{await rm(root,{recursive:true,force:true});}});
+  return{agent,inbox,events,outcomes,reporter,notifications,delivered};
 }
 async function untilBackground(predicate){const deadline=Date.now()+2000;while(!await predicate()){if(Date.now()>deadline)assert.fail('Background fixture did not finish');await new Promise(resolve=>setTimeout(resolve,5));}}
 
@@ -78,25 +88,40 @@ test('real coordinator reason-only failures and blocked outcomes notify once wit
   for(const scenario of scenarios)await t.test(scenario.name,async t=>{
     const f=await backgroundFixture(t,scenario);await f.agent.start();const job=await f.agent.submit({prompt:'Explicit fixture task'});
     await untilBackground(async()=> (await f.inbox.get(job.id)).status===scenario.status);
+    await f.delivered();
     assert.deepEqual(f.events,[scenario.event]);assert.equal(f.outcomes.length,1);assert.equal(f.outcomes[0].text,undefined);assert.ok(f.outcomes[0].reason);
     await f.reporter.result(job,{status:scenario.status,reason:'Repeated callback'});
+    await f.delivered();
     assert.deepEqual(f.events,[scenario.event]);assert.equal(f.outcomes.length,1);
   });
+});
+test('durable blocked state does not wait for tone preparation and its delayed error still plays exactly once',{timeout:8000},async t=>{
+  let release,entered;const gate=new Promise(resolve=>{release=resolve;}),writing=new Promise(resolve=>{entered=resolve;});t.after(()=>release());
+  const f=await backgroundFixture(t,{assess:async()=>({action:'wait',reason:'The task needs more information.'})});
+  const original=fs.promises.open,root=join(f.inbox.stateDir,'preferences');
+  const replacement=t.mock.method(fs.promises,'open',async(...args)=>{const file=await original(...args);if(String(args[0]).startsWith(root)&&String(args[0]).endsWith('error.wav')){const write=file.writeFile.bind(file);file.writeFile=async(...values)=>{entered();await gate;return write(...values);};}return file;});
+  syncBuiltinESMExports();t.after(()=>{release();replacement.mock.restore();syncBuiltinESMExports();});
+  await f.agent.start();const job=await f.agent.submit({prompt:'Explicit fixture task'});await writing;
+  await untilBackground(async()=>(await f.inbox.get(job.id)).status==='blocked');
+  assert.deepEqual(f.events,[]);assert.equal(f.outcomes.length,1);assert.equal(f.outcomes[0].text,undefined);assert.equal(f.outcomes[0].reason,'The task needs more information.');
+  release();await f.delivered();assert.deepEqual(f.events,['error']);
+  await f.reporter.result(job,{status:'blocked',reason:'Repeated callback'});await f.delivered();assert.deepEqual(f.events,['error']);assert.equal(f.outcomes.length,1);
 });
 test('stopping an actual coordinator task emits interrupted, with no done tone for administrative or idle operations',async t=>{
   const f=await backgroundFixture(t,{assess:async()=>({action:'cloud'}),runCloud:async(_job,{signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))});
   await f.agent.start();await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(f.events,[]);
   const job=await f.agent.submit({prompt:'Long fixture task'});await untilBackground(()=>f.agent.snapshot().state==='working');await f.agent.stop();
+  await f.delivered();
   assert.equal((await f.inbox.get(job.id)).status,'blocked');assert.deepEqual(f.events,['interrupted']);assert.equal(f.outcomes[0].text,undefined);
   await f.agent.stop();assert.deepEqual(f.events,['interrupted']);
 });
 test('background retries have distinct notification identities and saved off preference stays silent',async t=>{
   const f=await backgroundFixture(t);await f.agent.start();const job=await f.agent.submit({prompt:'Complete fixture task'});
-  await untilBackground(async()=>(await f.inbox.get(job.id)).status==='completed');assert.deepEqual(f.events,['done']);
+  await untilBackground(async()=>(await f.inbox.get(job.id)).status==='completed');await f.delivered();assert.deepEqual(f.events,['done']);
   const firstId=f.outcomes[0].notificationId;await untilBackground(()=>f.agent.snapshot().state==='idle');
-  await f.inbox.update(job.id,{status:'pending'});await untilBackground(()=>f.outcomes.length===2);assert.deepEqual(f.events,['done','done']);assert.notEqual(f.outcomes[1].notificationId,firstId);
+  await f.inbox.update(job.id,{status:'pending'});await untilBackground(()=>f.outcomes.length===2);await f.delivered();assert.deepEqual(f.events,['done','done']);assert.notEqual(f.outcomes[1].notificationId,firstId);
   await f.notifications.off();await f.agent.stop();await f.agent.start();await f.inbox.update(job.id,{status:'pending'});
-  await untilBackground(()=>f.outcomes.length===3);assert.deepEqual(f.events,['done','done']);assert.equal(f.notifications.get().enabled,false);
+  await untilBackground(()=>f.outcomes.length===3);await f.delivered();assert.deepEqual(f.events,['done','done']);assert.equal(f.notifications.get().enabled,false);
 });
 test('background attention classification uses structured outcomes and never calls a blocked result done',async()=>{
   const {backgroundNotificationEvent}=await import('../src/assistant-features.mjs');assert.equal(typeof backgroundNotificationEvent,'function');

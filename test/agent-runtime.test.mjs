@@ -105,11 +105,22 @@ test('native startup failures and task failures always clean the owned session h
   }
 });
 
-test('abort interrupts active native work and rejects only after owned resources are cleaned', async t => {
+test('abort interrupts active native work and rejects only after owned resources are cleaned', { timeout: 35_000 }, async t => {
   const { runAgentTask, options, homes } = await fixture(t, 'hang-turn');
   const controller = new AbortController();
-  await assert.rejects(runAgentTask({ ...options, signal: controller.signal, onEvent: event => { if (event.method === 'turn/started') controller.abort(); } }), { name: 'AbortError' });
+  const runtime = { ...options.runtime };
+  // Readiness uses the normal native RPC budget; cancellation is checked after turn/started.
+  delete runtime.requestTimeoutMs;
+  let started = false;
+  const readinessTimer = setTimeout(() => controller.abort(), 30_000);
+  t.after(() => { clearTimeout(readinessTimer); controller.abort(); });
+  try {
+    await assert.rejects(runAgentTask({ ...options, runtime, signal: controller.signal, onEvent: event => {
+      if (event.method === 'turn/started') { started = true; clearTimeout(readinessTimer); controller.abort(); }
+    } }), { name: 'AbortError' });
+  } finally { clearTimeout(readinessTimer); }
   assert.deepEqual(await readdir(homes), []);
+  assert.equal(started, true, 'Native fixture must reach turn/started before active cancellation.');
   const preaborted = new AbortController(); preaborted.abort();
   await assert.rejects(runAgentTask({ ...options, signal: preaborted.signal }), { name: 'AbortError' });
   assert.deepEqual(await readdir(homes), []);

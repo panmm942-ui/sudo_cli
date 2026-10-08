@@ -5,7 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { tmpdir } from './fixtures/temp-root.mjs';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
+import {runFixtureProcess} from './fixtures/native-process.mjs';
 
 async function directory(t) {
   const dir = await mkdtemp(join(tmpdir(), 'codexcli-agent-control-test-'));
@@ -45,6 +46,76 @@ async function waitFor(predicate, timeoutMs = 10000) {
   while (Date.now() < deadline) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 50)); }
   assert.fail('Expected detached worker behavior did not occur.');
 }
+function tokenMarker(stdout){
+  const marker=typeof stdout==='string'?stdout.trim():'';
+  if(marker==='SUDO_CLI_TOKEN_ELEVATED')return true;
+  if(marker==='SUDO_CLI_TOKEN_STANDARD')return false;
+  throw Object.assign(new Error('Native parent token classification is unavailable.'),{code:'FIXTURE_TOKEN_UNKNOWN'});
+}
+async function nativeWindowsToken(signal){
+  const executable=win32.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+  const script="if(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){[Console]::WriteLine('SUDO_CLI_TOKEN_ELEVATED')}else{[Console]::WriteLine('SUDO_CLI_TOKEN_STANDARD')}";
+  const {stdout}=await runFixtureProcess(executable,['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{timeoutMs:30000,maxBytes:4096,signal});
+  return tokenMarker(stdout);
+}
+function receiptReason(reason){
+  if(typeof reason!=='string')return 'unspecified';
+  if(/initializ.*(?:timeout|timed out)|(?:timeout|timed out).*initializ/i.test(reason))return 'initialization-timeout';
+  if(/duration(?:Ms)? budget|budget cannot admit/i.test(reason))return 'task-budget';
+  if(/permission|approval/i.test(reason))return 'approval';
+  if(/provider|model request/i.test(reason))return 'provider';
+  return 'worker-failure';
+}
+async function taskReceipt({inbox,id,requests,timeoutMs=35000,workerStatus}){
+  if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>35000)throw Object.assign(new Error('Detached receipt observation limit is invalid.'),{code:'FIXTURE_RECEIPT_LIMIT'});
+  let active=true,phase='unobserved',reason='unspecified',deadlineTimer,pollTimer;
+  const failure=code=>Object.assign(new Error(`Detached receipt failed: phase=${phase}; reason=${reason}; requests=${requests.length}.`),{code});
+  const poll=async()=>{
+    while(active){
+      let record;try{record=await inbox.get(id);}catch{reason='storage-read';throw failure('FIXTURE_TASK_OBSERVATION');}
+      if(!active)return;
+      phase=['pending','assessing','running','completed','blocked','failed'].includes(record?.status)?record.status:'unknown';
+      if(phase==='completed')return record;
+      if(phase==='blocked'||phase==='failed'){reason=receiptReason(record.reason);throw failure('FIXTURE_TASK_TERMINAL');}
+      if(phase==='unknown')throw failure('FIXTURE_TASK_OBSERVATION');
+      await new Promise(resolve=>{pollTimer=setTimeout(resolve,50);});
+    }
+  };
+  try{
+    return await Promise.race([poll(),new Promise((_,reject)=>{deadlineTimer=setTimeout(()=>reject(failure('FIXTURE_TASK_DEADLINE')),timeoutMs);})]);
+  }catch(error){
+    active=false;clearTimeout(pollTimer);
+    if(workerStatus){
+      let timer;
+      try{
+        const status=await Promise.race([Promise.resolve().then(workerStatus),new Promise(resolve=>{timer=setTimeout(()=>resolve(undefined),5000);})]);
+        const state=['idle','working','assessing','stopped','error'].includes(status?.status?.state)?status.status.state:'unavailable';
+        error.message+=` worker=${state}.`;
+      }catch{error.message+=' worker=unavailable.';}
+      finally{clearTimeout(timer);}
+    }
+    throw error;
+  }finally{active=false;clearTimeout(deadlineTimer);clearTimeout(pollTimer);}
+}
+
+test('native token classification accepts only explicit elevated and standard markers',()=>{
+  assert.equal(tokenMarker('SUDO_CLI_TOKEN_ELEVATED\r\n'),true);
+  assert.equal(tokenMarker('SUDO_CLI_TOKEN_STANDARD\n'),false);
+  for(const value of ['', 'private fixture detail', 'SUDO_CLI_TOKEN_STANDARD\nextra'])assert.throws(()=>tokenMarker(value),error=>error.code==='FIXTURE_TOKEN_UNKNOWN'&&(!value||!error.message.includes(value)));
+});
+test('detached receipt diagnostics recognize known initialization and admission failures without exposing their text',()=>{
+  assert.equal(receiptReason('Codex app-server request timed out (initialize)'),'initialization-timeout');
+  assert.equal(receiptReason('The task durationMs budget cannot admit this request.'),'task-budget');
+});
+test('detached receipts fail early on terminal failure and keep diagnostics bounded',async()=>{
+  const reason='private fixture detail';const requests=[{model:'guardian-fixture'}];
+  for(const status of ['failed','blocked'])await assert.rejects(()=>taskReceipt({inbox:{get:async()=>({status,reason})},id:'fixture',requests,timeoutMs:50,workerStatus:async()=>({running:true,status:{state:'idle',events:[{error:reason}]}})}),error=>error.code==='FIXTURE_TASK_TERMINAL'&&error.message.includes(`phase=${status}`)&&error.message.includes('requests=1')&&error.message.includes('worker=idle')&&!error.message.includes(reason));
+});
+test('detached receipts enforce their observation cap before polling and bound a hanging observation',async()=>{
+  let calls=0;const inbox={get:async()=>{calls++;return new Promise(()=>{});}};
+  await assert.rejects(()=>taskReceipt({inbox,id:'fixture',requests:[],timeoutMs:35001}),{code:'FIXTURE_RECEIPT_LIMIT'});assert.equal(calls,0);
+  await assert.rejects(()=>taskReceipt({inbox,id:'fixture',requests:[],timeoutMs:50}),error=>error.code==='FIXTURE_TASK_DEADLINE'&&error.message.length<256);assert.equal(calls,1);
+});
 test('missing worker status is offline without creating a control record', async t => {
   const { getAgentWorker, stopAgentWorker } = await import('../src/agent-control.mjs');
   const cwd = await directory(t), stateDir = join(cwd, 'state');
@@ -97,9 +168,8 @@ test('a dead worker is reported stale without deleting records or contacting a d
   assert.equal(JSON.parse(await readFile(path, 'utf8')).id, id);
   assert.equal(requests, 0);
 });
-test('standard Windows launch refuses to create a detached worker rather than bypassing elevation', { skip: process.platform !== 'win32' }, async t => {
-  const { isElevated } = await import('../src/privileges.mjs');
-  if (await isElevated()) return t.skip('This process already has an elevated administrator token.');
+test('standard Windows launch refuses to create a detached worker rather than bypassing elevation', { skip: process.platform !== 'win32',timeout:40000 }, async t => {
+  if (await nativeWindowsToken(t.signal)) return t.skip('This process already has an elevated administrator token.');
   const { startAgentWorker } = await import('../src/agent-control.mjs');
   const cwd = await directory(t), stateDir = join(cwd, 'state');
   await assert.rejects(startAgentWorker({ stateDir, cwd, config: { localConnection: { baseUrl: 'http://localhost:1234/v1', model: 'local', transport: 'chat-completions' }, cloudConnection: { baseUrl: 'https://example.com/v1', model: 'cloud', transport: 'chat-completions' } } }), /administrator|root/i);
@@ -169,7 +239,7 @@ test('native elevated detached worker remains idle, authenticates control, refus
   assert.deepEqual(await getAgentWorker({ stateDir, cwd }), { running: false });
   assert.throws(() => process.kill(started.pid, 0), error => error.code === 'ESRCH');
 });
-test('detached worker survives its launching process and processes an explicit task through native local and working AI sessions', { skip: process.platform === 'win32' || process.geteuid?.() !== 0 }, async t => {
+test('detached worker survives its launching process and processes an explicit task through native local and working AI sessions', { skip: process.platform === 'win32' || process.geteuid?.() !== 0,timeout:45000 }, async t => {
   const { getAgentWorker, stopAgentWorker } = await import('../src/agent-control.mjs');
   const { createTaskInbox } = await import('../src/task-inbox.mjs');
   const cwd = await mkdtemp(join(tmpdir(), 'codexcli-agent-detached-test-')), stateDir = join(cwd, 'state');
@@ -182,7 +252,7 @@ test('detached worker survives its launching process and processes an explicit t
     res.end(JSON.stringify({ id: 'fixture-chat', object: 'chat.completion', model: body.model, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } }));
   },{cleanup:async()=>{try{await stopAgentWorker({stateDir,cwd});}finally{await rm(cwd,{recursive:true,force:true});}}});
   const baseUrl = `http://127.0.0.1:${port}/v1`;
-  const config = { localConnection: { baseUrl, model: 'guardian-fixture', transport: 'chat-completions', apiKey: 'guardian-private-fixture' }, cloudConnection: { baseUrl, model: 'working-fixture', transport: 'chat-completions', apiKey: 'working-private-fixture' }, settings: { permissions: 'ask', webAccess: false }, pollMs: 100, localDeveloperInstructions: 'Guardian-specific preference: be concise.', developerInstructions: 'Working-model preference: show results.' };
+  const config = { localConnection: { baseUrl, model: 'guardian-fixture', transport: 'chat-completions', apiKey: 'guardian-private-fixture' }, cloudConnection: { baseUrl, model: 'working-fixture', transport: 'chat-completions', apiKey: 'working-private-fixture' }, settings: { permissions: 'ask', webAccess: false }, budget:{task:{durationMs:30000}}, pollMs: 100, localDeveloperInstructions: 'Guardian-specific preference: be concise.', developerInstructions: 'Working-model preference: show results.' };
   const moduleUrl = new URL('../src/agent-control.mjs', import.meta.url).href;
   const launch = `const {startAgentWorker}=await import(${JSON.stringify(moduleUrl)});const chunks=[];for await(const b of process.stdin)chunks.push(b);const result=await startAgentWorker(JSON.parse(Buffer.concat(chunks).toString()));process.stdout.write(JSON.stringify(result));`;
   const launcher = spawn(process.execPath, ['--input-type=module', '-e', launch], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -195,8 +265,7 @@ test('detached worker survives its launching process and processes an explicit t
   assert.equal(requests.length, 0, 'Empty inbox makes no local or cloud model request.');
   const inbox = await createTaskInbox({ cwd, stateDir });
   const job = await inbox.submit({ prompt: 'Run the fixture explanation task.', source: 'user' });
-  await waitFor(async () => (await inbox.get(job.id)).status === 'completed');
-  const completion=await inbox.get(job.id);
+  const completion=await taskReceipt({inbox,id:job.id,requests,workerStatus:()=>getAgentWorker({cwd,stateDir})});
   assert.match(completion.result,/^Fixture background task completed\.\n\nAcceptance: Needs review\. Checkpoint: [a-f0-9-]{36}\.$/);
   const {createWorkspaceTools}=await import('../src/workspace-tools.mjs');
   const checkpoints=await (await createWorkspaceTools({cwd,stateDir})).listCheckpoints();

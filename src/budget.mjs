@@ -92,7 +92,7 @@ export async function createBudgetLedger({ stateDir = defaultWorkStateDir(), cwd
       for (const req of Object.values(value.requests)) if (req.taskId === taskId && req.status !== 'settled') { req.status = 'settled'; req.outcome = 'cancelled'; }
     });
   }
-  async function reserve({ taskId, requestId, estimate, pricing } = {}) {
+  async function reserveRequest({ taskId, requestId, estimate, pricing } = {}, adaptiveDuration = false) {
     identifier(taskId); identifier(requestId); pricing = normalizePricing(pricing);
     if (!object(estimate) || !count(estimate.inputTokens) || !count(estimate.outputTokens) || !count(estimate.durationMs) || estimate.durationMs < 1) throw new Error('Budget reservation requires input/output token and duration estimates.');
     return store.update(value => {
@@ -100,15 +100,22 @@ export async function createBudgetLedger({ stateDir = defaultWorkStateDir(), cwd
       if (value.requests[requestId]) throw exceeded('This request identifier was already admitted; duplicate dispatch is blocked.');
       const costUsd = estimate.costUsd !== undefined ? estimate.costUsd : estimateUsage({ inputTokensEstimate: estimate.inputTokens, outputTokenLimit: estimate.outputTokens, pricing }).costUsd;
       if (costUsd !== null && !number(costUsd)) throw new Error('Budget cost estimate is invalid.');
-      const charge = { requests: 1, tokens: estimate.inputTokens + estimate.outputTokens, costUsd, durationMs: estimate.durationMs };
-      for (const [scope, selector] of [['task', { taskId }], ['day', { day }]]) {
-        const used = totals(value, at, selector);
+      const scopes = [['task', totals(value, at, { taskId })], ['day', totals(value, at, { day })]];
+      let timeout = estimate.durationMs;
+      if (adaptiveDuration) {
+        for (const [scope, used] of scopes) if (policy[scope]?.durationMs !== undefined) timeout = Math.min(timeout, policy[scope].durationMs - used.durationMs);
+        timeout = Math.floor(timeout);
+        if (timeout < 1) throw exceeded('The task or daily duration budget is exhausted.');
+      }
+      const charge = { requests: 1, tokens: estimate.inputTokens + estimate.outputTokens, costUsd, durationMs: timeout };
+      for (const [scope, used] of scopes) {
         for (const [field, cap] of Object.entries(policy[scope] ?? {})) if (field === 'costUsd' && (charge.costUsd === null || used.costUsd === null) || cap + 1e-12 < used[field] + charge[field]) throw exceeded(`The ${scope} ${field} budget cannot admit this request${field === 'costUsd' && charge.costUsd === null ? '; configure pricing first' : ''}.`);
       }
       value.requests[requestId] = { taskId, day, status: 'reserved', tokens: charge.tokens, costUsd, durationMs: charge.durationMs, startedAt: at, estimated: true, ...(pricing ? { pricing } : {}) };
-      return { reservationId: requestId, maxOutputTokens: estimate.outputTokens, timeoutMs: estimate.durationMs };
+      return { reservationId: requestId, maxOutputTokens: estimate.outputTokens, timeoutMs: charge.durationMs };
     });
   }
+  const reserve = options => reserveRequest(options);
   async function reportUsage(requestId, usage) {
     identifier(requestId);
     if (!object(usage) || !count(usage.inputTokens) || !count(usage.outputTokens) || !count(usage.totalTokens) || usage.totalTokens < usage.inputTokens + usage.outputTokens || usage.estimated !== false) throw new Error('Budget settlement requires valid actual provider token usage.');
@@ -146,7 +153,7 @@ export async function createBudgetLedger({ stateDir = defaultWorkStateDir(), cwd
         }
         output = Math.floor(output); timeout = Math.floor(timeout);
         if (output < 1 || timeout < 1) throw exceeded('The token or duration budget is exhausted.');
-        return reserve({ taskId, requestId: id, estimate: { inputTokens: inputTokensEstimate, outputTokens: output, durationMs: timeout }, pricing });
+        return reserveRequest({ taskId, requestId: id, estimate: { inputTokens: inputTokensEstimate, outputTokens: output, durationMs: timeout }, pricing }, true);
       },
       onUsage(usage) { return reportUsage(usage.id, usage); },
       afterRequest({ id, outcome } = {}) { return settle(id, { outcome }); },
