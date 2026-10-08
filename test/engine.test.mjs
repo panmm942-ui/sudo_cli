@@ -1,0 +1,189 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { createEngine } from '../src/engine.mjs';
+
+const fixture = fileURLToPath(new URL('./fixtures/engine-server.mjs', import.meta.url));
+const options = (scenario = 'normal', extra = {}) => ({
+  codexPath: [process.execPath, fixture], cwd: process.cwd(), model: 'fixture-model',
+  providerArgs: ['-c', 'model_provider="fixture"'],
+  env: { ...process.env, ENGINE_SCENARIO: scenario, CODEX_HOME: 'fixture-home', SUDO_CLI_SESSION_KEY: 'fixture-only' },
+  requestTimeoutMs: 2000, ...extra,
+});
+async function within(promise, ms = 1000) {
+  let timeout;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('test deadline expired')), ms);
+    })]);
+  } finally { clearTimeout(timeout); }
+}
+
+test('runs an isolated ephemeral thread and streams intact UTF-8 notifications', async (t) => {
+  const events = [];
+  const engine = await createEngine(options('normal', { onEvent: (event) => events.push(event) }));
+  t.after(() => engine.close());
+  assert.equal(engine.threadId, 'thread-1');
+  const completed = await engine.startTurn('Hello', { model: 'changed-model' });
+  assert.equal(completed.status, 'completed');
+  const audit = JSON.parse(completed.items[0].text);
+  assert.deepEqual(audit.argv, ['--no-daemon', 'app-server', '--listen', 'stdio://', '-c', 'model_provider="fixture"']);
+  assert.equal(audit.home, 'fixture-home');
+  assert.equal(audit.keyPresent, true);
+  assert.equal(audit.thread.ephemeral, true);
+  assert.equal(audit.thread.sandbox, 'workspace-write');
+  assert.equal(audit.thread.approvalPolicy, 'on-request');
+  assert.equal(audit.thread.cwd, process.cwd());
+  assert.equal(audit.thread.model, 'fixture-model');
+  assert.deepEqual(audit.params.input, [{ type: 'text', text: 'Hello', text_elements: [] }]);
+  assert.equal(audit.params.threadId, 'thread-1');
+  assert.equal(audit.params.model, 'changed-model');
+  assert.equal(events.find(({ method }) => method === 'item/agentMessage/delta').params.delta, 'Hello 🌍');
+  assert.equal(events.filter(({ method }) => method === 'turn/completed').length, 2);
+});
+
+test('does not lose completion sent before the turn/start response', async (t) => {
+  const engine = await createEngine(options('early-completion'));
+  t.after(() => engine.close());
+  assert.equal((await within(engine.startTurn('fast'))).status, 'completed');
+});
+
+test('rejects failed turns and request errors without exposing server diagnostics', async (t) => {
+  for (const scenario of ['failed-turn', 'turn-error']) {
+    const engine = await createEngine(options(scenario));
+    t.after(() => engine.close());
+    await assert.rejects(within(engine.startTurn('failure')), /Codex.*(failed|rejected)/);
+  }
+});
+
+test('interrupts an active turn while its completion is pending', async (t) => {
+  const engine = await createEngine(options('interrupt'));
+  t.after(() => engine.close());
+  const completed = engine.startTurn('long running');
+  await within(engine.interrupt());
+  assert.equal((await within(completed)).status, 'interrupted');
+});
+
+test('refuses overlapping turns instead of replacing an active completion', async (t) => {
+  const engine = await createEngine(options('interrupt'));
+  t.after(() => engine.close());
+  const first = engine.startTurn('first');
+  const firstHandled = first.catch(() => null);
+  await assert.rejects(within(engine.startTurn('second')), /already active/);
+  await engine.interrupt();
+  assert.equal((await within(firstHandled)).status, 'interrupted');
+});
+
+test('rejects active work when the child exits', async (t) => {
+  const engine = await createEngine(options('exit-turn'));
+  t.after(() => engine.close());
+  await assert.rejects(within(engine.startTurn('exit')), /exited|stream closed/);
+});
+
+test('times out startup and rejects a failed child startup', async () => {
+  await assert.rejects(within(createEngine(options('hang-startup', { requestTimeoutMs: 150 }))), /timed out/);
+  await assert.rejects(within(createEngine(options('exit-startup'))), /exited|stream closed/);
+});
+
+test('close rejects active work and is safe to call twice', async () => {
+  const engine = await createEngine(options('close-turn'));
+  const active = assert.rejects(within(engine.startTurn('pending')), /closed/);
+  await engine.close();
+  await engine.close();
+  await active;
+  await assert.rejects(engine.startTurn('after close'), /closed/);
+});
+
+test('maps approvals to one-time protocol decisions and declines unsupported sensitive requests', async (t) => {
+  const reviewed = [];
+  const notifications = [];
+  const engine = await createEngine(options('approvals', {
+    onEvent: (event) => notifications.push(event),
+    onApproval: async (request) => {
+      reviewed.push(request);
+      if (request.method === 'item/commandExecution/requestApproval') {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return true;
+      }
+      return ['item/permissions/requestApproval', 'execCommandApproval'].includes(request.method);
+    },
+  }));
+  t.after(() => engine.close());
+  const completed = await within(engine.startTurn('approval test'));
+  const responses = JSON.parse(completed.items[0].text);
+  assert.deepEqual(responses['item/commandExecution/requestApproval'], { decision: 'accept' });
+  assert.deepEqual(responses['item/fileChange/requestApproval'], { decision: 'decline' });
+  assert.deepEqual(responses.execCommandApproval, { decision: 'approved' });
+  assert.deepEqual(responses.applyPatchApproval, { decision: { denied: { rejection: 'Declined by user.' } } });
+  assert.deepEqual(responses['item/permissions/requestApproval'], {
+    permissions: { network: { enabled: true }, fileSystem: { read: [process.cwd()], write: [process.cwd()] } }, scope: 'turn',
+  });
+  assert.deepEqual(responses['item/tool/requestUserInput'], { answers: {} });
+  assert.deepEqual(responses['mcpServer/elicitation/request'], { action: 'decline' });
+  for (const method of ['account/chatgptAuthTokens/refresh', 'item/tool/call', 'attestation/generate']) {
+    assert.equal(responses[method].error.code, -32601);
+  }
+  assert.equal(Number.isInteger(responses['currentTime/read'].currentTimeAt), true);
+  assert.deepEqual(reviewed.map(({ method }) => method).sort(), [
+    'item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'execCommandApproval', 'applyPatchApproval',
+  ].sort());
+  assert.equal(notifications.some(({ method }) => method.includes('requestApproval')), false);
+});
+
+test('approval callback errors decline requests instead of hanging or approving', async (t) => {
+  const engine = await createEngine(options('approvals', { onApproval: async () => { throw new Error('UI unavailable'); } }));
+  t.after(() => engine.close());
+  const completed = await within(engine.startTurn('approval failure'));
+  const responses = JSON.parse(completed.items[0].text);
+  assert.deepEqual(responses['item/commandExecution/requestApproval'], { decision: 'decline' });
+  assert.deepEqual(responses['item/fileChange/requestApproval'], { decision: 'decline' });
+  assert.deepEqual(responses['item/permissions/requestApproval'], { permissions: {}, scope: 'turn' });
+});
+
+test('matches JSON-RPC response ids by type and recovers after a rejected turn request', async (t) => {
+  const matched = await createEngine(options('wrong-id'));
+  t.after(() => matched.close());
+  assert.equal((await matched.startTurn('right request')).status, 'completed');
+  const retry = await createEngine(options('retry-turn'));
+  t.after(() => retry.close());
+  await assert.rejects(retry.startTurn('rejected'), /rejected/);
+  assert.equal((await retry.startTurn('retry')).status, 'completed');
+});
+
+test('fails safely when the executable is missing', async () => {
+  await assert.rejects(within(createEngine(options('normal', { codexPath: 'sudo-fixture-does-not-exist.exe' }))), /Unable to start/);
+});
+
+test('rejects invalid thread startup responses with a safe error', async () => {
+  await assert.rejects(within(createEngine(options('bad-thread'))), /invalid thread response/);
+});
+
+test('requires ephemeral thread confirmation instead of using a persisted thread', async () => {
+  await assert.rejects(within(createEngine(options('persistent-thread')).then(async (engine) => { await engine.close(); return engine; })), /ephemeral/);
+});
+
+test('rejects malformed turn responses without retaining an active turn', async (t) => {
+  const engine = await createEngine(options('bad-turn'));
+  t.after(() => engine.close());
+  await assert.rejects(engine.startTurn('bad turn'), /invalid turn response/);
+  await assert.rejects(engine.startTurn('retry'), /invalid turn response/);
+});
+
+test('rejects a runtime request when the app-server stops responding', async (t) => {
+  const timeout = await createEngine(options('request-timeout', { requestTimeoutMs: 750 }));
+  t.after(() => timeout.close());
+  await assert.rejects(within(timeout.startTurn('timeout')), /timed out/);
+});
+
+test('bounds incomplete JSON lines instead of retaining unlimited server output', async (t) => {
+  const engine = await createEngine(options('oversized-line'));
+  t.after(() => engine.close());
+  await assert.rejects(within(engine.startTurn('large output')), /output exceeded/);
+});
+
+test('rejects empty input before sending a model request', async (t) => {
+  const engine = await createEngine(options('normal'));
+  t.after(() => engine.close());
+  for (const text of ['', '  ', null]) await assert.rejects(engine.startTurn(text), /non-empty text/);
+  assert.equal((await engine.startTurn('valid after invalid')).status, 'completed');
+});

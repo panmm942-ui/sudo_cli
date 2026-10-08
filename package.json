@@ -1,0 +1,12 @@
+{
+  "name": "sudo-cli",
+  "version": "0.1.0",
+  "description": "A separate terminal UI for the open-source Codex engine with runtime model setup",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "bin": { "sudo-cli": "bin/sudo-cli.mjs" },
+  "scripts": { "test": "node --test", "start": "node bin/sudo-cli.mjs" },
+  "files": ["bin", "src", "README.md", "LICENSE", "THIRD_PARTY.md", "sudo-cli.cmd", "sudo.cmd"]
+}
