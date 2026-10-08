@@ -78,11 +78,14 @@ export function createProjectChanges({cwd=process.cwd(),secrets=()=>[],excludePa
     }
     await visit(root,'',0);return{files,partial};
   }
-  function git(args,maxBuffer=2*1024*1024,original=false){
-    check();const view=original?null:gitView;
+  async function git(args,maxBuffer=2*1024*1024,original=false){
+    check();await checkViewIdentity(gitView);
+    const globalInfo=await lstat(gitView.globalConfig,{bigint:true});
+    if(globalInfo.isSymbolicLink()||!globalInfo.isFile()||!stable(gitView.globalIdentity,globalInfo)||globalInfo.size!==0n)throw unavailable();
+    const view=original?null:gitView;
     return new Promise((success,failure)=>execFile('git',['--no-pager','--no-optional-locks',...(view?['--git-dir='+view.directory,'--work-tree='+root]:[]),'-c','core.fsmonitor=false','-c','core.hooksPath=','-c','color.ui=false','-c','status.renames=false','-c',`safe.directory=${root}`,...args],{
       cwd:root,windowsHide:true,shell:false,encoding:'buffer',timeout:5000,maxBuffer,signal:controller.signal,
-      env:isolatedEnvironment(process.env,{GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:process.platform==='win32'?'NUL':'/dev/null',GIT_ATTR_NOSYSTEM:'1',GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C',...(view?{GIT_OBJECT_DIRECTORY:view.objects,GIT_INDEX_FILE:join(view.directory,'index')}:{})})
+      env:isolatedEnvironment(process.env,{GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:gitView.globalConfig,GIT_ATTR_NOSYSTEM:'1',GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C',...(view?{GIT_OBJECT_DIRECTORY:view.objects,GIT_INDEX_FILE:join(view.directory,'index')}:{})})
     },(error,stdout)=>error?failure(new Error('Git project inspection is unavailable.')):success(stdout)));
   }
   async function metadata(path,limit){
@@ -98,6 +101,15 @@ export function createProjectChanges({cwd=process.cwd(),secrets=()=>[],excludePa
       if(!parent.isDirectory()||parent.isSymbolicLink()||!same(parent,view.tempIdentity)||await realpath(view.tempRoot)!==view.tempRoot||!directory.isDirectory()||directory.isSymbolicLink()||!same(directory,view.identity)||await realpath(view.directory)!==view.directory)throw unavailable();
     }catch{throw new Error('Project change temporary metadata identity changed; cleanup refused.');}
   }
+  async function ensureGitView(){
+    if(gitView)return;
+    const tempRoot=await realpath(tmpdir()),tempIdentity=await lstat(tempRoot,{bigint:true});if(!tempIdentity.isDirectory()||tempIdentity.isSymbolicLink())throw unavailable();
+    const directory=await mkdtemp(join(tempRoot,'sudo-cli-git-view-'));gitView={directory,tempRoot,tempIdentity};gitView.identity=await lstat(directory,{bigint:true});await checkViewIdentity(gitView);
+    await mkdir(join(directory,'refs'));await mkdir(join(directory,'objects'));
+    // A real empty file works across Git versions that reject Windows NUL.
+    // Keep it private and verify its identity before every native Git call.
+    gitView.globalConfig=join(directory,'global-config');await writeFile(gitView.globalConfig,'',{flag:'wx',mode:0o600});gitView.globalIdentity=await lstat(gitView.globalConfig,{bigint:true});
+  }
   async function ordinaryObjects(objects){
     await plainDirectory(objects);let count=0;
     async function visit(path,depth){let stream;try{stream=await opendir(path);for await(const entry of stream){check();if(++count>50000||entry.isSymbolicLink())throw unavailable();const child=join(path,entry.name);if(entry.isDirectory()){if(depth>1)throw unavailable();await plainDirectory(child);await visit(child,depth+1);}else if(!entry.isFile())throw unavailable();}}finally{await stream?.close().catch(()=>{});}}
@@ -112,13 +124,13 @@ export function createProjectChanges({cwd=process.cwd(),secrets=()=>[],excludePa
     gitFallback=false;
     try{const source=join(root,'.git');let info;try{info=await lstat(source);}catch(error){if(error.code==='ENOENT')return false;throw error;}
       gitFallback=true;if(!info.isDirectory()||info.isSymbolicLink())return false;await plainDirectory(source);
+      await ensureGitView();
       const top=(await git(['rev-parse','--show-toplevel'],8192,true)).toString('utf8').trim();if(await realpath(top)!==root)return false;
       if((await git(['rev-parse','--show-object-format'],128,true)).toString('utf8').trim()!=='sha1')return false;
       const objects=join(source,'objects');await ordinaryObjects(objects);
       for(const name of ['commondir','config.worktree']){try{await lstat(join(source,name));return false;}catch(error){if(error.code!=='ENOENT')throw unavailable();}}
       const head=await metadata(join(source,'HEAD'),4096),index=await metadata(join(source,'index'),8*1024*1024);if(!head)return false;
       let commit;try{commit=(await git(['rev-parse','--verify','HEAD'],128,true)).toString('utf8').trim();if(!/^[a-f0-9]{40}$/.test(commit))return false;}catch{check();if(!/^ref: refs\/[^\r\n]+\r?\n?$/.test(head.toString('utf8')))return false;}
-      if(!gitView){const tempRoot=await realpath(tmpdir()),tempIdentity=await lstat(tempRoot,{bigint:true});if(!tempIdentity.isDirectory()||tempIdentity.isSymbolicLink())throw unavailable();const directory=await mkdtemp(join(tempRoot,'sudo-cli-git-view-'));gitView={directory,objects,tempRoot,tempIdentity};gitView.identity=await lstat(directory,{bigint:true});await checkViewIdentity(gitView);await mkdir(join(directory,'refs'));await mkdir(join(directory,'objects'));}
       gitView.objects=objects;gitView.objectIdentity=await lstat(objects,{bigint:true});let filemode=false;try{filemode=(await git(['config','--bool','core.filemode'],128,true)).toString('utf8').trim()==='true';}catch{check();}
       // No repository/global driver config is copied. Attribute filter names are
       // inert in this private view, including drivers added during inspection.

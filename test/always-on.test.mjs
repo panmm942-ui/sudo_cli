@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from './fixtures/temp-root.mjs';
 import { createTaskInbox } from '../src/task-inbox.mjs';
 import { createAlwaysOn } from '../src/always-on.mjs';
+import {observeTaskUpdates} from './fixtures/task-update-observer.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, ms = 4000) {
@@ -15,13 +16,14 @@ async function until(predicate, ms = 4000) {
   assert.fail('Coordinator did not reach its expected state in time.');
 }
 async function fixture(t, options = {}) {
-  const {inboxSecrets,...coordinatorOptions}=options;
+  const {inboxSecrets,observeUpdates,...coordinatorOptions}=options;
   const root = await mkdtemp(join(tmpdir(), 'codexcli-always-on-'));
   const cwd = join(root, 'project'); await mkdir(cwd);
   const inbox = await createTaskInbox({ cwd, stateDir: join(root, 'state'), ...(inboxSecrets?{secrets:inboxSecrets}:{}) });
+  const updates=observeUpdates?observeTaskUpdates(inbox):undefined;
   const agent = createAlwaysOn({ inbox, pollMs: 10, idleSleepMs: 40, ...coordinatorOptions });
-  t.after(async () => { await agent.stop(); await rm(root, { recursive: true, force: true }); });
-  return { root, cwd, inbox, agent };
+  t.after(async () => { try{await agent.stop();}finally{updates?.close();await rm(root, { recursive: true, force: true });} });
+  return { root, cwd, inbox, agent, updates };
 }
 
 test('an idle coordinator makes no model calls and submits work only when explicitly requested', async t => {
@@ -452,7 +454,7 @@ test('unverified cleanup outranks stop and duration aborts, releases the lease a
     const watches=interceptedWatches(t),errors=[],outcomes=[];let reached,dispatches=0,releases=0,ended=0,schedulerTicks=0,firstId,wakeFailed=false;
     const ready=new Promise(resolve=>reached=resolve),secret='synthetic-cleanup-cause-secret';
     const failAfterAbort=signal=>new Promise((resolve,reject)=>{const fail=()=>reject(Object.assign(new Error('Native session cleanup needs review.'),{code,cause:new Error(`Safe primary failure ${secret}`)}));reached();if(signal.aborted)fail();else signal.addEventListener('abort',fail,{once:true});});
-    const created=await fixture(t,{inboxSecrets:()=>[secret],watchPaths:['.'],idleSleepMs:10000,scheduler:{tick:async()=>{schedulerTicks++;}},beginTask:async id=>mode==='duration'&&id===firstId?{timeoutMs:200}:{},endTask:async()=>{ended++;},
+    const created=await fixture(t,{observeUpdates:true,inboxSecrets:()=>[secret],watchPaths:['.'],idleSleepMs:10000,scheduler:{tick:async()=>{schedulerTicks++;}},beginTask:async id=>mode==='duration'&&id===firstId?{timeoutMs:200}:{},endTask:async()=>{ended++;},
       onError:error=>errors.push(error),onTaskResult:async(job,patch)=>{outcomes.push({id:job.id,status:patch.status});return patch;},
       assess:async(job,{signal})=>job.id===firstId&&stage==='assess'?failAfterAbort(signal):{action:'cloud'},
       wake:async({signal})=>{if(stage==='wake'&&!wakeFailed){wakeFailed=true;return failAfterAbort(signal);}},
@@ -471,7 +473,8 @@ test('unverified cleanup outranks stop and duration aborts, releases the lease a
     // The real durable lease is released, but only explicit restart admits
     // pending work. The failed task remains failed and is never retried.
     const otherLease=await originalAcquire();await otherLease.release();
-    await created.agent.start();await until(async()=>(await created.inbox.get(pending.id)).status==='completed');assert.equal((await created.inbox.get(first.id)).status,'failed');
+    const completed=created.updates.waitFor(pending.id,'completed',{signal:t.signal});
+    await created.agent.start();await completed;assert.equal((await created.inbox.get(pending.id)).status,'completed');assert.equal((await created.inbox.get(first.id)).status,'failed');
   });
 });
 

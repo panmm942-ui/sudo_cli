@@ -4,6 +4,9 @@ import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,readdir,realpath,rename} fro
 import {join,dirname,basename} from 'node:path';
 import {tmpdir as osTmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
+import childProcess from 'node:child_process';
+import {statSync,readFileSync} from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from './fixtures/temp-root.mjs';
 import {createProjectChanges} from '../src/project-changes.mjs';
 import {isolatedEnvironment} from '../src/permission-scope.mjs';
@@ -11,6 +14,34 @@ import {isolatedEnvironment} from '../src/permission-scope.mjs';
 async function fixture(t){const root=await mkdtemp(join(tmpdir(),'project-changes-'));const cwd=join(root,'project');await mkdir(cwd);t.after(()=>rm(root,{recursive:true,force:true}));return{root,cwd};}
 function git(cwd,...args){const run=spawnSync('git',['-c','core.hooksPath=','-c','commit.gpgsign=false',...args],{cwd,encoding:'utf8',env:isolatedEnvironment(process.env,{GIT_CONFIG_NOSYSTEM:'1',GIT_TERMINAL_PROMPT:'0'}),timeout:10000,windowsHide:true});assert.equal(run.status,0,'Fixture Git command must succeed.');return run.stdout;}
 const files=service=>service.snapshot().files.map(file=>[file.path,file.status]);
+
+test('Git inspection works when the native Git build rejects null-device global configs',async t=>{
+  const {cwd}=await fixture(t);git(cwd,'init','--quiet');await writeFile(join(cwd,'tracked.txt'),'base\n');git(cwd,'add','--all');git(cwd,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','base');await writeFile(join(cwd,'tracked.txt'),'working\n');
+  const original=childProcess.execFile,configs=[];
+  const replacement=t.mock.method(childProcess,'execFile',(command,args,options,callback)=>{
+    if(command==='git'){
+      const config=options.env.GIT_CONFIG_GLOBAL;configs.push(config);
+      if(/^(?:nul|\/dev\/null|\\\\\.\\nul)$/i.test(config||''))return queueMicrotask(()=>callback(new Error('Native Git cannot access the null device as a config file.')));
+      assert.equal(statSync(config).isFile(),true);assert.equal(readFileSync(config).length,0);
+    }
+    return original(command,args,options,callback);
+  });syncBuiltinESMExports();t.after(()=>{replacement.mock.restore();syncBuiltinESMExports();});
+  const service=createProjectChanges({cwd});t.after(()=>service.close());await service.initialize();
+  assert.deepEqual(files(service),[['tracked.txt','modified']]);assert.match(await service.diff('tracked.txt'),/-base[\s\S]*\+working/);
+  assert.ok(configs.length>=6);assert.equal(new Set(configs).size,1);assert.equal(dirname(configs[0]),await realpath(dirname(configs[0])));
+  await service.close();await assert.rejects(readFile(configs[0]),{code:'ENOENT'});
+});
+
+test('Git preview refuses a substituted global config before launching another command',async t=>{
+  const {cwd}=await fixture(t);git(cwd,'init','--quiet');await writeFile(join(cwd,'tracked.txt'),'base\n');git(cwd,'add','--all');git(cwd,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','base');await writeFile(join(cwd,'tracked.txt'),'working\n');
+  const original=childProcess.execFile;let globalConfig,calls=0;
+  const replacement=t.mock.method(childProcess,'execFile',(command,args,options,callback)=>{if(command==='git'){globalConfig=options.env.GIT_CONFIG_GLOBAL;calls++;}return original(command,args,options,callback);});
+  syncBuiltinESMExports();t.after(()=>{replacement.mock.restore();syncBuiltinESMExports();});
+  const service=createProjectChanges({cwd});t.after(()=>service.close());await service.initialize();assert.deepEqual(files(service),[['tracked.txt','modified']]);
+  const before=calls,saved=globalConfig+'.original';await rename(globalConfig,saved);await writeFile(globalConfig,'');
+  assert.match(await service.diff('tracked.txt'),/Diff unavailable/);assert.equal(calls,before,'The replacement must be refused before native execution');
+  assert.equal((await readFile(globalConfig)).length,0);await service.close();await assert.rejects(readFile(saved),{code:'ENOENT'});
+});
 
 test('non-Git baseline reports real additions, edits and deletions, then returns to clean',async t=>{
   const {cwd}=await fixture(t);await writeFile(join(cwd,'edit.txt'),'before\n');await writeFile(join(cwd,'gone.txt'),'deleted before\n');

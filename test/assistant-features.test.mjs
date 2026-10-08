@@ -7,6 +7,7 @@ import {createAssistantFeatures,parseLocalDecision} from '../src/assistant-featu
 import {createChatStore} from '../src/chat-store.mjs';
 import {createChatHistory} from '../src/chat-history.mjs';
 import {createChatSession} from '../src/chat-session.mjs';
+import {observeTaskUpdates} from './fixtures/task-update-observer.mjs';
 const connection={model:'fixture',baseUrl:'http://localhost/v1',transport:'chat-completions'};
 function fixture(extra={}){const notes=[],answers=[];let value;const calls=[];const settings={};const api=createAssistantFeatures({settings,cwd:process.cwd(),note:s=>notes.push(s),ask:async()=>answers.shift()||'',getConnection:()=>connection,personalization:{get:async()=>value,save:async(c,v)=>value=v,remove:async()=>{value=undefined;}},reconnect:async(c,o)=>calls.push(o),chatSession:{list:async()=>[{id:'one',title:'First',updatedAt:'now'}],current:()=>({id:'one'}),newChat:async o=>{calls.push(o);return{id:'two'};},open:async id=>{calls.push(id);return{id};},rename:async()=>{},checkpoint:async()=>{},remove:async()=>{}},onChatChange:async change=>calls.push(change),...extra});return{api,notes,answers,calls,settings,get value(){return value;}};}
 async function savedFixture(t,extra={}){
@@ -52,12 +53,13 @@ test('saved chat delete usage names the canonical command',async()=>{const f=fix
 test('live voice requires explicit compatible services and never starts implicitly',async()=>{const f=fixture();await assert.rejects(f.api.handle({name:'/voice',args:['live']}),/voice setup/);assert.equal(await f.api.handle({name:'/voice',args:['record','10']}),false);assert.equal(await f.api.handle({name:'/permissions',args:['allow-everything']}),false);f.settings.voiceService={baseUrl:'http://localhost/v1',model:'asr'};assert.equal(await f.api.handle({name:'/voice',args:['off']}),true);assert.equal(f.settings.voiceService.model,'asr');assert.equal(f.settings.microphone,false);await f.api.stop();});
 test('coordinator cannot claim local completion without a result',()=>{assert.throws(()=>parseLocalDecision('{"action":"local","reason":"Need approval"}'),/invalid decision/);assert.throws(()=>parseLocalDecision('{"action":"cloud","reason":123}'),/invalid decision/);assert.equal(parseLocalDecision('```json\n{"action":"local","result":"Completed"}\n```').result,'Completed');});
 
-async function backgroundFixture(t,{assess,runCloud}={}){
+async function backgroundFixture(t,{assess,runCloud,observeUpdates=false}={}){
   const module=await import('../src/assistant-features.mjs');
   assert.equal(typeof module.createBackgroundResultReporter,'function','background terminal outcomes require the shared result reporter');
   const [{createTaskInbox},{createAlwaysOn},{createNotifications}]=await Promise.all([import('../src/task-inbox.mjs'),import('../src/always-on.mjs'),import('../src/notifications.mjs')]);
   const root=await mkdtemp(join(tmpdir(),'sudo-background-notifications-'));
   const inbox=await createTaskInbox({cwd:root,stateDir:root}),events=[],outcomes=[],deliveries=[];
+  const updates=observeUpdates?observeTaskUpdates(inbox):undefined;
   const notifications=createNotifications({directory:join(root,'preferences'),interactive:true,cooldownMs:0,play:async({event})=>events.push(event)});
   async function delivered(){
     let timer;try{
@@ -73,12 +75,12 @@ async function backgroundFixture(t,{assess,runCloud}={}){
     deliveries.push(notifications.notify(module.backgroundNotificationEvent(outcome),{id:outcome.notificationId}).then(value=>({value}),error=>({error})));
   }});
   const agent=createAlwaysOn({inbox,pollMs:10,idleSleepMs:40,assess:assess||(async()=>({action:'local',result:'Actual task result'})),runCloud:runCloud||(async()=>''),beginTask:async id=>reporter.begin(id),onTaskResult:reporter.result});
-  t.after(async()=>{try{await agent.stop();await notifications.close();await delivered();}finally{await rm(root,{recursive:true,force:true});}});
-  return{agent,inbox,events,outcomes,reporter,notifications,delivered};
+  t.after(async()=>{try{await agent.stop();await notifications.close();await delivered();}finally{updates?.close();await rm(root,{recursive:true,force:true});}});
+  return{agent,inbox,events,outcomes,reporter,notifications,delivered,updates};
 }
 async function untilBackground(predicate){const deadline=Date.now()+2000;while(!await predicate()){if(Date.now()>deadline)assert.fail('Background fixture did not finish');await new Promise(resolve=>setTimeout(resolve,5));}}
 
-test('real coordinator reason-only failures and blocked outcomes notify once without fake assistant results',async t=>{
+test('real coordinator reason-only failures and blocked outcomes notify once without fake assistant results',{timeout:20000},async t=>{
   const scenarios=[
     {name:'assessment failure',assess:async()=>{throw new Error('Fixture assessor failed');},status:'blocked',event:'error'},
     {name:'approval required',assess:async()=>({action:'wait',reason:'Human approval is required'}),status:'blocked',event:'approval'},
@@ -86,8 +88,9 @@ test('real coordinator reason-only failures and blocked outcomes notify once wit
     {name:'cloud failure',assess:async()=>({action:'cloud'}),runCloud:async()=>{throw new Error('Fixture worker failed');},status:'failed',event:'error'},
   ];
   for(const scenario of scenarios)await t.test(scenario.name,async t=>{
-    const f=await backgroundFixture(t,scenario);await f.agent.start();const job=await f.agent.submit({prompt:'Explicit fixture task'});
-    await untilBackground(async()=> (await f.inbox.get(job.id)).status===scenario.status);
+    const f=await backgroundFixture(t,{...scenario,observeUpdates:true});const job=await f.agent.submit({prompt:'Explicit fixture task'});
+    const completed=f.updates.waitFor(job.id,scenario.status,{signal:t.signal});await f.agent.start();await completed;
+    assert.equal((await f.inbox.get(job.id)).status,scenario.status);
     await f.delivered();
     assert.deepEqual(f.events,[scenario.event]);assert.equal(f.outcomes.length,1);assert.equal(f.outcomes[0].text,undefined);assert.ok(f.outcomes[0].reason);
     await f.reporter.result(job,{status:scenario.status,reason:'Repeated callback'});
