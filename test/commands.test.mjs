@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+test('GUI and current changes are discoverable while performance remains a panel',async()=>{
+  const {COMMANDS,commandMenu,completeCommand,parseCommand}=await import('../src/commands.mjs');
+  assert.ok(COMMANDS.some(command=>command.name==='/gui'));
+  assert.equal(COMMANDS.some(command=>command.name==='/performance'),false);
+  assert.deepEqual(completeCommand('/gui')[0],['/gui']);assert.match(commandMenu(),/\/gui/);
+  assert.doesNotMatch(commandMenu('advanced'),/\/performance/);
+  assert.deepEqual(parseCommand('/changes checkpoint-id').args,['checkpoint-id']);
+  assert.match(COMMANDS.find(command=>command.name==='/changes').description,/current/i);
+});
+
 test('textcolor is canonical and notification controls are discoverable offline',async()=>{
   const {COMMANDS,commandMenu,completeCommand,parseCommand}=await import('../src/commands.mjs');
   assert.deepEqual(completeCommand('/text')[0],['/textcolor']);

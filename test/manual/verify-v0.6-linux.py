@@ -12,6 +12,10 @@ No paid endpoint, microphone, speaker, real GPU hook, OS startup service or
 desktop Codex configuration is used. Retained evidence is sanitized.
 """
 import argparse
+from question_fixture import install_question_fixture, active_submission_question
+from event_fixture import event_contains
+from event_scroll_fixture import latest_event_text
+from terminal_view import TerminalView, rendered_text, ready_prompt_visible, install_gpu_fixture, verify_ready_prompt_regression as verify_terminal_readiness
 import errno
 import fcntl
 import http.server
@@ -63,20 +67,9 @@ print(f'Sanitized native acceptance evidence: {OUTPUT}', flush=True)
 
 
 def plain(raw):
-    # Sticky dashboard refreshes save the cursor, redraw the header and restore
-    # the cursor. They may land between two response deltas in the byte stream;
-    # remove those complete redraws before matching the visible body text.
-    body = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
-    return ANSI.sub(b'', body).decode('utf-8', errors='replace')
+    return rendered_text(raw)
 
 
-def ready_prompt_visible(raw):
-    # A retained user message starts with the same label. Only the empty final
-    # input line is an editable prompt; earlier prompts and Working echoes are
-    # not evidence that the submitted operation has returned.
-    # Notification BELs do not change cells or cursor position. Ignore only
-    # standalone BELs left after ANSI/OSC removal, including delayed rhythms.
-    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -192,6 +185,8 @@ BASE_URL = f'http://127.0.0.1:{server.server_port}/v1'
 class Terminal:
     def __init__(self, root, *, explicit=False, cli_arguments=None, env_overrides=None):
         self.transcript = bytearray()
+        self.view = TerminalView(44, 142)
+        self.ready_previous = {}
         self.root = root
         self.workspace = root/'project'
         self.state = root/'state'
@@ -211,6 +206,8 @@ class Terminal:
             command += ['--model', 'fixture-primary', '--base-url', BASE_URL,
                         '--transport', 'chat-completions', '--context-window', '131072']
         command += cli_arguments or []
+        install_gpu_fixture(root, env)
+        self.questions = install_question_fixture(root, env)
         self.child = subprocess.Popen(command, cwd=self.workspace, env=env,
             stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
@@ -226,6 +223,7 @@ class Terminal:
                     if not data:
                         return
                     self.transcript.extend(data)
+                    self.view.feed(data)
                 except OSError:
                     return
 
@@ -243,6 +241,9 @@ class Terminal:
         end = time.monotonic()+timeout
         self.drain(min(.08, max(0, end-time.monotonic())))
         marker = len(self.transcript)
+        prior = self.view.composer()
+        reset = text.strip().startswith(('/new', '/chat open'))
+        self.ready_previous[marker] = prior['sequence'] if prior and prior['empty'] and text.endswith(('\n','\r')) and not reset else None
         pending = memoryview(text.encode())
         offset = 0
         original_flags = fcntl.fcntl(self.master, fcntl.F_GETFL)
@@ -275,6 +276,7 @@ class Terminal:
                         if not data:
                             closed()
                         self.transcript.extend(data)
+                        self.view.feed(data)
                 if writable:
                     try:
                         written = os.write(self.master, pending[offset:])
@@ -292,13 +294,14 @@ class Terminal:
         return marker
 
     def ready(self, marker=0):
-        self.read_until(lambda raw: ready_prompt_visible(raw[marker:]),
+        self.read_until(lambda raw: len(raw)>marker and self.view.ready(self.ready_previous.get(marker)) and active_submission_question(self.questions),
                         expectation='ready prompt')
 
-    def command(self, text):
+    def command(self, text, *, event_prefix=None):
         marker = self.send(text+'\n')
         self.ready(marker)
-        return plain(bytes(self.transcript[marker:]))
+        event = latest_event_text(self, starts_with=event_prefix)
+        return plain(bytes(self.transcript[marker:]))+'\n'+event
 
     def answer(self, marker, label, text):
         self.read_until(lambda raw: label in plain(raw[marker:]), expectation=label)
@@ -386,21 +389,8 @@ def progress(label):
 
 
 def verify_ready_prompt_regression():
-    samples = [
-        ('\n  you › V6_MULTILINE_PROMPT\n/permissions allow-everything\n  · Working · Ctrl+C to interrupt\n', False),
-        ('\n  you › /status', False),
-        ('\n  you › \n  · Working · Ctrl+C to interrupt\n', False),
-        ('\n  you › /status\x07\x07', False),
-        ('\n  you › \n  · Working · Ctrl+C to interrupt\n\x07\x07', False),
-        ('\n  you › \n', False),
-        ('\n  you › \x1b]0;Working\x1b\\VISIBLE\x07', False),
-        ('\n  you › \x1b[39m', True),
-        ('\n  you › \x1b7header redraw\x1b8', True),
-        ('\n  you › \x1b[39m\x07\x07', True),
-    ]
-    for text, expected in samples:
-        assert ready_prompt_visible(text.encode()) is expected, repr(text)
-    results['readyPromptExcludesRenderedUserEchoWhileWorking'] = True
+    verify_terminal_readiness()
+    results['renderedEditableComposerReadiness'] = True
 
 
 verify_ready_prompt_regression()
@@ -413,7 +403,7 @@ try:
         terminal = Terminal(root)
         fixture_workspace = terminal.workspace
         terminal.ready()
-        assert 'Local AI on this PC: /local' in plain(terminal.transcript)
+        assert event_contains(terminal.view, 'Local AI on this PC: /local')
         baseline = len(requests)
         assert '/switch' in terminal.command('/help')
         assert 'No AI selected' in terminal.command('/status')
@@ -488,6 +478,9 @@ try:
         baseline = len(requests)
         pasted = '/permissions allow-everything\nV6_LITERAL_PASTE_PROBE'
         marker = terminal.send('\x1b[200~'+pasted+'\x1b[201~')
+        terminal.drain(.15)
+        assert len(requests)==baseline, 'Editable paste submitted without Enter'
+        terminal.send('\n')
         terminal.read_until(lambda raw: len(requests)>baseline, expectation='literal bracketed paste request')
         terminal.read_until(lambda raw: re.search(r'V6 response \d+ from ', plain(raw[marker:])),
                             expectation='literal paste native answer')
@@ -500,7 +493,7 @@ try:
         baseline = len(requests)
         marker = terminal.send('BUSY_PASTE_HOLD\n')
         terminal.read_until(lambda raw: len(requests)==baseline+1, expectation='held native busy request')
-        assert not re.search(r'V6 response \d+ from ', plain(terminal.transcript[marker:]))
+        assert f'V6 response {baseline+1} from ' not in plain(terminal.transcript[marker:])
         busy_pasted = '/permissions allow-everything\nV6_BUSY_LITERAL_PASTE_PROBE'
         terminal.send('\x1b[200~'+busy_pasted+'\x1b[201~\n')
         terminal.read_until(lambda raw: len(requests)==baseline+2, expectation='queued busy literal request')
@@ -661,12 +654,12 @@ try:
                                                      '--transport', 'chat-completions'])
             fallback.ready()
             assert 'Connection setup failed:' in plain(fallback.transcript)
-            assert 'Continuing offline; /chat remains available.' in plain(fallback.transcript)
+            assert event_contains(fallback.view, 'Continuing offline; /chat remains available.')
             assert 'No AI selected' in fallback.command('/status')
             listing = fallback.command('/chat list')
             assert 'V6 first saved chat' in listing
             fallback.command('/chat open '+first_id)
-            assert 'FIRST_SAVED_CHAT_BASELINE' in fallback.command('/history')
+            assert 'FIRST_SAVED_CHAT_BASELINE' in fallback.command('/history', event_prefix='user (fixture-primary): FIRST_SAVED_CHAT_BASELINE')
             assert_no_requests(baseline, 'invalid explicit connection offline fallback and saved chats')
             fallback.finish()
         results['invalidExplicitConnectionFallsBackToOfflineSavedChats'] = True
@@ -674,12 +667,12 @@ try:
                                                  'SUDO_CLI_BASE_URL': 'not-a-url',
                                                  'SUDO_CLI_TRANSPORT': 'chat-completions'})
         inherited.ready()
-        assert 'Local AI on this PC: /local' in plain(inherited.transcript)
+        assert event_contains(inherited.view, 'Local AI on this PC: /local')
         assert 'API key' not in plain(inherited.transcript)
         assert 'No AI selected' in inherited.command('/status')
         assert 'V6 first saved chat' in inherited.command('/chat list')
         inherited.command('/chat open '+first_id)
-        assert 'FIRST_SAVED_CHAT_BASELINE' in inherited.command('/history')
+        assert 'FIRST_SAVED_CHAT_BASELINE' in inherited.command('/history', event_prefix='user (fixture-primary): FIRST_SAVED_CHAT_BASELINE')
         assert_no_requests(baseline, 'inherited model environment leaves interactive startup offline')
         inherited.finish()
         results['inheritedModelEnvironmentLeavesInteractiveShellOffline'] = True

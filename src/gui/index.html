@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SUDO CLI · Local session</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <svg class="svg-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="icon-terminal" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5m8 0h6"/></symbol>
+    <symbol id="icon-send" viewBox="0 0 24 24"><path d="m4 4 17 8-17 8 3-8-3-8Zm3 8h14"/></symbol>
+    <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="icon-command" viewBox="0 0 24 24"><path d="M9 7V5a2 2 0 1 0-2 2h10a2 2 0 1 0-2-2v14a2 2 0 1 0 2-2H7a2 2 0 1 0 2 2V7Z"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-5L3 9m0-5v5h5m-4 4a8 8 0 0 0 14 5l3-3m0 5v-5h-5"/></symbol>
+    <symbol id="icon-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 13h8m-8 4h6"/></symbol>
+    <symbol id="icon-pulse" viewBox="0 0 24 24"><path d="M2 12h5l3-8 4 16 3-8h5"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  </defs></svg>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="SUDO CLI local session"><span class="brand-mark">S<span class="brand-dot"></span></span><span>SUDO <b>CLI</b><small>Built by panmm942 · Powered by Codex</small></span></a>
+    <div class="topbar-state"><span id="connection-dot" class="status-dot"></span><span id="connection">Connecting to session</span><span id="version" class="version"></span></div>
+    <button id="return" class="button secondary"><svg><use href="#icon-terminal"/></svg><span>Return to terminal</span></button>
+  </header>
+  <main class="workspace">
+    <aside class="left-column" aria-label="Session status and performance">
+      <section class="card session-card">
+        <div class="section-label">YOUR WORKSPACE</div><h1 id="project">Local session</h1><p id="chat-title" class="muted">One session. Two views.</p>
+        <div class="model-card"><span class="status-dot red"></span><div><span class="section-label">CONNECTED AI</span><strong id="ai-name">Not connected</strong><button id="model" class="text-button" title="Choose model command"><span id="model-name">Model unavailable</span><svg><use href="#icon-chevron"/></svg></button></div></div>
+        <dl id="session-fields" class="key-values"></dl>
+      </section>
+      <section class="card performance-card"><div class="card-heading"><h2><svg><use href="#icon-pulse"/></svg>Performance</h2><span class="live-label">LIVE</span></div><div id="performance" class="performance"><p class="empty">Awaiting measurements</p></div></section>
+      <div class="local-note"><span class="status-dot"></span>Private local view<span>No extra engine. Same permissions.</span></div>
+    </aside>
+    <section class="chat-column card" aria-label="Chat">
+      <div class="chat-heading"><div><div class="section-label">CONVERSATION</div><h2 id="conversation-name">Chat</h2></div><span id="activity" class="activity">Ready</span></div>
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div id="chat" class="chat-scroll" role="log" aria-label="Conversation messages"><div class="welcome"><span class="welcome-icon"><svg><use href="#icon-terminal"/></svg></span><h2>Your session, in focus.</h2><p>Send a prompt or open the command menu.<br>Chat and permissions stay with your terminal.</p></div></div>
+      <form id="composer" class="composer">
+        <div id="question" class="question" hidden><span class="section-label">CURRENT QUESTION</span><p id="question-text"></p><span id="question-privacy" class="muted"></span></div>
+        <label id="composer-label" class="composer-label" for="input">Message your AI</label>
+        <textarea id="input" rows="3" maxlength="65536" placeholder="Ask, build, investigate…" autocomplete="off" spellcheck="false"></textarea>
+        <input id="secret-input" type="password" maxlength="65536" aria-labelledby="composer-label" autocomplete="off" spellcheck="false" hidden>
+        <div class="composer-bottom"><button type="button" id="commands" class="button subtle" aria-haspopup="dialog"><svg><use href="#icon-command"/></svg>Commands</button><span class="composer-hint">Ctrl / ⌘ + Enter to send</span><button type="button" id="stop" class="icon-button" title="Stop current work" aria-label="Stop current work"><svg><use href="#icon-stop"/></svg></button><button id="send" class="button primary" type="submit"><span id="send-label">Send</span><svg><use href="#icon-send"/></svg></button></div>
+      </form>
+    </section>
+    <aside class="right-column" aria-label="Changed files and events">
+      <section class="card changes-card"><div class="card-heading"><h2><svg><use href="#icon-file"/></svg>Changed files <span id="change-count" class="count">0</span></h2><button id="refresh-changes" class="icon-button" title="Refresh changed files" aria-label="Refresh changed files"><svg><use href="#icon-refresh"/></svg></button></div><p id="changes-note" class="panel-note">Awaiting project scan</p><div id="changes" class="changes-scroll"><p class="empty">No changes reported</p></div><div id="diff" class="diff" hidden><div class="diff-heading"><strong id="diff-title"></strong><button id="close-diff" class="text-button" aria-label="Close diff">Close</button></div><pre id="diff-content"></pre></div></section>
+      <section class="card events-card"><div class="card-heading"><h2>Events</h2><span id="event-count" class="count">0</span></div><div id="events" class="events-scroll" role="log" aria-label="Session events"><p class="empty">Session events will appear here</p></div></section>
+    </aside>
+  </main>
+  <footer class="footer"><span id="footer-status">LOCAL SESSION</span><span>SUDO CLI · a clearer view of your work</span></footer>
+  <dialog id="command-dialog" aria-labelledby="command-title"><div class="dialog-heading"><h2 id="command-title">Commands</h2><button id="close-commands" class="text-button">Close</button></div><label class="sr-only" for="command-search">Find a command</label><input id="command-search" type="search" placeholder="Find a command…" autocomplete="off"><div id="command-list" class="command-list"></div><p class="panel-note">Choose a command to edit it, then send when ready.</p></dialog>
+</body>
+</html>

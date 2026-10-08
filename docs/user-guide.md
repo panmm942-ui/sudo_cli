@@ -1,4 +1,4 @@
-# Using sudocli 0.6.6
+# Using sudocli 0.6.9
 
 Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/textcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
@@ -75,7 +75,7 @@ Escape restores your slash query. Narrow or short terminals reduce spacing and v
 
 `/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
 
-Browse the conversation under the fixed dashboard with **PgUp/PgDn** or the mouse wheel. **Ctrl+Home** jumps to the first retained text; **Ctrl+End** returns to the newest output and your input prompt. `/scroll up` and `/scroll down` move one page; `/scroll top` and `/scroll bottom` jump to the beginning or return live. When new replies arrive while you browse, the older view stays in place and shows **New output**. Typing or pasting returns to live input. The command picker owns PgUp/PgDn while open, and secret questions and multiline prompts keep their own input behavior. See [chat scrolling](chat-scrolling.md) for terminal support, selection and display limits.
+Chat and Events scroll independently under the fixed dashboard. **Tab** switches the focused pane; **PgUp/PgDn**, **Home/End**, the mouse wheel and scrollbar controls navigate it. `/scroll up` and `/scroll down` move Chat one page; `/scroll top` and `/scroll bottom` jump to the beginning or return live. When new replies arrive while you browse, the older view stays in place and shows **New output**. Typing or pasting returns to live input. The command picker owns PgUp/PgDn while open, and secret questions and multiline prompts keep their own input behavior. `/gui` opens the same engine and session in a local browser; Return to terminal comes back without creating another AI connection. See [the interface guide](interface.md).
 
 Clear reading is on by default: short initial answers, short lines and spaced actions. `/readability off` disables it. `/details` asks the connected AI to expand the last answer.
 
@@ -88,21 +88,15 @@ function total(values) {
 /end
 ```
 
-`/prompt` preserves multiline text until `/end`. On terminals supporting bracketed paste, pasted text is queued as a literal prompt; embedded slash lines do not change permissions or execute commands. Unbracketed terminals should use `/prompt` for multiline content.
+`/prompt` preserves multiline text until `/end`. On terminals supporting bracketed paste, pasted text stays editable until Enter; multiline paste appears as a retained paste marker. Submitted pasted slash lines stay literal and do not change permissions or execute commands. Unbracketed terminals should use `/prompt` for multiline content.
 
 Prompts submitted during work queue in order. `/stop` or Ctrl+C interrupts model work without deleting the queue. `/steer TEXT` guides an active native turn when it accepts steering. Other commands entered while busy wait for the current work. Ctrl+C exits when idle.
 
 ## Read local performance
 
-```text
-/performance
-/performance status
-/performance refresh
-```
+Read the **Performance (This PC)** panel above Events, or open `/gui` for the same session's Performance view. In compact terminals, switch to Events to see the panel. Readings refresh automatically while the interactive CLI is idle, with no model request. The former `/performance` command was removed in version 0.6.9.
 
-The first two print the cached **This PC** readings. `refresh` requests a fresh sample. Monitoring continues while the interactive CLI is idle, with no model request.
-
-CPU and RAM refresh every 1.5 seconds; GPU and graphics memory every 3 seconds. Each detected graphics card has a named block with its own usage and dedicated VRAM. Shared RAM is separate. Installed cards with unavailable counters still show a known capacity; a Windows device error is displayed beside that card. For example, an integrated AMD card can have 512 MiB while a separate NVIDIA card has about 8 GiB. `/performance` prints the full names and details.
+CPU and RAM refresh every 1.5 seconds; GPU and graphics memory every 3 seconds. Each detected graphics card has a named block with its own usage and dedicated VRAM. Shared RAM is separate. Installed cards with unavailable counters still show a known capacity; a Windows device error is displayed beside that card. For example, an integrated AMD card can have 512 MiB while a separate NVIDIA card has about 8 GiB. Enlarge the terminal or use the GUI to read details that do not fit.
 
 **Measuring** means a delta needs another sample. **Unavailable** means the OS or driver has not supplied usable counters. A real idle reading can be 0%; unknown usage is never changed to zero. Shared/unified graphics memory is labeled **Shared**. A measured byte count may appear with **total unavailable**.
 

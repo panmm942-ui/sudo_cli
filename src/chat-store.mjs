@@ -85,6 +85,15 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
     for (const item of value) { bytes += Buffer.byteLength(item) + 4; if (bytes > MAX_CHAT_BYTES) throw new Error('Queued chat inputs exceed the saved chat storage size limit.'); }
     return value.map(clean);
   }
+  function sanitizeSubmissions(value,inputs,history) {
+    if(value===undefined)return undefined;
+    if(!Array.isArray(value)||value.length!==inputs.length||(value.length&&!Number.isSafeInteger(history.promptCount)))throw new Error('Queued submission metadata must match the saved pending inputs.');
+    let previous=0;
+    return value.map(item=>{
+      if(!item||!Number.isSafeInteger(item.sequence)||item.sequence<=previous||item.sequence>history.promptCount||typeof item.literal!=='boolean'||(item.timestamp!==undefined&&!timestamp(item.timestamp)))throw new Error('Queued prompt submission metadata is invalid.');
+      previous=item.sequence;return {sequence:item.sequence,literal:item.literal,...(item.timestamp?{timestamp:item.timestamp}:{})};
+    });
+  }
   function title(value, history) {
     if (value !== undefined && (typeof value !== 'string' || value.length > 1000)) throw new Error('Saved chat title must be at most 1000 characters.');
     const selected = value ?? history.messages.find(message => message.role === 'user')?.content ?? 'New chat';
@@ -95,6 +104,7 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
       || !validString(value.cwd) || !timestamp(value.createdAt) || !timestamp(value.updatedAt) || typeof value.title !== 'string' || value.history === undefined) throw new Error('invalid');
     const history = sanitizeHistory(value.history);
     const result = { version: 1, id: value.id, title: title(value.title, history), cwd: value.cwd, createdAt: value.createdAt, updatedAt: value.updatedAt, history, pendingInputs: sanitizePending(value.pendingInputs) };
+    const submissions=sanitizeSubmissions(value.pendingSubmissions,result.pendingInputs,history);if(submissions)result.pendingSubmissions=submissions;
     const connection = sanitizeConnection(value.connection);
     if (connection) result.connection = connection;
     return result;
@@ -200,11 +210,12 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
     directory,
     warnings() { return [...warnings]; },
     get,
-    async create({ title: selectedTitle, connection, history: suppliedHistory, pendingInputs } = {}) {
+    async create({ title: selectedTitle, connection, history: suppliedHistory, pendingInputs,pendingSubmissions } = {}) {
       await readPointer();
       const metadata = sanitizeConnection(connection);
       const history = sanitizeHistory(suppliedHistory);
       const record = { version: 1, id: randomUUID(), title: title(selectedTitle, history), cwd: project, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), history, pendingInputs: sanitizePending(pendingInputs) };
+      const submissions=sanitizeSubmissions(pendingSubmissions,record.pendingInputs,history);if(submissions)record.pendingSubmissions=submissions;
       if (metadata) record.connection = metadata;
       await locked(`chat-${record.id}.json`, async () => {
         if (await get(record.id)) throw new Error('Saved chat identifier already exists.');
@@ -213,7 +224,7 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
       await setLast(record.id);
       return record;
     },
-    async save({ id, title: selectedTitle, connection, history: suppliedHistory, pendingInputs } = {}) {
+    async save({ id, title: selectedTitle, connection, history: suppliedHistory, pendingInputs,pendingSubmissions } = {}) {
       validId(id);
       if (suppliedHistory === undefined) throw new Error('Saving a chat requires an explicit history snapshot.');
       const metadata = connection === undefined ? undefined : sanitizeConnection(connection);
@@ -224,6 +235,7 @@ export async function createChatStore({ stateDir = defaultWorkStateDir(), cwd = 
         if (!previous) throw new Error('Saved chat was not found. Create a chat before saving it.');
         if (!sameProject(previous.cwd, project)) throw new Error('Saved chat belongs to another project; existing chat was left unchanged.');
         const record = { version: 1, id, title: title(selectedTitle ?? (previous.title === 'New chat' ? undefined : previous.title), history), cwd: project, createdAt: previous.createdAt, updatedAt: new Date().toISOString(), history, pendingInputs: pending ?? previous.pendingInputs };
+        const submissions=sanitizeSubmissions(pendingSubmissions??(pending===undefined?previous.pendingSubmissions:undefined),record.pendingInputs,history);if(submissions)record.pendingSubmissions=submissions;
         const selectedConnection = connection === undefined ? previous.connection : metadata;
         if (selectedConnection) record.connection = selectedConnection;
         await atomicWrite(`chat-${id}.json`, record, MAX_CHAT_BYTES);

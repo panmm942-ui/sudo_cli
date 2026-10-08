@@ -1,178 +1,97 @@
-# codexcli
+# SUDO CLI
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.8**
+[![Version](https://img.shields.io/badge/version-0.6.9-EF2929)](https://github.com/panmm942-ui/sudo_cli/releases)
+[![Node](https://img.shields.io/badge/Node.js-22%2B-4B8F29)](docs/platforms.md)
+[![License](https://img.shields.io/badge/frontend-MIT-blue)](LICENSE)
+[![Engine](https://img.shields.io/badge/engine-OpenAI%20Codex-555)](THIRD_PARTY.md)
 
-This release preserves signed bytes during Windows Git checkout and accepts real Windows folder aliases while still refusing linked state directories. It handles default macOS home aliases and supports the native Linux sandbox through private home paths. Stopped and timed-out workspace checks verify that their descendants are no longer running, including correct handling of macOS zombie processes. Windows session cleanup retries brief file locks within a fixed bound and reports persistent failures. Background task sounds also work in detached mode and respect the saved notification preference. Folder watches restart around AI tasks so delayed events from the worker's own edits do not create another job.
+**Your coding session. Terminal or GUI.**
 
-Native session shutdown also checks owned engine helpers, including plugin-catalog Git processes. Unverified cleanup reports an error and prevents a replacement AI session. See [session shutdown](docs/native-session-lifecycle.md) for platform limits.
+A separate interface for the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start offline, connect a local or cloud AI, and keep the same chat, permissions and work when you open the graphical view.
 
-A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
+## ✨ One session, two views
 
-The CLI is separate from the Codex desktop app. It uses a private temporary engine home and its own persistent state. Interactive launches require administrator/root; agent access still defaults to **Ask, project scope, Web Off**. API keys stay in memory unless you explicitly choose OS-protected storage.
+| Terminal | GUI | Work you can inspect |
+| --- | --- | --- |
+| Numbered prompts, a dedicated composer and scrollable chat | Open with `/gui`; return to the terminal without restarting the AI | Added, modified and deleted project files |
+| Separate Events and live Performance panels | Chat, Events, command picker, approvals and changed files | Bounded read-only previews, checkpoints and conflict-aware undo |
 
-## First setup
+![SUDO CLI terminal — synthetic demo](docs/images/terminal.png)
 
-Keep the extracted `codexcli` directory in its final location. Setup registers a command pointing there; rerun setup after moving it.
+![SUDO CLI GUI — synthetic demo](docs/images/gui.png)
 
-On Windows, extract the portable x64 ZIP, open PowerShell in the folder, and run:
+The screenshots use synthetic project data. See [interface controls and limits](docs/interface.md).
+
+## 🚀 Install and launch
+
+Download a package from [Releases](https://github.com/panmm942-ui/sudo_cli/releases), extract it, and keep the `codexcli` folder in its final location. Setup registers a command pointing to that folder; rerun setup if you move it.
+
+**Windows:** the portable x64 package includes Node.js and Codex. Open PowerShell in the extracted folder and run:
 
 ```powershell
 .\setup.cmd
 ```
 
-On Linux or macOS, with Node.js 22+ installed, run:
+Open a **new Administrator terminal**, navigate to your project, then run:
+
+```powershell
+sudocli
+```
+
+**Linux and macOS:** install Node.js 22+ and run setup as your regular user:
 
 ```sh
 sh ./setup
-```
-
-Setup verifies the pinned native engine download and registers `sudocli` for the current user. Windows adds a user PATH entry; Unix uses `~/.local/bin` and a managed shell startup block. Setup, help, version and doctor work without elevation.
-
-Open a new Administrator terminal on Windows, navigate to your project, and run `sudocli`. On Unix, use the full registered path if sudo excludes your user command directory:
-
-```sh
 sudo "$HOME/.local/bin/sudocli"
 ```
 
-Local launchers are `.\sudocli.cmd` on Windows and `sudo sh ./sudocli` on Unix. The Windows x64 portable package includes Node.js and Codex; source packages require Node.js 22+. `sudocli doctor` checks the engine without generating a model response. See [platform setup](docs/platforms.md) and the [user guide](docs/user-guide.md).
+Setup verifies the pinned engine and registers `sudocli` for the current user. Windows updates the user PATH; Unix uses `~/.local/bin` and a managed shell startup block. The full Unix command path also works when sudo resets PATH.
 
-## Start offline, then connect
+`sudocli --help`, `sudocli --version` and `sudocli doctor` work without elevation or a model request. Direct launchers are `.\sudocli.cmd` and `sudo sh ./sudocli`. Source packages require Node.js 22+; setup downloads the compatible pinned runtime. [Platform setup](docs/platforms.md) covers shell configuration and command-only registration.
 
-The default launch opens a usable shell with no model traffic. `/local` offers Ollama, LM Studio or another compatible server already running on your computer. It lists available models when the server supports discovery and asks for a key only if you opt into local authentication. `/local file "PATH"` inspects a file or model folder and offers supported installed runners; `/local info "PATH"` only inspects it. GGUF and Safetensors detection reads bounded metadata and can recognize unusual extensions. Actual loading requires a supported model architecture, compatible runner and sufficient hardware. See [local model files](docs/local-model-files.md).
+## 🧠 Connect your AI
 
-`/connect` offers both cloud and local setup. `/chat` opens saved project chats, `/help` lists all commands, and `/memory` shows your approved project rules.
+The default interactive launch stays offline until you choose an AI.
 
-`/switch` selects saved/local AI profiles. `/switch save NAME` saves nonsecret connection metadata; `/model ID` changes the model. Selecting an AI shows its configured name immediately, while a real answer confirms response health. `/test-connection` probes the model catalog without generation; `/capabilities` separates observed, declared and unknown support. Tool, vision, reasoning, audio and training support depend on the endpoint/model.
+- `/local` connects to an already-running Ollama, LM Studio or compatible local server. Local authentication is optional.
+- `/connect` configures a cloud or local endpoint; `/switch` selects a saved AI while carrying the chat.
+- `/local file "PATH"` inspects model files and offers supported installed runners. Model loading depends on architecture, runner support and available hardware.
+- `/chat` opens saved project chats; `/new` starts a new one.
 
-```text
-/connect
-/switch save Main coding
-/context capacity 131072
-/chat
-Explain this project and its main entry point.
-```
+Keys stay in memory unless you explicitly select OS-protected credential storage. Preferences are saved per endpoint/model/protocol. See [local AI and agents](docs/local-ai-and-agents.md), [model files](docs/local-model-files.md) and [credential controls](docs/user-guide.md).
 
-Keys are memory-only by default. `/credentials save` explicitly uses Windows DPAPI, macOS Keychain or Linux Secret Service when available; it is tied to that OS account. Saved profiles/chats contain no plaintext API-key values. `/credentials forget` removes the protected credential.
+## 🛠️ Inspect the work
 
-## Review work and verify it
+`/changes` shows current project changes. Git projects include staged, unstaged and untracked files. Other folders compare against the inventory captured when this session opened. Both views show incomplete coverage and unavailable or binary previews explicitly; Git is optional.
 
-Each ordinary AI task records a bounded before/after project checkpoint. `/changes` shows its actual file changes. `/undo` restores files still matching the recorded AI result and reports conflicts for later human edits or unsafe paths.
+`/changes CHECKPOINT_ID` reviews a saved task checkpoint. `/verify COMMAND` runs your acceptance check; `/undo CHECKPOINT_ID` restores recorded edits while preserving later conflicting changes. Observed project changes can also include your own edits.
 
-```text
-/workflow plan
-/workflow edit
-Fix the failing parser case and preserve the public API.
-/changes
-/checks add node --test test/parser.test.mjs
-/verify
-/undo
-```
+`/agents` runs specialists in isolated source copies; applying a proposal is explicit. `/247` manages durable background jobs, with optional schedules and OS startup. These features require configured models and a running computer. [User guide](docs/user-guide.md) · [Agents](docs/local-ai-and-agents.md) · [Background work](docs/always-on.md)
 
-Choose the check command for your project. **Verified** means the selected checks passed for the recorded source state. Zero checks, incomplete coverage, cancellation or a source change means **Needs review**; a failing check means **Failed**. A completed model answer never makes work Verified.
+## 🔐 Access stays explicit
 
-`/workflow plan|edit|test|review` selects coding guidance; plan/review use read-only scope. `/review` and `/team TASK` use fresh native sessions with bounded disposable source snapshots. Team reports are advisory and cannot accept or verify work. `/security scan`, `/security lab PATH` and `/security review PATH` provide defensive local source heuristics and isolated review; they do not contact targets or prove a project secure. See [workspace workflows](docs/workspace-workflows.md).
+Interactive sessions require administrator/root admission, while agent access defaults to **Ask · project scope · Web Off**. Admission does not grant unrestricted model access.
 
-`/agents` adds saved specialists with their own instructions and saved AI choices. `/agents team planner,reviewer TASK` runs independent copies in parallel. `/agents pipeline TASK` plans, proposes code, then asks the tester and reviewer to inspect that coding copy. `/agents status`, `stop NAME`, `steer NAME MESSAGE`, saved results and follow-up tasks are available. Review `/agents diff ID coder` before explicitly applying with `/agents apply ID coder`; later human edits become conflicts. `/verify` runs your selected checks after applying. Source agents keep Web and Computer Use Off and cannot approve actions outside their copies. [Local AI and agents guide](docs/local-ai-and-agents.md).
+`/permissions` controls approvals, scopes, exposed tools and additional write folders. `/budget` sets optional task/day limits; provider billing remains authoritative. Web Off restricts native tool networking while the host can still call the selected model API. Native sandbox behavior depends on the platform.
 
-## Chats, context and readable input
+Signed packages verify an Ed25519 file manifest before startup and refuse altered or missing signed files. Native shutdown verifies owned helpers; unverified cleanup reports an error and prevents replacement sessions. [Privileges](docs/privileges.md) · [Signed releases](docs/release-integrity.md) · [Session cleanup](docs/native-session-lifecycle.md)
 
-Visible user/assistant messages, partial replies and queued text prompts autosave per project. `/chat` browses saved chats and `/chat open ID` restores one. Replies retain their AI attribution. Reopening restores the last chat without requiring an AI connection first.
+## 🎛️ Make it yours
 
-`/new` or `/chat new` asks whether to keep the current saved chat. Enter or **Y** keeps it for later; **n** deletes its saved record. After the new chat is created successfully, it gets a new ID and the lower conversation display and AI context start fresh. Canceling the question or failing to create the new record does not reset the display. See [chat commands](docs/chat-commands.md).
+`/` opens the command picker. `/help` searches commands, `/prompt` accepts multiline text, and `/stop` or Ctrl+C interrupts active work. `/textcolor` and `/bgcolor` change chat colors; the dashboard retains its palette. `/notify on|off` controls non-speaking task tones.
 
-Use **PgUp/PgDn** or the mouse wheel to browse older/newer conversation text beneath the fixed dashboard. **Ctrl+Home** jumps to the first retained text; **Ctrl+End** returns to the live prompt. `/scroll up|down|top|bottom` provides the same navigation by command. New replies keep arriving while the older view stays in place; typing or pasting returns to live input. The command picker uses PgUp/PgDn for its own pages while open. See [chat scrolling](docs/chat-scrolling.md) for terminal support and display limits.
+Voice needs configured ASR/TTS services and audio tools. Browser/desktop control needs the supported scoped browser adapter or an external MCP service. Training and rented GPU hooks depend on compatible providers; the CLI does not provision those services. [Voice](docs/live-voice.md) · [Optional services](docs/services.md) · [Operations](docs/operations.md)
 
-The complete visible transcript stays archived. Before replaying it to a new native session, the CLI requires a declared context capacity and checks an explicitly labelled token estimate. Oversized replay stops before provider traffic. `/context review` lets you write a reviewed summary and choose message numbers; the summary is conversation input. `/clear` starts fresh engine context and retains the archive. `/handoff` exports the full visible chat to Markdown/JSON; hidden reasoning, internal tool state and original attachment bytes do not transfer.
+## 📖 Documentation and source
 
-`/memory edit` saves only rules, decisions and preferences you approve. `/personalize setup` saves optional preferences separately for each endpoint/model/protocol. `/personalize set persona TEXT` or `/preferences set language Greek` changes one field while preserving the rest. Other fields are tone, length, format and instructions; `unset FIELD` removes one. These are instructions, not model training or permission grants.
+[Interface](docs/interface.md) · [Quick guide](docs/user-guide.md) · [Platforms](docs/platforms.md) · [Release integrity](docs/release-integrity.md)
 
-Clear reading is on by default; `/readability off` disables it and `/details` requests more explanation. Type `/` at an empty idle prompt to open the green command picker. Its cursor stays beside your query on the **Search** line. Blank lines separate choices when there is room.
+The unchanged native engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source archive is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). This frontend and its tests use MIT; bundled **Node.js 24.19.0** retains its MIT and dependency notices. No npm runtime dependencies are required.
 
-Type to filter by command name or description. Use arrows or Page Up/Down to browse, then Enter to fill the selected command. Add its arguments and press Enter again to run it. Escape returns your slash query to the prompt. All registered commands are available across pages. `TERM=dumb` uses `/` followed by Enter for a plain list.
+Keep the included licenses, public credits and upstream notices when distributing packages. [LICENSE](LICENSE) · [THIRD_PARTY.md](THIRD_PARTY.md) · [Licenses](licenses) · [Official upstream source](https://github.com/openai/codex/tree/rust-v0.160.1)
 
-`/prompt` accepts multiple lines until `/end`. Supported terminals use bracketed paste to keep pasted slash text literal. `/help work`, `/help voice` and `/help SEARCH` narrow the list; `/search-chat TEXT` searches visible chat. Tab completes command names. Hidden keys, setup questions and active tasks retain their own input behavior.
+Historical verification documents remain evidence for their named releases. Fixture-based model tests establish transport and tool behavior; they do not guarantee a real model's decisions, every provider or physical audio/driver behavior.
 
-Additional prompts submitted during work queue in order. `/stop` or Ctrl+C interrupts work while retaining that queue; `/steer TEXT` guides an active native turn when supported. Ctrl+C exits when idle.
-
-## Access, spending and routing
-
-Administrator/root admission does not grant unrestricted agent access. `/permissions scope read-only|project|full` selects the boundary; `/permissions ask|allow-everything` controls approvals within it. `/permissions tools` shows observed tool names; `tools none`, `tools all`, or `tools allow NAME ...` selects exposure. `/permissions folders add PATH` adds an existing real write folder; `folders clear` removes additions.
-
-Web Off keeps native command networking disabled and excludes supplied HTTP MCP servers while the host can still call the selected model API. Unsandboxed command escalation is denied with Web Off. Full unrestricted execution requires the explicit combination of full scope, Allow Everything and Web On. The actual native sandbox is reported; Windows can apply a stricter read-only fallback.
-
-`/budget setup` sets optional task/day money, token, model-request and active-duration limits. Requests reserve bounded estimated usage before being sent, then record provider usage when supplied. `/route price INPUT OUTPUT` records your USD rates per million tokens; missing rates block money-limited requests. `/budget status` shows local accounting. Voice, training and GPU hourly fees are separate, and provider bills remain authoritative.
-
-Routing is opt-in: `/route local`, `/route cheap`, `/route manual NAME`, or `/route off`. It uses configured profiles and your pricing metadata, displays its rationale, and respects an explicit `/switch`. It does not host a local model or independently discover provider prices.
-
-## Voice, background work and optional services
-
-| Feature | Entry points | Requirements and limits |
-| --- | --- | --- |
-| Continuous voice | `/voice setup`, `/voice speech`, `/live`, `/voice off` | Configured ASR/coding/TTS services, FFmpeg/FFplay and permitted audio devices |
-| Voice controls | `/microphone devices`, `/voice wake PHRASE`, `pause`, `resume`, `repeat`, `echo headphones|speaker` | Wake filtering happens after ASR; speaker mode pauses listening during playback and has no acoustic echo cancellation |
-| Local guardian | `/247 setup`, `start`, `detach`, `add TASK`, `list`, `result ID`, `retry ID`, `stop` | An already-running saved loopback AI; the computer and services must stay awake |
-| Scheduled work | `/schedule add`, `list`, `pause ID`, `resume ID`, `remove ID` | Explicit timezone; schedules enqueue jobs for a running guardian |
-| OS startup | `/startup setup`, `plan`, `install`, `remove` | Explicit installation, reviewed OS service plan and runtime credential environment/loader |
-| GPU state | `/gpu setup`, `status`, `wake`, `sleep` | Your provider hooks; HTTP acknowledgement alone does not establish resource or billing state |
-| Browser | `/browser executable PATH`, `start`, `stop` | Installed Chromium/Chrome/Edge, approved origins, Web On and compatible tools |
-| External desktop/browser | `/computer-use setup NAME URL`, `/mcp add NAME URL` | Your running MCP service and appropriate model capabilities |
-| Source-linked search | `/search QUERY` | Supported Responses hosted search or configured search/browser MCP; fetched instructions are untrusted |
-| Editor | `/ide code`, `/ide cursor` | Installed VS Code or Cursor |
-| Training | `/help advanced`, `/training export|setup|start|status|cancel` | Compatible Files/Fine-tuning service and a fine-tunable model |
-
-Voice is composed ASR → coding AI → TTS, not a universal native realtime-audio backend. Headphones permit interruption while listening; speaker mode uses half-duplex echo avoidance. Physical microphone/speaker behavior remains untested in this release environment. Spoken slash text is literal and cannot approve native execution. See [voice details](docs/live-voice.md).
-
-The built-in Chromium adapter uses a dedicated headless browser/profile and exposes scoped MCP actions, with displayed action names and immediate stop. Root Unix launches refuse to disable Chromium's sandbox: run an external browser MCP service as your normal user and connect it with `/computer-use setup`. External desktop support remains conditional on the service; the CLI does not ship universal OS desktop automation.
-
-Background jobs and results persist. Interrupted jobs require review/retry, and policy changes stop existing workers before they can continue with old access. Detach survives terminal close; explicit startup can restart an OS service. Neither can run while the machine is asleep/off. GPU hooks must report actual stopped/deallocated and billing state before treating compute as stopped. No rented GPU, production ASR/TTS or training service is provisioned by this build. See [operations](docs/operations.md), [guardian](docs/always-on.md) and [services](docs/services.md).
-
-## Dashboard, updates and verification
-
-Your text defaults to bright green (`#00FF00`); assistant replies and notices use soft white. Use `/bgcolor #141414` for the lower chat background and `/textcolor lime` for bright green text. The upper dashboard keeps its original palette. Similar text and background colors are corrected automatically.
-
-`/bgcolor reset` restores the default background. `/textcolor reset` restores green user text. `/reset list` shows all reset targets. See [terminal colors](docs/terminal-colors.md) and [reset controls](docs/reset-settings.md).
-
-**Performance (This PC)** appears beside the antenna: CPU, RAM and named GPU blocks for the computer running the CLI. Each card has its own usage, dedicated VRAM and available shared-memory readings. An integrated card's 512 MiB is separate from a discrete card's 8 GiB. Installed cards keep a known capacity visible even if live readings are unavailable; Windows device errors are labeled. `/performance status` prints the full details; `/performance refresh` requests a new sample. These readings remain local when your AI runs in the cloud. See [local performance](docs/performance.md).
-
-Every interactive launch checks stable public releases from `panmm942-ui/sudo_cli`, unless you choose `/update off`. A newer compatible ZIP is offered with **y/n**; downloads, checksum verification and installation happen after **y**. `/update check` checks now. The repository needs a published release with its ZIP and checksum assets. See [GitHub updates](docs/github-updates.md).
-
-Custom model IDs receive the native editing tool catalog. Chat Completions is translated into Responses for the Codex engine; native Responses endpoints can also connect. MiMo-shaped streaming null fields and reasoning replay are supported. `/effort default` omits a reasoning-effort override at the provider boundary, including any level suggested by the native catalog. An explicit supported selection takes precedence on each request.
-
-`/stop` cancels the turn and terminates its native background commands. `/loopguard` controls repeated tool action protection and the default 120-second command timeout. See [model compatibility](docs/model-compatibility.md) and [loop protection](docs/tool-loop-guard.md). Endpoint compatibility still requires a real test with your selected model.
-
-The supplied antenna characters, spacing and timing remain unchanged: 30 FPS, a 1.5-second pulse and 0.20-second wave delay. Only the six red waves animate; the tower/tip remain soft white on near-black. Animation freezes between tasks and resumes from the same phase. Narrow windows use a compact layout; very small windows show **Enlarge terminal**.
-
-The dashboard shows local time/timezone, OS/architecture, working state, configured/confirmed AI, context, permissions, budget/verification, activity/project and active-work timers. AI measurements are first-response latency, recent errors and reported generation speed. Connection percentage is an optional heuristic via `/status percent on`. **Live Traffic** is OS interface receive/transmit traffic, including other programs; it is not a speed test. WSL cannot establish the host's WiFi state. Unknown measurements stay unknown. `NO_COLOR=1` removes colors; `TERM=dumb` uses plain output. Normal exit restores the previous screen.
-
-`/update stage PACKAGE_OR_HTTPS_URL TRUSTED_SHA256` verifies and stages a bounded package. `/update install` checks compatible archive/runtime metadata and installs alongside the old release; `/update rollback` restores its registered launcher. Obtain the checksum through a trusted channel, and restart after changing the registered release. Existing files and old releases are retained for rollback.
-
-The [22-area evidence table](docs/v0.6-feature-evidence.md) records mechanisms, tests and practical limits. [Native terminal acceptance](docs/v0.6-terminal-evidence.md) passed against actual Linux x64 Codex with 22 loopback streamed requests, four clean CLI exits and no paid models, including multiline input and literal bracketed paste. Local Windows/Linux tests are separate from the defined six-target Windows/Linux/macOS x64/ARM64 CI; remote macOS/ARM jobs have not been run here.
-
-The previous 0.6.0 complete suites passed: Windows 487 tests with 23 platform skips; root Linux 501 tests with 9 platform skips; zero failures on both. See [previous verification](docs/verification-v0.6.md). Current local setup, personalization and agents are described in [the quick guide](docs/local-ai-and-agents.md).
-
-Version 0.6.1 complete suites passed: Windows 537 tests with 24 platform skips; root Linux 552 tests with 9 platform skips; zero failures or cancellations. Its native terminal acceptance passed with 25 streamed requests and the retained broad regression passed with 22. See [previous verification](docs/verification-v0.6.1.md).
-
-Version 0.6.2 added green input accents, the live command picker and local model file inspection/import. Complete suites passed on Windows (580 passed, 24 platform skips) and root Linux (595 passed, 9 platform skips), with zero failures or cancellations. Its native acceptance selected all 59 commands, made 3 fixture requests and exited cleanly in four terminal variants. See [previous verification](docs/verification-v0.6.2.md) and [terminal evidence](docs/v0.6.2-terminal-evidence.md).
-
-Version 0.6.4 adds conversation scrolling, the canonical `/chat` command, fresh-chat display resets and signed source integrity. See [version 0.6.4 verification](docs/verification-v0.6.4.md) for the checks and their limits. Earlier release evidence remains in [version 0.6.3 verification](docs/verification-v0.6.3.md). Real model inference and physical macOS/ARM terminal behavior require separate validation.
-
-Version 0.6.6 fixes GPU identity and capacity display on computers with multiple graphics cards. It retains installed cards that have no live counters and shows Windows device errors without inventing idle readings. Version 0.6.5 introduced the local performance panel, consistent input colors, direct color resets, Search-line cursor, spaced choices and reasoning-policy fixes. Windows and Linux host probes verified local counters; macOS performance parsing uses fixtures. Native tool-loop fixtures test transport and execution behavior, not a real model's decisions or every provider. Historical verification receipts remain evidence for their named releases.
-
-## Launch options, source and licenses
-
-```sh
-sudocli --model provider-model-id --base-url https://api.example.com/v1 --transport chat-completions --context-window 131072 --api-key-env MY_MODEL_KEY --cwd /path/to/project
-sudocli --once "Explain this project" --model provider-model-id --base-url https://api.example.com/v1
-```
-
-Other options include `--permissions ask|allow-everything`, `--scope read-only|project|full`, `--web on|off`, `--effort LEVEL`, repeatable `--mcp NAME=URL`, `--help` and `--version`. There is no command-line key-value flag. An interactive launch stays offline until you choose `/local`, `/connect` or `/switch`, unless you explicitly supply `--model`. `SUDO_CLI_MODEL`, `SUDO_CLI_BASE_URL`, `SUDO_CLI_TRANSPORT` and `SUDO_CLI_API_KEY` supply defaults for explicit model or noninteractive launches; `--api-key-env` names a key variable. Local wizard choices do not borrow cloud keys. `SUDO_CLI_CODEX` selects a compatible engine; `SUDO_CLI_STATE_DIR` selects independent persistent state. Noninteractive Ask approvals are declined.
-
-The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
-
-Official 0.6.8 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
-
-## Credits
+## ❤️ Credits
 
 [Instagram: @mimilidhcc](https://www.instagram.com/mimilidhcc/) · [GitHub: panmm942-ui](https://github.com/panmm942-ui)
-
-Version 0.6.8 adds `/notify on|off` with separate non-speaking tones for approvals, errors, completion and interruption. The antenna and worked-time meter follow real AI task lifetimes; typing, update checks, local verification and setup leave them idle. See [notification sounds](docs/notifications.md).

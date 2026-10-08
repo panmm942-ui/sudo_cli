@@ -12,7 +12,7 @@ async function callerCopy(t,name){
   const directory=await mkdtemp(join(tmpdir(),'sudo-cleanup-caller-'));t.after(()=>rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100}));
   const original=new URL('../src/'+name,import.meta.url);
   const source=(await readFile(original,'utf8')).replace(/from\s+(['"])(\.[^'"]+)\1/g,(_match,_quote,path)=>{
-    const replacement=['./engine.mjs','./runtime.mjs','./bridge.mjs','./responses-monitor.mjs','./privileges.mjs','./notifications.mjs','./command-watchdog.mjs','./assistant-features.mjs'].includes(path)?fixture:new URL(path,original).href;
+    const replacement=['./engine.mjs','./runtime.mjs','./bridge.mjs','./responses-monitor.mjs','./privileges.mjs','./notifications.mjs','./command-watchdog.mjs','./assistant-features.mjs','./project-changes.mjs'].includes(path)?fixture:new URL(path,original).href;
     return 'from '+JSON.stringify(replacement);
   });
   const target=join(directory,name);await writeFile(target,source);
@@ -45,6 +45,17 @@ async function withUIState(directory,run,{apiKey}={}){
   return text;
 }
 async function untilEvent(name){const deadline=Date.now()+5000;while(Date.now()<deadline){if(cleanupEvents().includes(name))return;await new Promise(resolve=>setTimeout(resolve,5));}assert.fail('Owned resource did not reach its gated phase.');}
+
+test('project view cleanup failure still closes the native engine, bridge, home and audio',{timeout:30000},async t=>{
+  t.after(reapCleanupEngines);resetCleanupFault({fail:false,projectCleanupError:true});
+  const {module,directory}=await callerCopy(t,'ui.mjs');
+  const text=await withUIState(directory,async()=>{
+    await assert.rejects(module.runUI({cwd:directory,model:'fixture-model',baseUrl:'http://127.0.0.1:1/v1',transport:'chat-completions',once:'Finish the harmless fixture.'}),{code:'SESSION_CLEANUP_FAILED'});
+  });
+  const events=cleanupEvents();assert.ok(events.includes('project-changes-close'));
+  for(const name of ['engine','bridge','home','notifications-close'])assert.ok(events.includes(name),name+' must still close');
+  assert.doesNotMatch(text,/project-cleanup-private-canary/);
+});
 
 test('actual UI shutdown drains an engine acquired during pending startup without starting work',{timeout:30000},async t=>{
   t.after(reapCleanupEngines);

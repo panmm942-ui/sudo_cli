@@ -1,6 +1,6 @@
 export const COMMANDS = [
   {name:'/help',usage:'',description:'All commands; / also opens this menu'},
-  {name:'/performance',usage:'[status|refresh]',description:'Live CPU, RAM, GPU and VRAM for this computer'},
+  {name:'/gui',usage:'',description:'Open the graphical view of this same session'},
   {name:'/status',usage:'',description:'Session, model, WiFi, context and timers'},
   {name:'/switch',usage:'[NAME|add|local|save NAME|remove NAME]',description:'Saved cloud/local AIs; transfer full chat on switch'},
   {name:'/model',usage:'[ID|list]',description:'Current model or endpoint model list'},
@@ -41,7 +41,7 @@ export const COMMANDS = [
   {name:'/route',usage:'[off|local|cheap|manual NAME|price INPUT OUTPUT]',description:'Optional model routing with manual override and rates per million tokens'},
   {name:'/checks',usage:'[add COMMAND|clear|list]',description:'Explicit project acceptance checks'},
   {name:'/verify',usage:'[COMMAND]',description:'Run acceptance checks and report factual results'},
-  {name:'/changes',usage:'[CHECKPOINT_ID]',description:'Review actual AI file changes'},
+  {name:'/changes',usage:'[CHECKPOINT_ID]',description:'Current project changes or a saved checkpoint'},
   {name:'/undo',usage:'[CHECKPOINT_ID]',description:'Restore recorded AI edits while preserving later user edits'},
   {name:'/workflow',usage:'[plan|edit|test|review]',description:'Guided coding workflow'},
   {name:'/team',usage:'TASK',description:'Bounded independent planner and reviewer in isolated snapshots'},
@@ -73,7 +73,7 @@ const groups={
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
   'Voice':['/voice','/microphone','/live'],
   'Background':['/247','/schedule','/startup','/budget','/gpu'],
-  'Advanced':['/performance','/training','/update','/doctor','/status','/bgcolor','/textcolor','/notify','/reset','/loopguard'],
+  'Advanced':['/gui','/training','/update','/doctor','/status','/bgcolor','/textcolor','/notify','/reset','/loopguard'],
 };
 export function commandMenu(query='',{compact=false}={}) {
   if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chat   Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');

@@ -1,16 +1,21 @@
 # Browsing the complete chat
 
-The chat area keeps the visible conversation for the current session. Opening a
+Chat and Events have separate scrollbars and retained text. Tab selects the
+panel controlled by navigation keys. The fixed composer stays available while
+you browse. The chat area keeps the visible conversation for the current session. Opening a
 saved chat or resuming it at startup loads its full saved user and assistant
 messages into that area. The dashboard and antenna remain fixed above it.
 
 | Control | Action |
 | --- | --- |
-| PageUp / PageDown | Move one page toward older / newer messages |
+| Tab | Select Chat or Events |
+| PageUp / PageDown | Move one page in the selected panel |
 | Shift+Up / Shift+Down | Move one wrapped row |
-| Ctrl+Home | Jump to the first retained message |
-| Ctrl+End | Return to the newest output and input prompt |
+| Home / Ctrl+Home | Jump to the first retained row in the selected panel |
+| End / Ctrl+End | Return to the newest output in the selected panel |
 | Mouse wheel | Move three rows, when the terminal sends SGR mouse events |
+| Scrollbar click / drag | Choose a position in that panel |
+| Ctrl+A / Ctrl+E | Move the editing caret to the start / end of your draft |
 | `/scroll up`, `/scroll down` | Move one page |
 | `/scroll top`, `/scroll bottom` | Jump to the beginning / return live |
 
@@ -21,8 +26,7 @@ pasting also returns to the live prompt before accepting the text. Resizing
 rewraps the transcript and keeps the same text in view.
 
 The slash command picker owns PageUp and PageDown while it is open. Secret
-questions and raw multiline prompts keep their own input behavior. Standard
-Home and End retain their line-editing behavior. On terminals with mouse
+questions and raw multiline prompts keep their own input behavior. On terminals with mouse
 reporting enabled, hold the terminal's usual selection modifier (often Shift)
 to select text; support varies by terminal.
 
@@ -46,11 +50,12 @@ their original palette.
 For real Linux or WSL terminal acceptance, run as root with Node 22 or newer:
 
 ```sh
-python3 -B test/manual/verify-v0.6.4-scroll-linux.py --output-directory /tmp/v064-scroll-proof
+python3 -B test/manual/verify-v0.6.9-interface-linux.py --output-directory /tmp/v069-interface-proof
 ```
 
-This uses temporary settings and a saved transcript fixture; it makes no model
-requests. It checks the actual CLI, Readline, input controls, screen cells,
-saved chat switching, colors, resizing, and terminal cleanup. A separate real
-PTY renderer fixture verifies new output arriving while the viewport is paused.
-Windows ConsoleHost still needs separate visual acceptance.
+This uses temporary settings and a loopback model fixture; it makes no paid
+model requests. It checks the actual CLI, editing, separate panels, saved chats
+and the GUI sharing the same session. A separate real PTY renderer fixture in
+`verify-v0.6.9-panels-linux.py` checks resize/caret, scrollbar drag and terminal
+cleanup. Historical manuals retain their original version attribution.
+Physical Windows ConsoleHost appearance still needs visual acceptance.

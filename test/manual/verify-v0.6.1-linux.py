@@ -11,6 +11,10 @@ weights, microphone, GPU hook, OS service or desktop app is used. Each CLI child
 has isolated HOME/XDG/TMPDIR, project and state. Retained evidence is sanitized.
 """
 import argparse
+from event_scroll_fixture import latest_event_text
+from event_fixture import event_contains
+from question_fixture import install_question_fixture, active_submission_question
+from terminal_view import TerminalView, rendered_text, ready_prompt_visible, install_gpu_fixture, verify_ready_prompt_regression as verify_terminal_readiness
 import fcntl
 import http.server
 import json
@@ -57,14 +61,9 @@ print(f'Sanitized native acceptance evidence: {OUTPUT}', flush=True)
 
 
 def plain(raw):
-    body = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
-    return ANSI.sub(b'', body).decode('utf-8', errors='replace')
+    return rendered_text(raw)
 
 
-def ready_prompt_visible(raw):
-    # A retained user line is not the final empty editable prompt. Remove OSC
-    # controls in plain() before ignoring standalone notification BELs.
-    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -184,6 +183,8 @@ BASE_URL = f'http://127.0.0.1:{server.server_port}/v1'
 class Terminal:
     def __init__(self, root):
         self.transcript = bytearray()
+        self.view = TerminalView(44, 150)
+        self.ready_previous = {}
         self.workspace, self.state = root/'project', root/'state'
         for name in ['project', 'home', 'xdg-config', 'xdg-data', 'xdg-state', 'xdg-cache', 'xdg-runtime', 'tmp']:
             (root/name).mkdir(exist_ok=True, mode=0o700)
@@ -197,6 +198,8 @@ class Terminal:
                'SUDO_CLI_STATE_DIR': str(self.state), 'SUDO_CLI_MODEL': 'inherited-cloud-model',
                'SUDO_CLI_BASE_URL': 'https://unused-cloud.invalid/v1',
                'SUDO_CLI_TRANSPORT': 'responses', 'SUDO_CLI_API_KEY': CLOUD_SECRET}
+        install_gpu_fixture(root, env)
+        self.questions = install_question_fixture(root, env)
         self.child = subprocess.Popen([NODE, str(PROJECT/'bin/sudocli.mjs'), '--cwd', str(self.workspace)],
             cwd=self.workspace, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
@@ -212,6 +215,7 @@ class Terminal:
                     if not data:
                         return
                     self.transcript.extend(data)
+                    self.view.feed(data)
                 except OSError:
                     return
 
@@ -228,17 +232,27 @@ class Terminal:
     def send(self, text):
         self.drain(.08)
         marker = len(self.transcript)
+        prior = self.view.composer()
+        reset = text.strip().startswith(('/new', '/chat open'))
+        self.ready_previous[marker] = prior['sequence'] if prior and prior['empty'] and text.endswith(('\n','\r')) and not reset else None
         os.write(self.master, text.encode())
         return marker
 
     def ready(self, marker=0):
-        self.read_until(lambda raw: ready_prompt_visible(raw[marker:]), expectation='ready prompt')
+        self.read_until(lambda raw: len(raw)>marker and self.view.ready(self.ready_previous.get(marker)) and active_submission_question(self.questions), expectation='ready prompt')
 
-    def command(self, text):
+    def command(self, text, *, events_only=False):
         marker = self.send(text+'\n')
         self.ready(marker)
         assert not fixture_errors, fixture_errors
-        return plain(bytes(self.transcript[marker:]))
+        report = text.startswith(('/agents run ', '/agents team ', '/agents pipeline ', '/agents follow '))
+        event = latest_event_text(self, starts_with='Saved agents result: ' if report else None)
+        if report:
+            current = re.search(r'Saved agents result: ([0-9a-f-]{36})', event)
+            if not current or current[1] == getattr(self, 'last_agents_result', None):
+                raise AssertionError('A new actual saved agents result was not observed')
+            self.last_agents_result = current[1]
+        return event if events_only else plain(bytes(self.transcript[marker:]))+'\n[Current Events entry]\n'+event
 
     def answer(self, marker, label, value):
         self.read_until(lambda raw: label in plain(raw[marker:]), expectation=label)
@@ -263,9 +277,13 @@ class Terminal:
 
     def finish(self):
         self.send('/quit\n')
+        deadline = time.monotonic()+8
         while self.child.poll() is None:
-            self.drain(.1)
-            self.child.wait(timeout=8)
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self.child.args, 8)
+            self.drain(min(.1, remaining))
+        self.child.wait(timeout=8)
         self.drain(.1)
         assert self.child.returncode == 0, self.child.returncode
         assert b'\x1b[?1049h' in self.transcript and b'\x1b[?1049l' in self.transcript
@@ -288,9 +306,10 @@ def developer(body):
 
 
 def result_id(output):
-    match = re.search(r'Saved agents result: ([0-9a-f-]{36})', output)
+    current = output.rsplit('\n[Current Events entry]\n', 1)[-1]
+    match = re.search(r'Saved agents result: ([0-9a-f-]{36})', current)
     assert match, output[-3000:]
-    assert 'failed' not in output.split(match.group(0), 1)[1].splitlines()[0]
+    assert 'failed' not in current.split(match.group(0), 1)[1].splitlines()[0]
     return match.group(1)
 
 
@@ -305,7 +324,7 @@ try:
         terminal = Terminal(root)
         terminal.ready()
         startup = plain(terminal.transcript)
-        assert 'Local AI on this PC: /local' in startup
+        assert event_contains(terminal.view, 'Local AI on this PC: /local')
         assert 'API key' not in startup and 'AI setup' not in startup
         assert 'No AI selected' in terminal.command('/status')
         assert '/local' in terminal.command('/help ai') and '/agents' in terminal.command('/help work')
@@ -442,7 +461,7 @@ try:
         marker = terminal.send('/agents run reviewer V061_STEER_PROBE guide the active turn\n')
         terminal.read_until(lambda raw: len(requests)>baseline, expectation='held native turn for steering')
         steer_marker = terminal.send('/agents steer reviewer V061_MODEL_STEERING_NOTE focus on the fixture README\n')
-        terminal.read_until(lambda raw: 'Guidance sent to agent reviewer.' in plain(raw[steer_marker:]), expectation='accepted native guidance')
+        terminal.read_until(lambda raw: len(raw)>steer_marker and event_contains(terminal.view, 'Guidance sent to agent reviewer.', latest=True), expectation='accepted native guidance')
         terminal.ready(marker)
         steered_requests = requests[baseline:]
         assert len(steered_requests)>=2, 'Accepted native steering did not produce a guided provider continuation'
@@ -457,14 +476,14 @@ try:
         status_marker = terminal.send('/agents status\n')
         terminal.read_until(lambda raw: 'Agents are running.' in plain(raw[status_marker:]), expectation='live agents status')
         steer_marker = terminal.send('/agents steer reviewer V061_STEERING_NOTE preserve the project\n')
-        terminal.read_until(lambda raw: 'Guidance sent to agent reviewer.' in plain(raw[steer_marker:]), expectation='native per-agent steering')
+        terminal.read_until(lambda raw: len(raw)>steer_marker and event_contains(terminal.view, 'Guidance sent to agent reviewer.', latest=True), expectation='native per-agent steering')
         stop_marker = terminal.send('/agents stop reviewer\n')
         terminal.read_until(lambda raw: 'Cancelling agent reviewer.' in plain(raw[stop_marker:]), expectation='per-agent cancellation')
         terminal.ready(stop_marker)
         cancelled = plain(bytes(terminal.transcript[marker:]))
         assert 'cancelled' in cancelled.lower()
         assert 'No active agents.' in terminal.command('/agents status')
-        idle_steer = terminal.command('/agents steer reviewer V061_IDLE_STEER_MUST_FAIL')
+        idle_steer = terminal.command('/agents steer reviewer V061_IDLE_STEER_MUST_FAIL', events_only=True)
         assert 'Guidance sent to agent reviewer.' not in idle_steer
         assert any(word in idle_steer.lower() for word in ['not active', 'not running', 'not available', 'cannot', 'unavailable']), idle_steer
         assert (terminal.workspace/'tracked.txt').read_text() == 'later-human-edit\n'

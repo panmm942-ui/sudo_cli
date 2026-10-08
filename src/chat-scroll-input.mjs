@@ -11,14 +11,14 @@ export function createChatScrollInput({input,getContext=()=>({}),onScroll=()=>{}
   const forward=text=>{if(!text)return;if(context().paused)onLive();stream.push(text);};
   const action=sequence=>{
     const mouse=/^\x1b\[<(\d{1,4});(\d{1,5});(\d{1,5})([mM])$/.exec(sequence);
-    if(mouse){const button=Number(mouse[1]);if(context().enabled&&mouse[4]==='M'&&(button&64)&&(button&3)<2)onScroll((button&1)?'wheel-down':'wheel-up');return true;}
+    if(mouse){const button=Number(mouse[1]),metadata={x:Number(mouse[2]),y:Number(mouse[3]),button:button&3,drag:!!(button&32),release:mouse[4]==='m'};if(context().enabled){if(mouse[4]==='M'&&(button&64)&&(button&3)<2)onScroll((button&1)?'wheel-down':'wheel-up',metadata);else if(!(button&64)&&(button&3)===0)onScroll('pointer',metadata);}return true;}
     if(!context().enabled)return false;
-    const name=({'\x1b[5~':'page-up','\x1b[6~':'page-down','\x1b[1;2A':'line-up','\x1b[1;2B':'line-down','\x1b[1;5H':'top','\x1b[1;5F':'bottom','\x1b[7;5~':'top','\x1b[8;5~':'bottom'})[sequence];
+    const name=({'\x1b[5~':'page-up','\x1b[6~':'page-down','\x1b[1;2A':'line-up','\x1b[1;2B':'line-down','\x1b[1;5H':'top','\x1b[1;5F':'bottom','\x1b[7;5~':'top','\x1b[8;5~':'bottom','\x1b[H':'top','\x1b[F':'bottom','\x1bOH':'top','\x1bOF':'bottom','\x1b[1~':'top','\x1b[4~':'bottom','\x1b[7~':'top','\x1b[8~':'bottom'})[sequence];
     if(!name)return false;onScroll(name);return true;
   };
   function drain(){
     while(pending){
-      if(pending[0]!=='\x1b'){const next=pending.indexOf('\x1b'),text=next<0?pending:pending.slice(0,next);pending=next<0?'':pending.slice(next);forward(text);continue;}
+      if(pending[0]!=='\x1b'){const next=pending.indexOf('\x1b'),text=next<0?pending:pending.slice(0,next);pending=next<0?'':pending.slice(next);const parts=text.split('\t');for(let index=0;index<parts.length;index++){forward(parts[index]);if(index<parts.length-1){if(context().enabled)onScroll('focus-next');else forward('\t');}}continue;}
       const sequence=/^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~])/.exec(pending)?.[0];
       if(sequence){pending=pending.slice(sequence.length);if(!action(sequence))forward(sequence);continue;}
       if(pending.length>1024||pending.length>1&&!['[','O'].includes(pending[1])){forward(pending[0]);pending=pending.slice(1);continue;}

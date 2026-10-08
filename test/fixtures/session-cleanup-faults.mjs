@@ -6,6 +6,7 @@ import {createCommandWatchdog as nativeWatchdog} from '../../src/command-watchdo
 import {createAssistantFeatures as nativeFeatures,createBackgroundResultReporter} from '../../src/assistant-features.mjs';
 import {createAlwaysOn} from '../../src/always-on.mjs';
 import {createTaskInbox} from '../../src/task-inbox.mjs';
+import {createProjectChanges as nativeProjectChanges} from '../../src/project-changes.mjs';
 import {join} from 'node:path';
 import {mkdir} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
@@ -13,8 +14,9 @@ export * from '../../src/engine.mjs';
 export * from '../../src/runtime.mjs';
 export {backgroundNotificationEvent} from '../../src/assistant-features.mjs';
 
-let events=[],failure=true,scenario='normal',throwTurn=false,gates={},backgroundCode,backgroundRun,backgroundOrder,activeBackground;const ownedEngines=new Set();
-export function resetCleanupFault({fail=true,turn='normal',taskError=false,holdEngine=false,holdBridge=false,holdBackgroundCleanup=false,backgroundCleanupCode,runBackground,backgroundDelivery='attention-first'}={}){events=[];failure=fail;scenario=turn;throwTurn=taskError;backgroundCode=backgroundCleanupCode;backgroundRun=runBackground;backgroundOrder=backgroundDelivery;activeBackground=undefined;gates={};for(const name of [holdEngine?'engine':null,holdBridge?'bridge':null,holdBackgroundCleanup?'background-cleanup':null].filter(Boolean)){let release;const wait=new Promise(resolve=>{release=resolve;});gates[name]={wait,release};}}
+let events=[],failure=true,projectCleanupFailure=false,scenario='normal',throwTurn=false,gates={},backgroundCode,backgroundRun,backgroundOrder,activeBackground;const ownedEngines=new Set();
+export function resetCleanupFault({fail=true,turn='normal',taskError=false,projectCleanupError=false,holdEngine=false,holdBridge=false,holdBackgroundCleanup=false,backgroundCleanupCode,runBackground,backgroundDelivery='attention-first'}={}){events=[];failure=fail;projectCleanupFailure=projectCleanupError;scenario=turn;throwTurn=taskError;backgroundCode=backgroundCleanupCode;backgroundRun=runBackground;backgroundOrder=backgroundDelivery;activeBackground=undefined;gates={};for(const name of [holdEngine?'engine':null,holdBridge?'bridge':null,holdBackgroundCleanup?'background-cleanup':null].filter(Boolean)){let release;const wait=new Promise(resolve=>{release=resolve;});gates[name]={wait,release};}}
+export function createProjectChanges(options){const value=nativeProjectChanges(options);return {...value,async close(){events.push('project-changes-close');await value.close();if(projectCleanupFailure)throw new Error('project-cleanup-private-canary');}};}
 export function cleanupEvents(){return [...events];}
 export function releaseCleanupGate(name){gates[name]?.release();}
 export async function stopCleanupBackground(){if(!activeBackground)throw new Error('Background fixture has not started.');await activeBackground.stop();}

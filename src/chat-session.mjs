@@ -1,5 +1,5 @@
 /** Serialize snapshots before changing chat identity. Storage owns validation/redaction. */
-export function createChatSession({store,history,getConnection=()=>undefined,getPending=()=>[]}) {
+export function createChatSession({store,history,getConnection=()=>undefined,getPending=()=>[],getPendingSubmissions=()=>undefined}) {
   let current,tail=Promise.resolve(),paused=false;
   const flush=()=>tail;
   const interruptSnapshot=record=>{
@@ -9,7 +9,7 @@ export function createChatSession({store,history,getConnection=()=>undefined,get
   };
   const checkpoint=()=>{
     if(!current || paused)return tail;
-    const input={id:current.id,history:history.snapshot(),connection:getConnection(),pendingInputs:getPending()};
+    const input={id:current.id,history:history.snapshot(),connection:getConnection(),pendingInputs:getPending(),pendingSubmissions:getPendingSubmissions()};
     const next=tail.catch(()=>{}).then(()=>store.save(input));
     tail=next.then(record=>{if(current?.id===record.id)current=record;return record;});
     return tail;
@@ -19,10 +19,10 @@ export function createChatSession({store,history,getConnection=()=>undefined,get
   return {
     current:()=>current,checkpoint,flush,
     async resumeLast(){return transaction(async()=>{const record=await store.last();return record?load(record):undefined;});},
-    async ensure(){if(current)return current;return transaction(async()=>{current=await store.create({history:history.snapshot(),connection:getConnection(),pendingInputs:getPending()});return current;});},
+    async ensure(){if(current)return current;return transaction(async()=>{current=await store.create({history:history.snapshot(),connection:getConnection(),pendingInputs:getPending(),pendingSubmissions:getPendingSubmissions()});return current;});},
     async open(id){await checkpoint();return transaction(async()=>{const record=await store.get(id);if(!record)throw new Error('Saved chat was not found.');await store.setLast(id);return load(record);});},
     async newChat({keep=true}={}){await checkpoint();return transaction(async()=>{const previous=current;const record=await store.create({connection:getConnection()});load(record);if(!keep && previous)await store.remove(previous.id);return record;});},
-    async rename(title){if(!current)await this.ensure();await checkpoint();return transaction(async()=>{current=await store.save({id:current.id,title,history:history.snapshot(),connection:getConnection(),pendingInputs:getPending()});return current;});},
+    async rename(title){if(!current)await this.ensure();await checkpoint();return transaction(async()=>{current=await store.save({id:current.id,title,history:history.snapshot(),connection:getConnection(),pendingInputs:getPending(),pendingSubmissions:getPendingSubmissions()});return current;});},
     list:()=>store.list(),
     async remove(id){if(current?.id===id)throw new Error('Start or open another chat before deleting the current chat.');await flush();return store.remove(id);},
   };

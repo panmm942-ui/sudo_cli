@@ -24,7 +24,7 @@ function fence(text) {
 /** Visible user/assistant text only; disk persistence is handled by the chat store. */
 export function createChatHistory({ secrets = () => [] } = {}) {
   if (typeof secrets !== 'function') throw new Error('Chat history requires a secret supplier.');
-  let messages = [];
+  let messages = [], promptCount;
   const assistants = new Map();
   const knownSecrets = new Set();
   function rememberSecrets() {
@@ -68,10 +68,11 @@ export function createChatHistory({ secrets = () => [] } = {}) {
       if (message.attachments) result.attachments = message.attachments.map(attachment => Object.fromEntries(Object.entries(attachment).map(([key, value]) => [key, typeof value === 'string' ? clean(value) : value])));
       return result;
     });
-    return { version: 1, messages: visible };
+    return { version: 1, ...(promptCount===undefined?{}:{promptCount}), messages: visible };
   }
   function restore(data) {
     if (!data || typeof data !== 'object' || data.version !== 1 || !Array.isArray(data.messages) || data.messages.length > 100000) throw new Error('Chat snapshot must contain a supported version and a bounded message list.');
+    if(data.promptCount!==undefined&&(!Number.isSafeInteger(data.promptCount)||data.promptCount<0))throw new Error('Chat snapshot has an invalid prompt submission count.');
     rememberSecrets();
     const identifiers = new Set();
     const restored = data.messages.map(value => {
@@ -84,6 +85,8 @@ export function createChatHistory({ secrets = () => [] } = {}) {
       if (!id.length || identifiers.has(id)) throw new Error('Chat snapshot message identifiers must be unique.');
       identifiers.add(id);
       const result = { id, role: value.role, model: value.model ? clean(value.model) : null, content: clean(value.content) };
+      if(value.role==='user'&&value.sequence!==undefined){if(!Number.isSafeInteger(value.sequence)||value.sequence<1)throw new Error('Chat snapshot has an invalid prompt sequence.');result.sequence=value.sequence;}
+      if(value.role==='user'&&value.timestamp!==undefined){if(typeof value.timestamp!=='string'||value.timestamp.length>32||!Number.isFinite(Date.parse(value.timestamp)))throw new Error('Chat snapshot has an invalid prompt timestamp.');result.timestamp=new Date(value.timestamp).toISOString();}
       if (value.role === 'assistant') {
         if (!['streaming', 'completed', 'interrupted'].includes(value.status)) throw new Error('Chat snapshot contains an invalid assistant status.');
         result.status = value.status;
@@ -93,7 +96,7 @@ export function createChatHistory({ secrets = () => [] } = {}) {
       return result;
     });
     // Validate every entry before replacing a working conversation.
-    messages = restored;
+    messages = restored;promptCount=data.promptCount;
     assistants.clear();
     for (const message of messages) if (message.role === 'assistant') assistants.set(message.id, message);
     return snapshot();
@@ -128,15 +131,18 @@ export function createChatHistory({ secrets = () => [] } = {}) {
   }
   return {
     beginAssistant, appendAssistant, finishAssistant, snapshot, restore, toPrompt, exportHandoff,
-    addUser(text, { attachments, model } = {}) {
+    recordSubmission({sequence}={}){const next=(promptCount??messages.filter(message=>message.role==='user').length)+1;if(!Number.isSafeInteger(sequence)||sequence!==next)throw new Error('Prompt submission count must advance by one.');promptCount=sequence;return promptCount;},
+    addUser(text, { attachments, model, sequence, timestamp } = {}) {
       if (typeof text !== 'string') throw new Error('User text must be a string.');
       rememberSecrets();
       const message = { id: randomUUID(), role: 'user', model: modelName(model), content: text };
+      if(sequence!==undefined){if(!Number.isSafeInteger(sequence)||sequence<1)throw new Error('Invalid prompt sequence.');message.sequence=sequence;}
+      if(timestamp!==undefined){if(typeof timestamp!=='string'||!Number.isFinite(Date.parse(timestamp)))throw new Error('Invalid prompt timestamp.');message.timestamp=new Date(timestamp).toISOString();}
       const metadata = attachmentMetadata(attachments);
       if (metadata.length) message.attachments = metadata;
       messages.push(message);
       return message.id;
     },
-    clear() { messages = []; assistants.clear(); },
+    clear({preservePromptCount=false}={}) { const previous=promptCount??messages.filter(message=>message.role==='user').length;messages = []; promptCount=preservePromptCount?previous:undefined;assistants.clear(); },
   };
 }

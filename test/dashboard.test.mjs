@@ -15,34 +15,34 @@ test('two named GPUs keep separate dedicated capacities, shared RAM and driver f
   for(const columns of [150,110,70,48]){
     const view=renderDashboard({state:{...example,performance,scope:'project',chatTitle:'New chat',network:{wifi:'Yes',downloadBps:1024,uploadBps:2048}},columns,rows:44,color:true});
     assert.equal(view.sticky,true,`Two-card layout should remain useful at ${columns} columns`);
-    const lines=view.lines.map(stripVTControlCharacters),start=columns===150?lines.findIndex(line=>line.includes('Performance (This PC)')):-1;
-    const panel=columns===150?lines.slice(start).map(line=>line.slice(lines[start].indexOf('Performance'))):lines;
+    const lines=view.lines.map(stripVTControlCharacters),panel=view.performance.map(stripVTControlCharacters);
     const text=panel.join(' ').replace(/\s+/g,' ');
     assert.match(text,/GPU 0: AMD Radeon 780M/);assert.match(text,/GPU 1: NVIDIA GeForce RTX 5050 Laptop GPU/);
     assert.doesNotMatch(text,/Unidentified counters|Windows GPU unmatched counters/,'Unmatched counters belong in the full listing, leaving header space for physical GPUs');
     for(const value of ['Dedicated VRAM:','400/512 MiB (78.1%)','Shared RAM:','0.3/16.0 GiB (1.8%)','Unavailable / 8.0 GiB','Driver error 43'])assert.ok(text.includes(value),`${columns} columns lost ${value}: ${text}`);
     assert.ok(lines.every(line=>[...line].length<columns),`${columns} columns overflowed`);
-    assert.ok(44-view.height>=4,`${columns} columns left insufficient input space`);
+    assert.ok(44-view.height>=8,`${columns} columns left insufficient panel/composer space`);
   }
   const tiny=renderDashboard({state:{...example,performance},columns:35,rows:8,color:true});
   assert.equal(tiny.sticky,false);assert.equal(tiny.height,1);assert.match(stripVTControlCharacters(tiny.lines[0]),/Enlarge terminal/);
 });
 
-test('local performance is readable beside the antenna on wide terminals and below status on smaller ones',async()=>{
+test('local performance has its own header column and retains accurate compact inventory',async()=>{
   const {renderDashboard}=await import('../src/dashboard.mjs');
   const {ANTENNA_ROWS}=await import('../src/antenna.mjs');
   const performance={cpu:{status:'available',percent:12.5},ram:{status:'available',usedBytes:8*1024**3,totalBytes:32*1024**3,percent:25},gpu:{status:'unavailable',adapters:[]},vram:{status:'unavailable'}};
   for(const columns of [150,110,70,48]){
     const view=renderDashboard({state:{...example,performance,scope:'project',chatTitle:'New chat',network:{wifi:'Yes',downloadBps:1024,uploadBps:2048}},columns,rows:44,color:true});
     assert.equal(view.sticky,true,`Useful layout at ${columns} columns`);
-    const lines=view.lines.map(stripVTControlCharacters),text=lines.join('\n');
+    const lines=view.lines.map(stripVTControlCharacters),text=view.performance.map(stripVTControlCharacters).join('\n');
     for(const field of ['Performance','CPU: 12.5%','RAM: 8.0/32.0 GiB (25.0%)','GPU: Unavailable','VRAM: Unavailable'])assert.ok(text.includes(field),`${columns} columns missing ${field}`);
     assert.ok(lines.every(line=>[...line].length<columns),`${columns}: ${text}`);
     if(columns===150){
       const first=lines.findIndex(line=>line.includes('Performance (This PC)'));
-      assert.ok(first>=0&&lines[first].includes(ANTENNA_ROWS[0]),'Performance begins beside the antenna');
+      assert.ok(first===0&&lines[first].includes('Credits:'),'Performance begins in the separate right column');
       assert.equal(lines[first+1].slice(lines[first].indexOf('Performance')).trim(),'','Heading has breathing room');
-    }else assert.match(text,/Performance: This PC/);
+      assert.ok(lines.some(line=>line.includes(ANTENNA_ROWS[0])),'Exact antenna remains visible');
+    }else assert.match(text,/Performance \(This PC\)/);
     assert.doesNotMatch(text,/GPU: 0\.0%|VRAM: 0[\/.]/,'Unknown counters cannot look idle');
     assert.ok(44-view.height>=4,'Input remains usable');
   }
@@ -53,12 +53,12 @@ test('performance resize keeps the input outside the header and falls back safel
   const state={...example,performance:{cpu:{status:'warming-up'},ram:{status:'unavailable'},gpu:{status:'unavailable'},vram:{status:'unavailable'}}};
   const out=Object.assign(new EventEmitter(),{isTTY:true,columns:150,rows:44,text:'',write(value){this.text+=value;}});
   const dashboard=createDashboard({output:out,snapshot:()=>state,env:{TERM:'xterm'},tickMs:0});
-  dashboard.start();assert.ok(dashboard.inputArea().rows>=4);
+  dashboard.start();assert.equal(dashboard.inputArea().rows,3);assert.ok(dashboard.menuArea().rows>=4);
   out.columns=35;out.rows=8;out.text='';out.emit('resize');
-  assert.equal(dashboard.inputArea().top,2);assert.match(out.text,/Enlarge terminal/);
+  assert.ok(dashboard.inputArea().top>dashboard.layout().chat.bottom);assert.match(out.text,/Enlarge terminal/);
   assert.doesNotMatch(out.text,/\x1b\[\d+;\d+r/);
   out.columns=150;out.rows=44;out.text='';out.emit('resize');
-  assert.match(out.text,/Performance \(This PC\)/);assert.ok(dashboard.inputArea().rows>=4);
+  assert.match(out.text,/Performance \(This PC\)/);assert.ok(dashboard.menuArea().rows>=4);
   dashboard.stop();assert.ok(out.text.endsWith('\x1b[?1049l'));
 });
 
@@ -66,8 +66,8 @@ test('command picker receives a bounded input area below the header after termin
   const {createDashboard}=await import('../src/dashboard.mjs');
   const out=Object.assign(new EventEmitter(),{isTTY:true,columns:150,rows:44,text:'',write(value){this.text+=value;}});
   const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},tickMs:0});
-  dashboard.start();const area=dashboard.inputArea();assert.ok(area.top>1);assert.equal(area.top+area.rows-1,44);assert.equal(area.columns,149);
-  out.rows=8;out.columns=35;out.emit('resize');const small=dashboard.inputArea();assert.equal(small.top,2);assert.equal(small.rows,7);assert.equal(small.columns,34);
+  dashboard.start();const area=dashboard.inputArea();assert.ok(area.top>1);assert.equal(area.top+area.rows-1,43);assert.ok(area.columns<149);assert.equal(dashboard.menuArea().left,1);
+  out.rows=8;out.columns=35;out.emit('resize');const small=dashboard.inputArea();assert.equal(small.top,5);assert.equal(small.rows,3);assert.equal(small.columns,34);
   dashboard.redraw();dashboard.stop();assert.ok(out.text.endsWith('\x1b[?1049l'));
 });
 
@@ -103,7 +103,7 @@ test('dashboard shows the requested fields next to a large ASCII logo', async ()
   assert.match(text, /WiFi Connection: Unknown/);
   assert.match(text, /Connected AI: test-model \(unconfirmed\)/);
   assert.match(text, /Context: Unknown/);
-  assert.ok(view.lines[0].includes('____') && view.lines[0].includes('Time:'), 'Logo and details must share a row');
+  assert.ok(view.lines.some(line=>line.includes('SUDO CLI')&&line.includes('Time:')), 'Brand and details must share a row');assert.match(view.lines[0],/Credits:/);
   assert.doesNotMatch(text, /\x1b/);
 });
 
@@ -124,7 +124,7 @@ test('working Status and WiFi values have restrained green/red colors', async ()
 
 test('WiFi Yes shows actual sampled upload/download rates, while No omits them', async () => {
   const {renderDashboard}=await import('../src/dashboard.mjs');
-  const yes=renderDashboard({state:{...example,network:{wifi:'Yes',downloadBps:2048,uploadBps:1024}},columns:132,rows:32}).lines.join('\n');
+  const yes=renderDashboard({state:{...example,network:{wifi:'Yes',downloadBps:2048,uploadBps:1024}},columns:150,rows:44}).lines.join('\n');
   assert.match(yes,/WiFi Connection: Yes/);assert.match(yes,/Download: 2\.0 KiB\/s \| Upload: 1\.0 KiB\/s/);
   const no=renderDashboard({state:{...example,network:{wifi:'No',downloadBps:2048,uploadBps:1024}},columns:132,rows:32}).lines.join('\n');
   assert.doesNotMatch(no,/Download:|Upload:/);
@@ -139,7 +139,7 @@ test('live dashboard freezes antenna colors idle while continuing its wall clock
   const frames=[];function frame(){out.text='';dashboard.refresh();frames.push(out.text);}
   dashboard.start();working=true;frame();elapsed=200;frame();working=false;frame();
   date=new Date('2026-10-07T08:09:11Z');elapsed=3000;frame();
-  const antenna=text=>text.split('\r\n').filter(line=>ANTENNA_ROWS.some(row=>stripVTControlCharacters(line).includes(row))).map(line=>line.slice(0,line.indexOf('\x1b[90m'))).join('\n');
+  const antenna=text=>text.split(/\x1b\[\d+;1H/).filter(line=>ANTENNA_ROWS.some(row=>stripVTControlCharacters(line).includes(row))).map(line=>line.slice(0,line.indexOf('\x1b[90m'))).join('\n');
   assert.notEqual(antenna(frames[0]),antenna(frames[1]));
   assert.equal(antenna(frames[2]),antenna(frames[3]));
   assert.match(stripVTControlCharacters(frames[3]),/11/);
@@ -148,7 +148,7 @@ test('live dashboard freezes antenna colors idle while continuing its wall clock
 
 test('reported context shows percent and amounts without inventing unknown values', async () => {
   const { renderDashboard } = await import('../src/dashboard.mjs');
-  const text = renderDashboard({ state: { ...example, context: { used: 50000, limit: 200000, percent: 25 } }, columns: 120, rows: 30, color: false }).lines.join('\n');
+  const view = renderDashboard({ state: { ...example, context: { used: 50000, limit: 200000, percent: 25 } }, columns: 150, rows: 44, color: false });const text=view.lines.join('\n')+'\n'+view.footer;
   assert.match(text, /Context: ~25%/);
   assert.match(text, /50,000\/200,000/);
   assert.match(text, /reported/);
@@ -185,7 +185,7 @@ test('live clock redraw preserves cursor, never repeats model input, and restore
   assert.match(out.text, /11:09:11/);
   assert.match(out.text, /\x1b7/);
   assert.match(out.text, /\x1b8/);
-  assert.match(out.text, /\x1b\[\d+;30r/);
+  assert.doesNotMatch(out.text, /\x1b\[\d+;30r/,'Two columns must not share a full-width scroll region');
   assert.equal(out.listenerCount('resize'), 1);
   dashboard.stop(); dashboard.stop();
   assert.equal(out.listenerCount('resize'), 0);
@@ -219,9 +219,9 @@ test('custom lower backgrounds paint empty chat rows while dashboard keeps its o
   const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','white');
   const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
   const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
-  dashboard.start();const top=dashboard.inputArea().top;
+  dashboard.start();const top=dashboard.layout().chat.top;
   assert.match(out.text,/\x1b\[48;2;11;15;20m.*Software System/s);
-  assert.ok(out.text.includes(`\x1b[${top};1H${theme.bodyStyle}\x1b[J`),'new lower background must clear every empty lower row');
+  for(let line=top;line<=dashboard.inputArea().bottom;line++)assert.ok(out.text.includes(`\x1b[${line};1H${theme.bodyStyle}`),'new lower background must paint every empty chat/composer row');
   dashboard.stop();
 });
 
@@ -233,7 +233,7 @@ test('color redraw recolors previous user text and preserves readable system out
   const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
   dashboard.start();dashboard.write('user asks\n',{user:true});dashboard.write('\x1b[90mworking\x1b[0m\n');
   await theme.set('bgcolor','white');await theme.set('txtcolor','#800000');out.text='';dashboard.redraw();
-  const lower=out.text.slice(out.text.indexOf(`\x1b[${dashboard.inputArea().top};1H`));
+  const lower=out.text.slice(out.text.indexOf(`\x1b[${dashboard.layout().chat.top};1H`));
   assert.match(lower,/\x1b\[38;2;128;0;0muser asks/);
   assert.match(lower,/\x1b\[38;2;0;0;0mworking/);
   assert.doesNotMatch(lower,/48;2;11;15;20/);
@@ -248,7 +248,7 @@ test('header animation restores lower theme after the saved cursor without repea
   let date=new Date('2026-10-07T08:09:10Z');
   const dashboard=createDashboard({output:out,snapshot:()=>example,now:()=>date,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
   dashboard.start();dashboard.write('private question\n',{user:true});out.text='';date=new Date('2026-10-07T08:09:11Z');dashboard.refresh();
-  assert.ok(out.text.endsWith('\x1b8'+theme.bodyStyle+'\x1b[?25h'));
+  assert.ok(out.text.endsWith('\x1b8'+theme.bodyStyle));assert.doesNotMatch(out.text,/\x1b\[\?25[hl]/);
   assert.doesNotMatch(out.text,/private question/);dashboard.stop();
 });
 
@@ -283,8 +283,8 @@ test('tiny fallback keeps header cells nearblack when resizing a white chat back
   const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
   dashboard.start();out.text='';out.columns=35;out.rows=8;out.emit('resize');
   assert.match(out.text,/\x1b\[48;2;11;15;20m\x1b\[2J/,'Shrinking must clear upper blank cells under the fixed header color');
-  assert.match(out.text,/Enlarge terminal\x1b\[0m\x1b\[48;2;11;15;20m\x1b\[K/,'Fallback padding must retain header background');
-  assert.ok(out.text.includes('\x1b[2;1H'+theme.bodyStyle+'\x1b[J'));
+  assert.match(out.text,/Enlarge terminal\x1b\[0m\x1b\[48;2;11;15;20m/,'Fallback padding must retain header background');
+  assert.ok(out.text.includes('\x1b[2;1H'+theme.bodyStyle));assert.doesNotMatch(out.text,/\x1b\[J/);
   dashboard.stop();
 });
 
@@ -293,20 +293,20 @@ test('chat page navigation redraws only lower rows and keeps arriving output out
   const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
   let dashboard;const promptRestores=[];
   dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:false,tickMs:0,onResize:()=>promptRestores.push(dashboard.isScrolled())});
-  dashboard.start();dashboard.write('FIRST USER\n',{user:true});dashboard.write('assistant line\n'.repeat(40));out.text='';
+  dashboard.start();promptRestores.length=0;dashboard.write('FIRST USER\n',{user:true});dashboard.write('assistant line\n'.repeat(40));out.text='';
   assert.equal(typeof dashboard.scrollToTop,'function','dashboard must expose retained chat navigation');
   assert.equal(dashboard.scrollToTop(),true);
   assert.equal(dashboard.isScrolled(),true);
   assert.match(out.text,/FIRST USER/);
   assert.doesNotMatch(out.text,/Software System|Credits:|\x1b\[2J/,'Scrolling cannot clear or redraw the antenna/header');
-  assert.ok(out.text.includes(`\x1b[${dashboard.inputArea().top};1H`));
+  assert.ok(out.text.includes(`\x1b[${dashboard.layout().chat.top};1H`));
   out.text='';dashboard.write('INCOMING PRIVATE ANSWER\n');
   assert.doesNotMatch(out.text,/INCOMING PRIVATE ANSWER|FIRST USER/);
   assert.match(stripVTControlCharacters(out.text),/new output/i);
   assert.ok(dashboard.scrollState().unseen>0);
   out.text='';dashboard.scrollToBottom();
   assert.equal(dashboard.isScrolled(),false);assert.match(out.text,/INCOMING PRIVATE ANSWER/);
-  assert.deepEqual(promptRestores,[true,false]);dashboard.stop();
+  assert.deepEqual(promptRestores,[],'Panel scrolling leaves the fixed composer in place');dashboard.stop();
 });
 
 test('saved chat hydration and chat clearing reset old scroll content without duplicating readline echo',async()=>{

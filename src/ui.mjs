@@ -20,7 +20,7 @@ import { createModelProfiles } from './model-profiles.mjs';
 import { createChatHistory } from './chat-history.mjs';
 import { createNetworkStatus } from './network-status.mjs';
 import { createFeatureCommands } from './features.mjs';
-import { completeCommand, parseCommand, parseMcpEntry } from './commands.mjs';
+import { COMMANDS, completeCommand, parseCommand, parseMcpEntry } from './commands.mjs';
 import { enabledMcpEntries } from './computer-policy.mjs';
 import {requireElevated} from './privileges.mjs';
 import {createChatStore} from './chat-store.mjs';
@@ -28,7 +28,7 @@ import {createChatSession} from './chat-session.mjs';
 import {createPersonalization,personalizationInstructions} from './personalization.mjs';
 import {createAssistantFeatures,backgroundNotificationEvent} from './assistant-features.mjs';
 import {randomUUID,createHash} from 'node:crypto';
-import {join} from 'node:path';
+import {join,basename} from 'node:path';
 import {createCredentialVault,credentialIdentity} from './credential-vault.mjs';
 import {createProjectMemory} from './project-memory.mjs';
 import {createPrivateRecord} from './private-state.mjs';
@@ -58,6 +58,14 @@ import {performanceDetails} from './performance-view.mjs';
 import {createAiActivity} from './ai-activity.mjs';
 import {createNotifications} from './notifications.mjs';
 import {closeNativeSession,isSessionCleanupError} from './session-cleanup.mjs';
+import {createPromptLabels} from './prompt-label.mjs';
+import {createEventLog} from './event-log.mjs';
+import {createProjectChanges} from './project-changes.mjs';
+import {startGuiServer} from './gui-server.mjs';
+import {openGui} from './gui-launcher.mjs';
+import {buildGuiSnapshot} from './gui-state.mjs';
+import {readTerminalClipboard} from './terminal-clipboard.mjs';
+import {restorePendingPrompts} from './pending-prompts.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -74,18 +82,26 @@ export async function runUI(opts) {
     for (const key of secrets) if (key) text = text.split(key).join('[redacted]');
     return text;
   };
-  let dashboard,slashMenu,scrollInput;
-  const terminalTheme=createTerminalTheme({directory:join(stateOptions.stateDir,'preferences'),color,onChange:()=>{dashboard?.redraw();if(slashMenu?.snapshot().active)slashMenu.refresh();else if(!dashboard?.isScrolled()&&currentPrompt&&!currentPrompt.hidden)rl?.prompt(true);}});
+  let dashboard,slashMenu,scrollInput,gui,guiMode=false,inputReady=false,composerScheduled=false,lastInputLiteral=false,busyPastedLiteral=false;
+  const earlyInputs=[];
+  const guiClosures=new Set(),pastedChunks=new Map();
+  const events=createEventLog({secrets:()=>secrets});
+  const promptLabels=createPromptLabels();
+  const renderComposer=()=>{composerScheduled=false;if(guiMode||slashMenu?.snapshot().active)return;dashboard?.setInput?.({prompt:currentPrompt?safe(currentPrompt.prompt):inputReady?promptLabels.next().label+' ':'Starting SUDO CLI… ',text:currentPrompt?.hidden?'':rl?.line||'',cursor:currentPrompt?.hidden?0:rl?.cursor||0,hidden:!!currentPrompt?.hidden});};
+  const scheduleComposer=()=>{if(!composerScheduled){composerScheduled=true;queueMicrotask(renderComposer);}};
+  const terminalTheme=createTerminalTheme({directory:join(stateOptions.stateDir,'preferences'),color,onChange:()=>{dashboard?.redraw();if(slashMenu?.snapshot().active)slashMenu.refresh();else renderComposer();}});
   const write = (text,options) => dashboard ? dashboard.write(text,options) : process.stdout.write(terminalTheme.styleBodyText(text,options));
-  const note = (text) => {
+  const note = (text,{kind='info'}={}) => {
     const message = `${dim('  ·')} ${safe(text)}\n`;
-    if (once) process.stderr.write(message); else write(message);
+    const entry=events.add(safe(text),{kind});
+    if (once) process.stderr.write(message); else if(dashboard?.event)dashboard.event(`${new Date(entry.timestamp).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'})} · ${entry.text}`);else write(message);
     if(slashMenu?.snapshot().active)slashMenu.refresh();
   };
   const cwd = resolve(opts.cwd || process.cwd());
   if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Error('Project directory does not exist. Choose a directory with --cwd.');
   const initialConnection=!interactive?await configureConnection({opts,interactive:false,ask:async()=>{throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');}}):undefined;
   await requireElevated();
+  const projectChanges=createProjectChanges({cwd,secrets:()=>secrets,excludePaths:[stateOptions.stateDir]});
   const session = createSessionState({ cwd });
   const settings = { permissions: opts.permissions || 'ask',scope:opts.scope||(opts.permissions==='allow-everything'?'full':'project'), webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
   for (const entry of opts.mcp || []) { const {name,url}=parseMcpEntry(entry); if(settings.mcp.has(name))throw new Error('Duplicate MCP server name.');settings.mcp.set(name,url); }
@@ -100,7 +116,7 @@ export async function runUI(opts) {
   const notificationDeliveries=new Set();
   const backgroundNotifications=new Set();let backgroundCleanupFailure;
   const deliverNotification=(event,id)=>{const delivery=Promise.resolve().then(()=>notifications.notify(event,{id})).catch(()=>{});notificationDeliveries.add(delivery);void delivery.finally(()=>notificationDeliveries.delete(delivery));return delivery;};
-  const notify=(event,id)=>{if(!quitting)void deliverNotification(event,id);};
+  const notify=(event,id)=>{if(!quitting){const text=({approval:'AI needs your approval.',error:'An error needs attention.',done:'AI work finished.',interrupted:'AI work stopped.',connected:'AI connection is online.',disconnected:'AI connection closed.'})[event];if(text)note(text,{kind:event});void deliverNotification(event,id);}};
   const notifyError=error=>{if(error&&typeof error==='object'){if(notifiedErrors.has(error))return;notifiedErrors.add(error);}notify('error',randomUUID());};
   const notifyBackground=outcome=>{
     const cleanup=isSessionCleanupError(outcome),event=backgroundNotificationEvent(outcome),key=event+'\0'+outcome.notificationId;
@@ -117,28 +133,30 @@ export async function runUI(opts) {
   let activity = 'Offline shell', currentPrompt = null;
 
   let muted = false;
-  const output = new Writable({ write(chunk, _encoding, done) { if (!muted&&!dashboard?.isScrolled()) {const text=Buffer.isBuffer(chunk)?chunk.toString('utf8'):String(chunk);process.stdout.write(terminalTheme.styleUserInput(text));} done(); } });
+  const output = new Writable({ write(chunk, _encoding, done) { if(guiMode||dashboard?.managed)scheduleComposer();else if (!muted&&!dashboard?.isScrolled()) {const text=Buffer.isBuffer(chunk)?chunk.toString('utf8'):String(chunk);process.stdout.write(terminalTheme.styleUserInput(text));} done(); } });
   output.isTTY = process.stdout.isTTY;
-  Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
+  Object.defineProperty(output, 'columns', { get: () => dashboard?.inputArea().columns||process.stdout.columns });
   let rl;
-  const pasteInput=interactive?createPasteInput({input:process.stdin,onPaste:text=>{slashMenu?.closeMenu({reason:'paste',restore:false});if(dashboard?.isScrolled())dashboard.scrollToBottom();if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){enqueue(text,{literal:true});return '';}return text.replace(/\n/g,' ');},onError:error=>note(error.message)}):undefined;
-  const scrollAction=name=>{if(name==='page-up')return dashboard?.pageUp();if(name==='page-down')return dashboard?.pageDown();if(name==='top')return dashboard?.scrollToTop();if(name==='bottom')return dashboard?.scrollToBottom();return dashboard?.scroll(name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:1);};
-  if(interactive)scrollInput=createChatScrollInput({input:pasteInput,getContext:()=>({enabled:process.env.TERM!=='dumb'&&!slashMenu?.snapshot().active&&(!currentPrompt||currentPrompt.input&&!currentPrompt.hidden&&!currentPrompt.raw),paused:!!dashboard?.isScrolled()}),onScroll:scrollAction,onLive:()=>dashboard?.scrollToBottom(),onError:error=>note(error.message)});
-  const terminalInput=interactive?slashMenu=createSlashMenuInput({input:scrollInput,getContext:()=>({enabled:!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
-    getSize:()=>{const area=dashboard?.inputArea()||{columns:Math.max(1,(process.stdout.columns||80)-1),rows:Math.max(3,(process.stdout.rows||24)-2)};return {...area,rows:Math.max(1,area.rows-1)};},
-    onRender:view=>{const area=dashboard?.inputArea();if(!area)return;const lines=view.lines.map((line,index)=>index===view.cursor?.row?terminalTheme.styleUserText(line):index===0||line.startsWith('>')?green(line):line);const cursor=view.cursor||{row:0,column:0};const row=Math.min(area.bottom,area.top+cursor.row),column=Math.min(area.columns,1+cursor.column);process.stdout.write(terminalTheme.styleBodyText(`\x1b[?25l\x1b[${area.top};1H\x1b[J`+lines.map(line=>line+'\x1b[K').join('\r\n'))+`\x1b[${row};${column}H${terminalTheme.userStyle}\x1b[?25h`);},
-    onClose:({selected,query,restore})=>{dashboard?.redraw();if(currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&(selected||restore)){rl?.write(null,{ctrl:true,name:'u'});rl?.write(selected||'/'+query);}},onError:error=>note(error.message),
+  const expandPastes=text=>{for(const [marker,value]of pastedChunks)text=text.split(marker).join(value);return text;};
+  const pasteInput=interactive?createPasteInput({input:process.stdin,readClipboard:async options=>{const target=currentPrompt,id=target?.id;const text=await readTerminalClipboard(options);return currentPrompt===target&&currentPrompt?.id===id?text:'';},onPaste:text=>{if(!text)return '';slashMenu?.closeMenu({reason:'paste',restore:false});if(dashboard?.isScrolled())dashboard.scrollToBottom();if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){busyPastedLiteral=true;if(currentPrompt)currentPrompt.literal=true;if(text.includes('\n')){const marker=`[Paste ${randomUUID().slice(0,8)}: ${text.split('\n').length} lines]`;pastedChunks.set(marker,text);return marker;}return text;}return text.replace(/\n/g,' ');},onError:error=>{note(error.message);if(isSessionCleanupError(error)){backgroundCleanupFailure??=error;primaryFailure??=error;terminate();}else notifyError(error);}}):undefined;
+  const scrollAction=(name,metadata={})=>{if(guiMode)return;const panel=metadata.x?dashboard?.panelAt?.(metadata):dashboard?.eventsState?.().focused?'events':'chat';if(name==='focus-next')return dashboard?.focusPanel?.('next');if(name==='pointer'){if(metadata.release||!panel)return false;dashboard?.focusPanel?.(panel);return dashboard?.scrollPanel?.(panel,'pointer',metadata);}if(dashboard?.scrollPanel)return dashboard.scrollPanel(panel,name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:name==='line-down'?1:name,metadata);if(name==='page-up')return dashboard?.pageUp();if(name==='page-down')return dashboard?.pageDown();if(name==='top')return dashboard?.scrollToTop();if(name==='bottom')return dashboard?.scrollToBottom();return dashboard?.scroll(name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:1);};
+  if(interactive)scrollInput=createChatScrollInput({input:pasteInput,getContext:()=>({enabled:!guiMode&&process.env.TERM!=='dumb'&&!slashMenu?.snapshot().active&&(!currentPrompt||currentPrompt.input&&!currentPrompt.hidden&&!currentPrompt.raw),paused:!!dashboard?.isScrolled()}),onScroll:scrollAction,onLive:()=>dashboard?.scrollToBottom(),onError:error=>note(error.message)});
+  const terminalInput=interactive?slashMenu=createSlashMenuInput({input:scrollInput,getContext:()=>({enabled:!guiMode&&!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
+    getSize:()=>{const area=dashboard?.menuArea?.()||dashboard?.inputArea()||{columns:Math.max(1,(process.stdout.columns||80)-1),rows:Math.max(3,(process.stdout.rows||24)-2)};return {...area,rows:Math.max(1,area.rows-1)};},
+    onRender:view=>{if(dashboard?.renderMenu){dashboard.renderMenu(view);return;}const area=dashboard?.inputArea();if(!area)return;const lines=view.lines.map((line,index)=>index===view.cursor?.row?terminalTheme.styleUserText(line):index===0||line.startsWith('>')?green(line):line);const cursor=view.cursor||{row:0,column:0};const row=Math.min(area.bottom,area.top+cursor.row),column=Math.min(area.columns,1+cursor.column);process.stdout.write(terminalTheme.styleBodyText(`\x1b[${area.top};1H`+lines.map(line=>line+'\x1b[K').join('\r\n'))+`\x1b[${row};${column}H${terminalTheme.userStyle}`);},
+    onClose:({selected,query,restore})=>{if(dashboard?.renderMenu)dashboard.renderMenu({active:false});else dashboard?.redraw();if(currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&(selected||restore)){busyPastedLiteral=false;currentPrompt.literal=false;pastedChunks.clear();rl?.write(null,{ctrl:true,name:'u'});rl?.write(selected||'/'+query);}},onError:error=>note(error.message),
   }):undefined;
   rl = interactive ? createInterface({ input: terminalInput, output, terminal: true, completer: completeCommand }) : null;
+  terminalInput?.on('keypress',(_text,key)=>{if((key?.ctrl&&key.name==='u'||['backspace','delete'].includes(key?.name))&&!rl?.line){busyPastedLiteral=false;if(currentPrompt?.input)currentPrompt.literal=false;pastedChunks.clear();}});
   const prompts = createPromptQueue({ question: async (prompt, { signal, hidden, input,raw }) => {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');
     if(!input&&dashboard?.isScrolled())dashboard.scrollToBottom();
     if(input&&engine&&queuedInputs.length)throw new DOMException('A queued task is ready.','AbortError');
     const localController=new AbortController();let resolvePaste;const pasted=new Promise(resolve=>{resolvePaste=text=>{resolve(text);localController.abort();};});
-    currentPrompt = { prompt, hidden, input,raw,resolvePaste };
-    if (hidden) { process.stdout.write(terminalTheme.styleBodyText(prompt)); muted = true; }
-    try { const answer=await Promise.race([rl.question(hidden ? '' : prompt, { signal:AbortSignal.any([signal,localController.signal]) }),pasted]);return raw?answer:answer.trim(); }
-    finally { slashMenu?.closeMenu({reason:'prompt',restore:false});if (hidden) { muted = false; process.stdout.write('\n'); } currentPrompt = null; }
+    currentPrompt = { id:randomUUID(),prompt, hidden, input,raw,resolvePaste,literal:!!input&&busyPastedLiteral };
+    if (hidden) { if(!dashboard?.managed&&!guiMode)process.stdout.write(terminalTheme.styleBodyText(prompt)); muted = true; }
+    try { const answer=await Promise.race([rl.question(hidden ? '' : prompt, { signal:AbortSignal.any([signal,localController.signal]) }),pasted]);if(input){lastInputLiteral=currentPrompt.literal||busyPastedLiteral;const expanded=expandPastes(answer);pastedChunks.clear();busyPastedLiteral=false;return expanded.trim();}return raw?answer:answer.trim(); }
+    finally { slashMenu?.closeMenu({reason:'prompt',restore:false});if (hidden) { muted = false;if(!dashboard?.managed&&!guiMode)process.stdout.write('\n'); }if(input&&!rl.line){busyPastedLiteral=false;pastedChunks.clear();}currentPrompt = null;scheduleComposer(); }
   } });
   const ask = (prompt, hidden = false, metadata) => prompts.ask(green(prompt), hidden, metadata);
 
@@ -146,18 +164,36 @@ export async function runUI(opts) {
   const queuedInputs = [];
   let saving=0;
   const checkpoint=()=>{if(!chatSession)return Promise.resolve();saving++;return chatSession.checkpoint().catch(()=>note('Chat could not be saved. Existing saved data was preserved.')).finally(()=>saving--);};
-  const enqueue=(text,options={})=>{if(quitting)return;const entry={text,recorded:false,displayed:false,...options};queuedInputs.push(entry);if(currentPrompt?.input)prompts.cancel();if(!entry.displayed&&dashboard){dashboard.write(`\n  you › ${safe(text)}\n`,{user:true});entry.displayed=true;}void checkpoint();};
+  const acceptSubmission=()=>{const meta=promptLabels.submit();history.recordSubmission(meta);return meta;};
+  const displaySubmission=(text,meta,{remember=false}={})=>{const shown=`\n  ${meta?.label||promptLabels.next().label} ${safe(text)}\n`;if(remember)dashboard?.remember(shown,{user:true});else dashboard?.write(shown,{user:true});};
+  const enqueue=(text,options={})=>{if(quitting)return;const entry={text,recorded:false,displayed:false,promptMeta:options.promptMeta||acceptSubmission(),...options};queuedInputs.push(entry);if(currentPrompt?.input)prompts.cancel();if(!entry.displayed&&dashboard){displaySubmission(text,entry.promptMeta);entry.displayed=true;}void checkpoint();};
   const displayed = new Set();
   if (interactive) dashboard = createDashboard({ snapshot, activity: () => activity, color,theme:()=>terminalTheme,
     onResize: () => {
       if (!rl) return;
-      if(dashboard?.isScrolled()){process.stdout.write('\x1b[?25l');return;}
       if(slashMenu?.snapshot().active){slashMenu.refresh();return;}
-      if (!currentPrompt) { if(busy && rl.line)rl.prompt(true);return; }
-      if (currentPrompt.hidden) process.stdout.write(terminalTheme.styleBodyText(currentPrompt.prompt));
-      else rl.prompt(true);
+      renderComposer();
     },
   });
+  const guiSnapshot=()=>buildGuiSnapshot({session:{...snapshot(),version:VERSION,project:basename(cwd),activity,performance:{groups:performanceDetails(performanceMonitor.snapshot())}},history:history.snapshot(),events:events.snapshot(),prompt:currentPrompt,changes:projectChanges.snapshot(),commands:COMMANDS,theme:terminalTheme.get(),secrets:()=>secrets});
+  const closeGui=async()=>{const current=gui;gui=undefined;guiMode=false;if(current)await current.close();dashboard?.resume?.();renderComposer();};
+  const activateGui=async()=>{
+    if(!interactive)throw new Error('/gui requires an interactive sudocli session.');
+    if(gui)return;
+    const server=await startGuiServer({getSnapshot:guiSnapshot,onAction:async action=>{
+      if(!guiMode||quitting)throw new Error('This GUI session is closed. Open /gui again.');
+      if(action.type==='return'){guiMode=false;gui=undefined;dashboard?.resume?.();note('Returned to terminal.');renderComposer();return {ok:true};}
+      if(action.type==='answer'){if(!currentPrompt||currentPrompt.input||currentPrompt.id!==action.promptId)throw new Error('That question is no longer active.');const target=currentPrompt;target.id='';target.resolvePaste(action.text);return {ok:true};}
+      if(action.type==='changes'){if(action.path){const diff=await projectChanges.diff(action.path);return {diff:safe(diff).slice(0,120000),truncated:diff.length>120000};}await projectChanges.refresh();return {changes:guiSnapshot().changes};}
+      if(action.type==='stop'){if(busy||settings.serviceController)signal();else await assistantFeatures?.stop();return {ok:true};}
+      if(action.type==='submit'){if(currentPrompt&&!currentPrompt.input)throw new Error('Answer the current question first.');const text=action.text?.trim();if(!text)throw new Error('Enter a prompt or command.');if(busy)receiveDuringWork(text,{literal:!!action.literal});else enqueue(text,{literal:!!action.literal});return {ok:true};}
+      throw new Error('Unsupported GUI action.');
+    }});
+    gui=server;guiMode=true;const token=new URLSearchParams(new URL(server.url).hash.slice(1)).get('token');if(token)secrets.push(token);
+    guiClosures.add(server);slashMenu?.closeMenu({reason:'gui',restore:false});dashboard?.suspend?.();
+    try{const result=await openGui(server.url);note('GUI opened. Use Return to terminal to come back.');if(!result.opened)process.stdout.write(`\nOpen this local URL in your normal browser:\n${server.url}\n${safe(result.reason||'')}\n`);}
+    catch(error){await closeGui();throw error;}
+  };
   const metrics = ({ phase, id, latencyMs,...measured }) => {
     const before=session.snapshot().connectionState;
     if (phase === 'started') health.requestStarted(id);
@@ -199,15 +235,17 @@ export async function runUI(opts) {
   };
   const handleRuntimeCommands=async command=>{
     const {name,args=[]}=command;
+    if(name==='/gui'){if(args.length)throw new Error('Use /gui to open the graphical interface.');await activateGui();return true;}
+    if(name==='/changes'&&(!args.length||args[0]==='file')){
+      if(args.length){if(args.length!==2)throw new Error('Use /changes file "RELATIVE_PATH".');note(await projectChanges.diff(args[1]));return true;}
+      const current=await projectChanges.refresh(),lines=[];let bytes=0;
+      for(const file of current.files){const line=`${file.status.padEnd(8)} ${file.path}`;if(bytes+Buffer.byteLength(line)>50000)break;bytes+=Buffer.byteLength(line)+1;lines.push(line);}
+      note(`Observed project changes: ${current.files.length}`+(current.partial?' (partial inventory)':'')+'\n\n'+(lines.length?lines.join('\n'):'No file changes observed.')+(lines.length<current.files.length?`\nDisplay limit: showing ${lines.length} of ${current.files.length} detected files.`:'')+(current.reason?'\n'+current.reason:'')+'\n\n/changes file "PATH" opens a read-only diff.');return true;
+    }
     if(name==='/notify'){
       if(args[0]==='test'){if(args.length!==2||!['approval','error','done','interrupted','connected','disconnected'].includes(args[1]))throw new Error('Use /notify test approval|error|done|interrupted|connected|disconnected.');const result=await notifications.notify(args[1],{id:randomUUID()});note(`Notification test (${args[1]}): ${result.status}.`);return true;}
       if(args.length>1||args.length&&!['on','off','status'].includes(args[0]))throw new Error('Use /notify on, /notify off, or /notify status.');
       const status=args[0]&&args[0]!=='status'?await notifications.set(args[0]):notifications.get();note(`Notifications: ${status.enabled?'On':'Off'} · sound backend: ${status.backend}.${status.last?` Last: ${status.last.event} · ${status.last.status}${status.last.reason?' · '+status.last.reason:''}.`:''} /notify test approval|error|done|interrupted previews the tones.`);return true;
-    }
-    if(name==='/performance'){
-      if(args.length>1||args.length&&!['status','refresh'].includes(args[0]))throw new Error('Use /performance [status|refresh].');
-      if(args[0]==='refresh')await performanceMonitor.sample();
-      const current=performanceMonitor.snapshot();note('Performance (This PC)\n\n'+performanceDetails(current).map(block=>[block.title,...block.fields.map(item=>`${item.label}: ${item.value}`),...(block.capacitySource==='windows-driver-registry-qword'?['Capacity: reported by the installed Windows driver']:[])].filter(Boolean).join('\n')).join('\n\n'));return true;
     }
     if(name==='/scroll'){
       const action=args[0]||'up';if(args.length>1||!['up','down','top','bottom','live'].includes(action))throw new Error('Use /scroll up|down|top|bottom.');
@@ -379,7 +417,7 @@ export async function runUI(opts) {
     activity = 'Ready'; dashboard?.refresh();
     if (!once) {
       note(`Configured: ${selected.model} · ${new URL(selected.baseUrl).host}. API status is confirmed by its first response.`);
-      note('Enter a task. / opens commands; Tab completes them. /switch selects a saved or local AI.');
+      note('Enter a task. / opens commands; Tab selects Chat or Events. /switch selects a saved or local AI.');
       if(transfer)note('Full visible chat queued for the new AI with your next prompt.');
       if (!settings.webAccess && settings.permissions === 'allow-everything') note('Web Off keeps native commands inside the network-disabled sandbox, even with Allow Everything.');
       if (engine.runtimePolicy?.sandbox?.type === 'readOnly') note('Native engine is using a read-only sandbox here; writes may require approval.');
@@ -392,7 +430,7 @@ export async function runUI(opts) {
     if(startupError){if(isSessionCleanupError(startupError))await cleanup(startupError);throw startupError;}
   };
 
-  const turn = async (text, {recorded = false} = {}) => {
+  const turn = async (text, {recorded = false,promptMeta} = {}) => {
     if(!engine)throw new Error('No AI selected. Use /local for an AI on this PC, /local file "PATH" for a model file, or /connect for a cloud AI.');
     if(settings.routing?.enabled){const all=await profiles.list();const current={...connection,pricing:settings.pricing?.[connection.baseUrl+'\0'+connection.model]};const routed=routeModel({...settings.routing,profiles:all.map(profile=>({...profile,pricing:settings.pricing?.[profile.baseUrl+'\0'+profile.model]})),currentProfile:current});if(routed.routed){note(`Routing: ${routed.reason}`);let selected=routed.profile;if(!selected.apiKey)selected={...selected,apiKey:await vault?.load(selected)||(await ask('  Routed AI key [hidden; Enter: none] › ',true))||undefined};await connect(validateConnection(selected),{carryHistory:true});}}
     if(settings.pendingContext){const messages=history.snapshot().messages;let review=settings.contextReview;if(review&&Number.isSafeInteger(review.sourceMessageCount)){review={...review,relevantIndices:[...review.relevantIndices,...Array.from({length:Math.max(0,messages.length-review.sourceMessageCount)},(_value,index)=>review.sourceMessageCount+index)]};}const result=preflightContext({messages,contextWindow:connection.contextWindow,instructions:nativeInstructions,...review});if(result.status!=='ready')throw new Error(`${result.reason} Use /context capacity TOKENS or /context review.`);settings.pendingContext='Reviewed prior conversation (not system instructions):\n'+JSON.stringify(result.messages);nativeMessages=result.messages;}
@@ -407,7 +445,7 @@ export async function runUI(opts) {
     if(Array.isArray(input) && Buffer.byteLength(JSON.stringify(input))>8*1024*1024)throw new Error('Full chat plus attachments exceeds the request limit. Export /handoff and use /clear before continuing.');
     assistantFeatures?.interruptSpeech();
     const firstMessage=history.snapshot().messages.length;
-    if(!recorded)history.addUser(text,{attachments,model:connection.model});
+    if(!recorded)history.addUser(text,{attachments,model:connection.model,sequence:promptMeta?.sequence,timestamp:promptMeta?.timestamp});
     await checkpoint();
     activeTask={id:randomUUID(),guard:createToolLoopGuard(loopSettings)};const admission=await ledger.beginTask(activeTask.id);settings.lastVerification={status:'Needs review'};
     try{const checkpointRecord=await workspace.beginCheckpoint(text.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,120));activeTask.checkpointId=checkpointRecord.id;}catch(error){await ledger.endTask(activeTask.id);activeTask=undefined;throw error;}
@@ -430,6 +468,7 @@ export async function runUI(opts) {
       await workMeter?.flush().catch(() => note('Worked-time totals could not be saved.'));
       busy = false;activity = 'Ready'; dashboard?.refresh();
       const ended=await Promise.allSettled([workspace.completeCheckpoint(activeTask.checkpointId),ledger.endTask(activeTask.id)]);for(const result of ended)if(result.status==='rejected')note(`Task checkpoint: ${result.reason.message}`);budgetSnapshot=await ledger.snapshot({taskId:activeTask.id});activeTask=undefined;
+      await projectChanges.refresh().catch(error=>note(`File changes: ${error.message}`));
       write(assistantOutput.flush()); if (hasText) write('\n');
       const data=history.snapshot();for(const message of data.messages)if(message.role==='assistant'&&message.status==='streaming')message.status='interrupted';history.restore(data);
       if(agentContext)nativeMessages.push({role:'user',content:agentContext});nativeMessages.push(...data.messages.slice(firstMessage));
@@ -459,26 +498,33 @@ export async function runUI(opts) {
   process.on('SIGHUP', terminate);
   rl?.on('SIGINT', signal);
   rl?.once('close', terminate);
-  rl?.on('line', text => {
-    if(!busy || currentPrompt || !text.trim())return;
-    dashboard?.remember(`\n  you › ${safe(text)}\n`,{user:true});
-    if(text.trim()==='/stop'){signal();return;}
-    if(/^\/notify(?:\s|$)/i.test(text)){try{void handleRuntimeCommands(parseCommand(text)).catch(error=>{notifyError(error);note(error.message);});}catch(error){notifyError(error);note(error.message);}return;}
-    if(/^\/agents?\s+(status|stop|steer)(\s|$)/i.test(text)){
+  const receiveDuringWork=(text,{literal=false,promptMeta=acceptSubmission(),remember=false}={})=>{
+    displaySubmission(text,promptMeta,{remember});
+    if(!literal&&text.trim()==='/stop'){signal();void checkpoint();return;}
+    if(!literal&&/^\/notify(?:\s|$)/i.test(text)){try{void handleRuntimeCommands(parseCommand(text)).catch(error=>{notifyError(error);note(error.message);});}catch(error){notifyError(error);note(error.message);}void checkpoint();return;}
+    if(!literal&&/^\/agents?\s+(status|stop|steer)(\s|$)/i.test(text)){
       try{const command=parseCommand(text);void agents?.handle(command).catch(error=>note(error.message));}catch(error){note(error.message);}return;
     }
-    if(text.startsWith('/steer ')){
-      const message=text.slice(7).trim();history.addUser(message,{model:connection?.model});
+    if(!literal&&text.startsWith('/steer ')){
+      const message=text.slice(7).trim();history.addUser(message,{model:connection?.model,sequence:promptMeta.sequence,timestamp:promptMeta.timestamp});
       void checkpoint();
       engine?.steer(message).then(()=>note('Prompt sent to the active turn.')).catch(error=>note(error.message));return;
     }
-    enqueue(text,{displayed:true});note(`Queued prompt ${queuedInputs.length}; current work continues. /stop interrupts it.`);
+    enqueue(text,{displayed:true,promptMeta,literal});note(`Queued prompt ${queuedInputs.length}; current work continues. /stop interrupts it.`);
+  };
+  rl?.on('line', text => {
+    if(currentPrompt || quitting || !text.trim())return;
+    const expanded=expandPastes(text),literal=busyPastedLiteral;pastedChunks.clear();busyPastedLiteral=false;
+    if(!inputReady){if(earlyInputs.length<100)earlyInputs.push({text:expanded,literal});else note('Startup input queue is full. Send the prompt again after startup.');}
+    else if(busy)receiveDuringWork(expanded,{literal,remember:false});else enqueue(expanded,{literal});
+    renderComposer();
   });
   try {
     await notifications.load().catch(()=>note('Notification preferences could not be loaded; sounds are disabled.'));
     await terminalTheme.load();
     dashboard?.start();
-    if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h\x1b[?1000h\x1b[?1006h');
+    await projectChanges.initialize().catch(error=>note(`File changes unavailable: ${error.message}`));
+    if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h');
     const selected = initialConnection;
     if(selected?.apiKey)secrets.push(selected.apiKey);
     workMeter = await createWorkMeter(stateOptions);profiles=await createModelProfiles(stateOptions);
@@ -491,16 +537,18 @@ export async function runUI(opts) {
     vault=await createCredentialVault(stateOptions);memory=await createProjectMemory({...stateOptions,cwd,secrets:()=>secrets});workspace=await createWorkspaceTools({...stateOptions,cwd,secrets:()=>secrets});
     workflow=createWorkflow({cwd,workspace,connectionProvider:()=>connection,settingsProvider:()=>settings,secrets:()=>secrets,runtimeProvider:async({connection:selected})=>{const id=randomUUID(),limits=await ledger.beginTask(id);operationTasks.push(id);const operation=operationState;if(operation)operation.aiPerformed=true;aiActivity.begin('agent',id);return {taskTimeoutMs:limits.timeoutMs,requestHooks:ledger.requestHooks({taskId:id,pricing:settings.pricing[selected.baseUrl+'\0'+selected.model]}),onTaskEnd:async({status}={})=>{aiActivity.end(id);if(operation){if(status==='cancelled')operation.cancelled=true;else if(status!=='completed')operation.failed=true;}await ledger.endTask(id);const index=operationTasks.indexOf(id);if(index>=0)operationTasks.splice(index,1);budgetSnapshot=await ledger.snapshot();dashboard?.refresh();}};}});
     const store=await createChatStore({...stateOptions,cwd,secrets:()=>secrets});personalization=await createPersonalization({...stateOptions,secrets:()=>secrets});
-    chatSession=createChatSession({store,history,getConnection:()=>connection,getPending:()=>queuedInputs.map(input=>input.text)});
+    chatSession=createChatSession({store,history,getConnection:()=>connection,getPending:()=>queuedInputs.map(input=>input.text),getPendingSubmissions:()=>queuedInputs.map(input=>({sequence:input.promptMeta.sequence,timestamp:input.promptMeta.timestamp,literal:!!input.literal}))});
     const resumed=await chatSession.resumeLast();
+    promptLabels.restore(history.snapshot());
     features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>{assistantFeatures?.interruptSpeech();settings.serviceController?.abort();return engine?.interrupt().catch(()=>{});}});
-    const chatBody=()=>history.snapshot().messages.map(message=>({text:`\n  ${message.role==='user'?'you':'sudo'}${message.model?' · '+safe(message.model):''}\n${safe(message.content)}\n`,user:message.role==='user'}));
-    const restoreChat=async({reason}={})=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;settings.pendingAgentContext='';const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];if(reason==='new')dashboard?.clearBody();else dashboard?.replaceBody(chatBody());if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';if(reason==='new')dashboard?.clearBody();else dashboard?.replaceBody(chatBody());};
+    const chatBody=()=>history.snapshot().messages.map(message=>({text:`\n  ${message.role==='user'?`${message.timestamp?new Date(message.timestamp).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}):'--:--'} ${message.sequence?String(message.sequence).padStart(2,'0')+'@':''}you >`:'sudo'}${message.model?' · '+safe(message.model):''}\n${safe(message.content)}\n`,user:message.role==='user'}));
+    const restorePending=record=>queuedInputs.push(...restorePendingPrompts({record,history,labels:promptLabels}));
+    const restoreChat=async({reason}={})=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;settings.pendingAgentContext='';const record=chatSession.current();promptLabels.restore(history.snapshot());restorePending(record);settings.attachments=[];settings.skills=[];if(reason==='new')dashboard?.clearBody();else dashboard?.replaceBody(chatBody());if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';if(reason==='new')dashboard?.clearBody();else dashboard?.replaceBody(chatBody());renderComposer();};
     assistantFeatures=createAssistantFeatures({cwd,stateDir:stateOptions.stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection:()=>connection,reconnect:connect,onChatChange:restoreChat,enqueue,secrets:()=>secrets,loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),extraInstructions:async()=>[await memory.instructions(),upgrades?.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),
       rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},interrupt:()=>{assistantFeatures?.interruptSpeech();if(busy&&!currentPrompt)void engine?.interrupt().catch(()=>{});},
       onVoiceState:state=>{if(!busy&&!backgroundWorking)activity=state?.status||'Ready';dashboard?.refresh();},
       onBackgroundState:state=>{const working=['assessing','working'].includes(state?.state);backgroundWorking=working;if(working)aiActivity.begin('background','background');else aiActivity.end('background');dashboard?.refresh();},
-      onBackgroundResult:async outcome=>{notifyBackground(outcome);const {job,text,reason,model,status}=outcome;history.addUser(`[24/7 task ${job.id}] ${job.prompt}`,{model});if(text)history.finishAssistant(`background:${randomUUID()}`,`Task status: ${status||'Needs review'}\n${text}`,{model});await checkpoint();note(`24/7 task ${job.id} ${status||'Needs review'}: ${text||reason||'Inspect /247 result for details.'}`);},
+      onBackgroundResult:async outcome=>{notifyBackground(outcome);const {job,text,reason,model,status}=outcome;const request=`[24/7 task ${job.id}] ${job.prompt}`;history.addUser(request,{model});write(`\n  24/7 task ${safe(job.id)}\n${safe(job.prompt)}\n`,{user:true});if(text){const answer=`Task status: ${status||'Needs review'}\n${text}`;history.finishAssistant(`background:${randomUUID()}`,answer,{model});write(`\n  sudo · ${safe(model||'24/7')}\n${safe(answer)}\n`);}await checkpoint();await projectChanges.refresh().catch(error=>note(`File changes: ${error.message}`));note(`24/7 task ${job.id} ${status||'Needs review'}${!text&&reason?': '+reason:'. Inspect /247 result for details.'}`);},
       onBackgroundError:notifyBackground,
       onApproval:async({method,params})=>{if(!interactive||quitting)return false;if(currentPrompt?.input)prompts.cancel();aiActivity.pause('background');dashboard?.refresh();notify('approval',`background:${params.itemId||params.callId||randomUUID()}`);note(`24/7 permission: ${method} · ${params.command||params.reason||'approval required'}`);try{return /^y(es)?$/i.test(await ask('  Allow once? [y/N] › '));}finally{backgroundWorking=!quitting&&['assessing','working'].includes(assistantFeatures?.snapshot().agent?.state);if(backgroundWorking)aiActivity.resume('background');else aiActivity.end('background');dashboard?.refresh();}},
     });
@@ -509,8 +557,8 @@ export async function runUI(opts) {
       loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},
       extraInstructions:async()=>[await memory.instructions(),upgrades.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),runOperation,
       onState:state=>{if(state.name)activity=`Agent ${state.name}: ${state.status}`;dashboard?.refresh();},
-      onTask:async({task,mode})=>{history.addUser(`[Agents ${mode}] ${task}`);await checkpoint();},onGuidance:async({name,text})=>{history.addUser(`[Agent ${name} guidance] ${text}`);await checkpoint();},
-      onResult:async record=>{for(const result of record.results)history.finishAssistant(`agent:${record.id}:${result.name}`,`Agent ${result.name} (${result.model}) · ${result.status}\n${result.text||result.error||'No text returned.'}`,{model:result.model});const queued=queueAgentContext(settings,record);if(queued.truncated)note('Agent text was shortened for the next AI prompt. Full reports remain in /agents result.');await checkpoint();},
+      onTask:async({task,mode})=>{history.addUser(`[Agents ${mode}] ${task}`);write(`\n  Agents · ${safe(mode)}\n${safe(task)}\n`,{user:true});await checkpoint();},onGuidance:async({name,text})=>{history.addUser(`[Agent ${name} guidance] ${text}`);write(`\n  Agent guidance · ${safe(name)}\n${safe(text)}\n`,{user:true});await checkpoint();},
+      onResult:async record=>{for(const result of record.results){const answer=`Agent ${result.name} (${result.model}) · ${result.status}\n${result.text||result.error||'No text returned.'}`;history.finishAssistant(`agent:${record.id}:${result.name}`,answer,{model:result.model});write(`\n  sudo · ${safe(result.model)}\n${safe(answer)}\n`);}const queued=queueAgentContext(settings,record);if(queued.truncated)note('Agent text was shortened for the next AI prompt. Full reports remain in /agents result.');await checkpoint();await projectChanges.refresh().catch(error=>note(`File changes: ${error.message}`));},
     });
     localFiles=createLocalFileCommands({cwd,settings,profiles,ask,note,reconnect:connect,runOperation});
     let resetRefresh=false;
@@ -550,25 +598,26 @@ export async function runUI(opts) {
     if(interactive){await network.start();performanceMonitor.start();}
     if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chat remains available.`);}}
     else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chat.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
-    if(resumed){dashboard?.replaceBody(chatBody());settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chat opens saved chats.`);}
+    if(resumed){dashboard?.replaceBody(chatBody());settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';restorePending(resumed);if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chat opens saved chats.`);}
+    inputReady=true;for(const input of earlyInputs.splice(0))enqueue(input.text,{literal:input.literal});renderComposer();
     await chatSession.ensure();await checkpoint();
     if(interactive&&updateSettings.enabled){try{await checkUpdates();}catch(error){if(error.name!=='AbortError'&&!quitting)note(`Update check: ${error.message}`);}}
     saveTimer=setInterval(()=>{if((busy||backgroundWorking)&&saving===0)void checkpoint();},1000);saveTimer.unref();
     if (once) { await turn(opts.once); return; }
     while (!quitting) {
-      const queued=engine?queuedInputs.shift():undefined;
+      const queued=queuedInputs.shift();
       let text;
-      try{if(queued)text=queued.text;else text=await ask(green('\n  you › '),false,{input:true});}
+      try{if(queued)text=queued.text;else text=await ask(promptLabels.next().label+' ',false,{input:true});}
       catch(error){if(error.name==='AbortError'){if(quitting)break;continue;}throw error;}
       if (!text) continue;
-      if(!queued)dashboard?.remember(`\n  you › ${safe(text)}\n`,{user:true});
-      else if(!queued.displayed&&dashboard){dashboard.write(`\n  you › ${safe(text)}\n`,{user:true});queued.displayed=true;}
-      if (!queued?.literal&&(text === '/quit' || text === '/exit')) break;
+      const promptMeta=queued?.promptMeta||acceptSubmission(),literal=queued?!!queued.literal:lastInputLiteral;lastInputLiteral=false;
+      if(!queued)displaySubmission(text,promptMeta);else if(!queued.displayed&&dashboard){displaySubmission(text,promptMeta);queued.displayed=true;}void checkpoint();
+      if (!literal&&(text === '/quit' || text === '/exit')) break;
       try {
-        const command=queued?.literal?null:parseCommand(text);
+        const command=literal?null:parseCommand(text);
         if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await handleRuntimeCommands(command)&&!await handleReset(command)&&!await localFiles.handle(command)&&!await agents.handle(command)&&!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
         else {
-          try { await turn(text,{recorded:queued?.recorded}); }
+          try { await turn(text,{recorded:queued?.recorded,promptMeta}); }
           catch (error) { if (!quitting){notifyError(error);note(`Task failed: ${error.message}`);} }
         }
       } catch (error) { if (!quitting){notifyError(error);note(error.message);} }
@@ -582,12 +631,14 @@ export async function runUI(opts) {
     process.removeListener('SIGTERM', terminate);
     process.removeListener('SIGHUP', terminate);
     prompts.close();
+    let finalCleanupError;
+    const interfaceClosures=await Promise.allSettled([...guiClosures].map(server=>server.close()).concat(projectChanges.close()));guiClosures.clear();gui=undefined;guiMode=false;
+    if(interfaceClosures.some(result=>result.status==='rejected')){finalCleanupError=Object.assign(new Error('Interface resource cleanup could not be verified. Close this session before reconnecting.'),{code:'SESSION_CLEANUP_FAILED'});void deliverNotification('error',randomUUID());}
     rl?.close();
-    terminalInput?.detach();scrollInput?.detach();pasteInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?1000l\x1b[?1006l\x1b[?2004l');
+    terminalInput?.detach();scrollInput?.detach();await pasteInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l');
     await assistantFeatures?.stop().catch(error=>note(error.message));
     await upgrades?.close().catch(error=>note(error.message));
     agents?.close();
-    let finalCleanupError;
     try{await cleanup(primaryFailure);}catch(error){finalCleanupError=error;}
     await checkpoint();await chatSession?.flush().catch(()=>note('The final chat checkpoint could not be saved.'));
     network.stop();

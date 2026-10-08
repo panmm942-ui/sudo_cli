@@ -4,15 +4,9 @@ The Performance display measures the computer running SUDO CLI. It continues to 
 
 The dashboard labels this block **Performance (This PC)** beside the antenna.
 
-Version 0.6.6 shows each detected graphics card by name. System RAM and graphics memory are separate: an integrated card with 512 MiB does not replace a discrete card with about 8 GiB. Dedicated VRAM and shared system RAM have separate lines. Wider terminals place the named blocks beside the antenna; smaller terminals put them below the status fields. `/performance` prints the full details.
+The **Performance (This PC)** panel shows each detected graphics card by name. System RAM and graphics memory are separate: an integrated card with 512 MiB does not replace a discrete card with about 8 GiB. Dedicated VRAM and shared system RAM have separate lines. Wider terminals place the named blocks above Events, beside the antenna. In compact terminals, switch to Events to see the Performance panel. `/gui` opens the same session with its Performance view.
 
-```text
-/performance
-/performance status
-/performance refresh
-```
-
-`/performance` and `status` print the cached readings. `refresh` requests a new sample. The interactive monitor runs while idle and makes no model requests.
+The display reads cached samples and updates automatically, including while idle. Monitoring makes no model requests. `/performance` was removed in version 0.6.9.
 
 CPU and RAM refresh every 1.5 seconds. GPU and graphics memory refresh every 3 seconds. CPU starts with a baseline and shows a percentage after a second sample. A genuine idle reading can be 0%; an unsupported, denied, failed, or missing reading is **Unavailable**. A first delta sample is **Measuring**. A memory reading can show current usage while its capacity remains unavailable.
 
@@ -31,7 +25,7 @@ CPU/RAM reads use Node's built-in OS module. They run independently of GPU probe
 
 **Windows:** The GPU sampler reads `Win32_PerfRawData_GPUPerformanceCounters_GPUEngine` and `GPUAdapterMemory` through CIM. It does not depend on localized `Get-Counter` paths. The engine counter is a 100 ns timer: the sampler retains each process/engine baseline, subtracts 64-bit integer values, combines process time for the same engine, and chooses the busiest engine. It obtains memory usage at the adapter level rather than summing process memory, which could count allocations shared between processes more than once.
 
-A bounded inventory caches usable DXGI adapter identities and pointer-sized dedicated/shared capacities, plus installed Windows graphics devices. Installed cards without a DXGI entry remain visible. Their capacity can come from an exact device-instance-to-display-driver association and a valid 64-bit memory-size value; `/performance` identifies this as driver-reported capacity. It never uses the 32-bit `Win32_VideoController.AdapterRAM` field or guesses capacity from a model name. The inventory excludes Microsoft's software renderer. Unknown or invalid capacity stays unavailable. Restart SUDO CLI after changing hardware or repairing a driver to refresh the inventory. No elevation is requested by the monitor.
+A bounded inventory caches usable DXGI adapter identities and pointer-sized dedicated/shared capacities, plus installed Windows graphics devices. Installed cards without a DXGI entry remain visible. Their capacity can come from an exact device-instance-to-display-driver association and a valid 64-bit memory-size value; the panel identifies this as driver-reported capacity. It never uses the 32-bit `Win32_VideoController.AdapterRAM` field or guesses capacity from a model name. The inventory excludes Microsoft's software renderer. Unknown or invalid capacity stays unavailable. Restart SUDO CLI after changing hardware or repairing a driver to refresh the inventory. No elevation is requested by the monitor.
 
 A valid healthy inventory stays cached. Missing, incomplete or device-error inventory is retried at most once every 60 seconds, and a failed retry preserves the last known capacities. Restarting after a hardware or driver change requests a fresh inventory immediately.
 

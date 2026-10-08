@@ -10,6 +10,8 @@ saved credentials, microphone or external application is touched. Private HOME,
 XDG, state and projects are temporary. Logs redact fixture credentials and roots.
 """
 import argparse
+from event_fixture import event_contains
+from terminal_view import TerminalView, rendered_text, ready_prompt_visible, install_gpu_fixture, verify_ready_prompt_regression as verify_terminal_readiness
 import fcntl
 import http.server
 import json
@@ -56,14 +58,9 @@ print(f'Sanitized native model-loop evidence: {OUTPUT}', flush=True)
 
 
 def plain(raw):
-    raw = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
-    return ANSI.sub(b'', raw).decode('utf-8', errors='replace')
+    return rendered_text(raw)
 
 
-def ready_prompt_visible(raw):
-    # Match the final empty editable input, not an earlier retained user line.
-    # OSC removal happens before standalone nonprinting notification BELs.
-    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -333,6 +330,8 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 class Terminal:
     def __init__(self, root, transport):
         self.transcript = bytearray()
+        self.view = TerminalView(44, 150)
+        self.ready_previous = {}
         self.workspace, self.state = root/'project', root/'state'
         self.native_events = OUTPUT/f'native-events-{len(terminals)+1}.jsonl'
         self.native_events.write_text('')
@@ -355,6 +354,7 @@ class Terminal:
                'HOME': str(root/'home'), 'TMPDIR': str(root/'tmp'), 'XDG_CONFIG_HOME': str(root/'xdg-config'),
                'XDG_DATA_HOME': str(root/'xdg-data'), 'XDG_STATE_HOME': str(root/'xdg-state'), 'XDG_CACHE_HOME': str(root/'xdg-cache'),
                'XDG_RUNTIME_DIR': str(root/'xdg-runtime'), 'SUDO_CLI_CODEX': str(ENGINE), 'SUDO_CLI_STATE_DIR': str(self.state), 'SUDO_CLI_API_KEY': KEY, 'NODE_OPTIONS': '--import '+str(observer)}
+        install_gpu_fixture(root, env)
         self.child = subprocess.Popen([NODE, str(PROJECT/'bin/sudocli.mjs'), '--cwd', str(self.workspace),
             '--model', 'fixture-native-'+transport, '--base-url', f'http://127.0.0.1:{server.server_port}/v1',
             '--transport', transport, '--context-window', '131072', '--permissions', 'allow-everything', '--scope', 'project'],
@@ -370,7 +370,9 @@ class Terminal:
             readable, _, _ = select.select([self.master], [], [], .04)
             if readable:
                 try:
-                    self.transcript.extend(os.read(self.master, 65536))
+                    data = os.read(self.master, 65536)
+                    self.transcript.extend(data)
+                    self.view.feed(data)
                 except OSError:
                     return
 
@@ -389,11 +391,14 @@ class Terminal:
     def send(self, text):
         self.drain(.05)
         marker = len(self.transcript)
+        prior = self.view.composer()
+        reset = text.strip().startswith(('/new', '/chat open'))
+        self.ready_previous[marker] = prior['sequence'] if prior and prior['empty'] and text.endswith(('\n','\r')) and not reset else None
         os.write(self.master, text.encode())
         return marker
 
     def ready(self, marker=0):
-        self.until(lambda: ready_prompt_visible(bytes(self.transcript[marker:])), label='CLI ready prompt')
+        self.until(lambda: len(self.transcript)>marker and self.view.ready(self.ready_previous.get(marker)), label='CLI ready prompt')
 
     def task(self, text, response):
         marker = self.send(text+'\n')
@@ -471,7 +476,7 @@ try:
             terminal.until(lambda: (terminal.workspace/'long-started').exists(), label='actual timeout command started')
             process_ids = workspace_processes(terminal.workspace)
             assert process_ids, 'Timeout process was not running'
-            terminal.until(lambda: 'Command exceeded 1 seconds and its native terminal was stopped.' in plain(bytes(terminal.transcript[marker:])), timeout=10, label='command timeout notification')
+            terminal.until(lambda: event_contains(terminal.view, 'Command exceeded 1 seconds and its native terminal was stopped.'), timeout=10, label='command timeout notification')
             terminal.until(lambda: all(process_gone(pid) for pid in process_ids), timeout=8, label='timeout terminated native command')
             terminal.ready(marker)
             assert not (terminal.workspace/'must-not-exist').exists(), 'Timed-out or stopped command completed its delayed write'

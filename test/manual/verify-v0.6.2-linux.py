@@ -11,6 +11,9 @@ does not install a runner, import a real model, or use paid AI/audio/desktop app
 Every CLI gets private HOME/XDG/TMPDIR, project and state. Evidence is redacted.
 """
 import argparse
+from event_scroll_fixture import latest_event_text
+from question_fixture import install_question_fixture, active_submission_question
+from terminal_view import TerminalView, rendered_text, ready_prompt_visible, install_gpu_fixture, verify_ready_prompt_regression as verify_terminal_readiness
 import fcntl
 import http.server
 import json
@@ -64,16 +67,9 @@ print(f'Sanitized native acceptance evidence: {OUTPUT}', flush=True)
 
 
 def plain(raw):
-    # Dashboard refreshes use save/restore; leave the meaningful initial frame.
-    body = re.sub(rb'\x1b7.*?\x1b8', b'', raw, flags=re.DOTALL)
-    return ANSI.sub(b'', body).decode('utf-8', errors='replace')
+    return rendered_text(raw)
 
 
-def ready_prompt_visible(raw):
-    # Retained user messages and Working echoes reuse the input label. Only
-    # the final empty editable line proves that the submitted operation ended.
-    # Standalone notification BELs change neither cells nor cursor position.
-    return bool(re.search(r'(?:\r?\n|^)  you › \Z', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -164,6 +160,8 @@ BASE_URL = f'http://127.0.0.1:{server.server_port}/v1'
 class Terminal:
     def __init__(self, root, *, columns=150, rows=44, no_color=False, term='xterm-256color'):
         self.transcript = bytearray()
+        self.view = TerminalView(rows, columns)
+        self.ready_previous = {}
         self.alternate_screen = term != 'dumb'
         self.workspace, self.state = root/'project', root/'state'
         for name in ['project', 'home', 'xdg-config', 'xdg-data', 'xdg-state', 'xdg-cache', 'xdg-runtime', 'tmp']:
@@ -180,6 +178,8 @@ class Terminal:
                'SUDO_CLI_TRANSPORT': 'responses', 'SUDO_CLI_API_KEY': CLOUD_SECRET}
         if no_color:
             env['NO_COLOR'] = '1'
+        install_gpu_fixture(root, env)
+        self.questions = install_question_fixture(root, env)
         self.child = subprocess.Popen([NODE, str(PROJECT/'bin/sudocli.mjs'), '--cwd', str(self.workspace)],
             cwd=self.workspace, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
@@ -195,6 +195,7 @@ class Terminal:
                     if not data:
                         return
                     self.transcript.extend(data)
+                    self.view.feed(data)
                 except OSError:
                     return
 
@@ -211,17 +212,21 @@ class Terminal:
     def send(self, text):
         self.drain(.04)
         marker = len(self.transcript)
+        prior = self.view.composer()
+        reset = text.strip().startswith(('/new', '/chat open'))
+        self.ready_previous[marker] = prior['sequence'] if prior and prior['empty'] and text.endswith(('\n','\r')) and not reset else None
         os.write(self.master, text.encode())
         return marker
 
     def ready(self, marker=0):
-        self.read_until(lambda raw: ready_prompt_visible(raw[marker:]), expectation='ready prompt')
+        self.read_until(lambda raw: len(raw)>marker and self.view.ready(self.ready_previous.get(marker)) and active_submission_question(self.questions), expectation='ready prompt')
 
     def command(self, text):
         marker = self.send(text+'\n')
         self.ready(marker)
         assert not fixture_errors, fixture_errors
-        return plain(bytes(self.transcript[marker:]))
+        event = latest_event_text(self)
+        return plain(bytes(self.transcript[marker:]))+'\n'+event
 
     def answer(self, marker, label, value):
         self.read_until(lambda raw: label in plain(raw[marker:]), expectation=label)
@@ -234,6 +239,7 @@ class Terminal:
 
     def resize(self, columns, rows):
         marker = len(self.transcript)
+        self.view.resize(rows, columns)
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         os.kill(self.child.pid, signal.SIGWINCH)
         self.drain(.3)
@@ -290,21 +296,8 @@ def progress(label):
 
 
 def verify_ready_prompt_regression():
-    cases = [
-        ('\n  you › /permissions allow-everything\n  · Working · Ctrl+C to interrupt\n', False),
-        ('\n  you › /permissions\n  · Queued prompt 1; current work continues.\n', False),
-        ('\n  you › \n  · Working · Ctrl+C to interrupt\n', False),
-        ('\n  you › \n  · Working · Ctrl+C to interrupt\n\x07\x07', False),
-        ('\n  you › /permissions', False),
-        ('\n  you › \n', False),
-        ('\n  · Permissions: ask\n\n  you › ', True),
-        ('\n  · Permissions: ask\n\n  you › \x07\x07', True),
-        ('\n  you › \x1b]0;Working\x07\x07', True),
-        ('\n  you › \x1b]0;Working\x1b\\VISIBLE\x07', False),
-    ]
-    for text, expected in cases:
-        assert ready_prompt_visible(text.encode()) is expected, repr(text)
-    results['readyPromptExcludesRetainedUserEchoAndIgnoresOnlyNonprintingBell'] = True
+    verify_terminal_readiness()
+    results['renderedEditableComposerReadiness'] = True
 
 
 verify_ready_prompt_regression()
@@ -370,9 +363,10 @@ try:
             marker = terminal.send(name[1:])
             terminal.read_until(lambda raw, name=name: name in plain(raw[marker:]), timeout=3, expectation=f'filter {name}')
             marker = terminal.send('\r')
-            terminal.drain(.07)
+            terminal.read_until(lambda raw, name=name: terminal.view.composer() and terminal.view.composer()['draft']==name,
+                                timeout=3, expectation=f'filled command {name}')
             assert_no_menu(bytes(terminal.transcript[marker:]), f'choosing {name}')
-            assert re.search(r'you › '+re.escape(name)+r'(?:\s|$)', plain(bytes(terminal.transcript[marker:]))), f'{name} was not filled into the prompt'
+            assert terminal.view.composer() and terminal.view.composer()['draft']==name, f'{name} was not filled into the prompt'
             assert terminal.child.poll() is None
             chosen.append(name)
         terminal.send('\x15')
@@ -384,12 +378,13 @@ try:
         terminal.picker()
         terminal.send('status')
         marker = terminal.send('\x1b')
-        terminal.read_until(lambda raw: re.search(r'you › /status(?:\s|$)', plain(raw[marker:])), timeout=3, expectation='Escape restored /status')
+        terminal.read_until(lambda raw: terminal.view.composer() and terminal.view.composer()['draft']=='/status', timeout=3, expectation='Escape restored /status')
         terminal.drain(.12)
         selected = terminal.send('\r')
         terminal.read_until(lambda raw: 'AI response:' in plain(raw[selected:]), timeout=3, expectation='escaped /status executed')
         terminal.ready(selected)
-        escaped_status = plain(bytes(terminal.transcript[selected:]))
+        event = latest_event_text(terminal)
+        escaped_status = plain(bytes(terminal.transcript[selected:]))+'\n'+event
         assert 'AI response:' in escaped_status and 'fixture-local-v062 ·' in escaped_status, 'Escape did not preserve and execute /status'
         direct = terminal.command('/status')
         assert 'AI response:' in direct and 'fixture-local-v062 ·' in direct
@@ -400,11 +395,16 @@ try:
 
         baseline = len(requests)
         marker = terminal.send('\x1b[200~/permissions allow-everything\x1b[201~')
+        terminal.drain(.15)
+        assert_no_requests(baseline, 'editable literal paste before Enter')
+        assert terminal.view.composer()['draft']=='/permissions allow-everything'
+        terminal.send('\n')
         wait_answer(terminal, marker, baseline)
         assert '/permissions allow-everything' in latest_prompt()
         assert_no_menu(bytes(terminal.transcript[marker:]), 'bracketed paste')
         permissions = terminal.command('/permissions')
-        assert re.search(r'(?:^|\n)  · Permissions:\s*ask\b', permissions, flags=re.IGNORECASE)
+        permissions = terminal.view.events_text()
+        assert re.search(r'\bPermissions:\s*ask\b', permissions)
         assert 'allow-everything' not in permissions.lower() and 'allow everything' not in permissions.lower()
         assert_no_requests(baseline+1, 'literal paste permissions inspection')
         baseline = len(requests)
@@ -466,7 +466,7 @@ try:
         terminal.drain(.25)
         terminal.resize(150, 44)
         marker = terminal.send('\x1b')
-        terminal.read_until(lambda raw: re.search(r'you › /training(?:\s|$)', plain(raw[marker:])), timeout=3, expectation='resized picker Escape restoration')
+        terminal.read_until(lambda raw: terminal.view.composer() and terminal.view.composer()['draft']=='/training', timeout=3, expectation='resized picker Escape restoration')
         terminal.send('\x15')
         assert 'fixture-local-v062' in terminal.command('/status')
         results['openPickerResizeNarrowAndRestore'] = True
@@ -488,7 +488,7 @@ try:
                 marker = extra.picker()
                 extra.send('status')
                 escaped = extra.send('\x1b')
-                extra.read_until(lambda raw: re.search(r'you › /status(?:\s|$)', plain(raw[escaped:])), timeout=3, expectation=f'{label} Escape restoration')
+                extra.read_until(lambda raw: extra.view.composer() and extra.view.composer()['draft']=='/status', timeout=3, expectation=f'{label} Escape restoration')
                 marker = extra.send('\r')
                 extra.ready(marker)
                 assert 'No AI selected' in plain(bytes(extra.transcript[marker:]))

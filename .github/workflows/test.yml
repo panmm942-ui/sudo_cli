@@ -73,9 +73,12 @@ jobs:
       - name: Exercise live slash picker and local model file inspection
         if: runner.os == 'Linux'
         run: sudo -E python3 -B test/manual/verify-v0.6.2-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.2-terminal-proof"
-      - name: Exercise terminal colors, local activity and notification settings
+      - name: Exercise independent terminal panels, scrollbars, paste and caret
         if: runner.os == 'Linux'
-        run: sudo -E python3 -B test/manual/verify-v0.6.7-ui-linux.py --with-native-ai --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.7-ui-proof"
+        run: sudo -E python3 -B test/manual/verify-v0.6.9-panels-linux.py --output "${{ runner.temp }}/v0.6.9-panels-proof.json"
+      - name: Exercise numbered chats, Events, GUI and changed files in one native session
+        if: runner.os == 'Linux'
+        run: sudo -E python3 -B test/manual/verify-v0.6.9-interface-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.9-interface-proof"
       - name: Exercise custom model tools, interruption, timeouts and repetition protection
         if: runner.os == 'Linux'
         run: sudo -E python3 -B test/manual/verify-v0.6.3-model-loop-linux.py --node "$(command -v node)" --output-directory "${{ runner.temp }}/v0.6.3-model-proof"

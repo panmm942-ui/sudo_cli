@@ -77,6 +77,8 @@ def deadline(*_):
 
 signal.signal(signal.SIGALRM, deadline)
 harness = Path(__file__).resolve().parents[2]/'test/manual/verify-v0.6-linux.py'
+sys.path.insert(0, str(harness.parent))
+from terminal_view import TerminalView
 tree = ast.parse(harness.read_text())
 terminal_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Terminal')
 namespace = {'os': os, 'errno': errno, 'fcntl': fcntl, 'select': select, 'time': time, 'subprocess': subprocess}
@@ -97,6 +99,8 @@ def run(mode):
     terminal = Terminal.__new__(Terminal)
     terminal.master = master
     terminal.transcript = bytearray()
+    terminal.view = TerminalView(44, 142)
+    terminal.ready_previous = {}
     original_flags = fcntl.fcntl(master, fcntl.F_GETFL)
     before_send_flags = None
     begin = time.monotonic()
