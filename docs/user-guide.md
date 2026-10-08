@@ -1,4 +1,4 @@
-# Using sudocli 0.6.3
+# Using sudocli 0.6.4
 
 Use `/bgcolor COLOR` and `/txtcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability. `/reset` lets you choose settings to restore.
 
@@ -12,13 +12,17 @@ The original red SUDO CLI logo, Braille antenna, credits and timing are preserve
 
 ## Open saved work before connecting
 
-A default interactive launch starts with no AI selected and no model request. You can use `/help`, `/status`, `/chatt`, `/search-chat` and `/memory` in this shell. The last saved chat for the current project resumes automatically. It stays local until you connect an AI and send a task.
+A default interactive launch starts with no AI selected and no model request. You can use `/help`, `/status`, `/chat`, `/search-chat` and `/memory` in this shell. The last saved chat for the current project resumes automatically. It stays local until you connect an AI and send a task.
 
 ```text
-/chatt
-/chatt open CHAT_ID
+/chat
+/chat open CHAT_ID
 /connect
 ```
+
+`/chat` lists saved chats and asks which one to open. `/chat list` only lists them; `/chat rename TITLE`, `/chat save` and `/chat delete CHAT_ID` manage saved records. Opening one replaces the visible conversation with its saved history. See [chat commands](chat-commands.md) and [saved chats](chats.md).
+
+Use `/new` or `/chat new` for a fresh conversation. The keep question defaults to **Y**: Enter, `y` or `yes` keeps the previous saved chat; `n` or `no` deletes its record. Only after the new chat is created successfully does the lower display clear, the scroll position reset and the AI context start fresh under a new chat ID. Canceling the question or failing to create the new record keeps the current display in place.
 
 `/local` connects Ollama, LM Studio or another compatible server already running on this computer without a cloud API key. `/connect` offers both cloud and local setup. For a model file that has not been loaded yet, use `/local file "PATH"`. It detects the contents, offers supported installed runners and preserves your original file. `/local info "PATH"` inspects without importing. Unsupported formats explain the runner/model files needed. See [local model files](local-model-files.md).
 
@@ -53,6 +57,8 @@ The default credential lifetime is this process. `/credentials status` reports t
 ## Enter readable prompts and search
 
 Enter a normal task, such as `Explain this project and identify its main entry point.` Type `/` at an empty idle prompt to open all commands in a selectable menu. Type to filter, use arrows or Page Up/Down, and press Enter to fill a command. Add arguments if needed and press Enter again to run it. Escape restores your slash query. `/help` prints the complete list; `TERM=dumb` uses `/` followed by Enter for that list. `/help work`, `/help access`, `/help voice` and `/help advanced` browse groups. `/help context` searches command descriptions; Tab completes names. `/search-chat parser` searches the visible archive locally.
+
+Browse the conversation under the fixed dashboard with **PgUp/PgDn** or the mouse wheel. **Ctrl+Home** jumps to the first retained text; **Ctrl+End** returns to the newest output and your input prompt. `/scroll up` and `/scroll down` move one page; `/scroll top` and `/scroll bottom` jump to the beginning or return live. When new replies arrive while you browse, the older view stays in place and shows **New output**. Typing or pasting returns to live input. The command picker owns PgUp/PgDn while open, and secret questions and multiline prompts keep their own input behavior. See [chat scrolling](chat-scrolling.md) for terminal support, selection and display limits.
 
 Clear reading is on by default: short initial answers, short lines and spaced actions. `/readability off` disables it. `/details` asks the connected AI to expand the last answer.
 
@@ -111,7 +117,7 @@ Full visible chat remains archived and is never silently shortened. Before repla
 
 If full replay exceeds the allowance, it stops before provider traffic. `/context review` displays numbered messages, accepts your reviewed summary until `/end`, then asks for comma-separated message numbers. Choose the relevant excerpts yourself. It retains the complete archive and replays the bounded summary/excerpts as conversation input, never as higher-trust developer instructions. An oversized reviewed selection is also refused.
 
-`/compact` invokes native compaction while retaining the archive. `/clear` gives the engine fresh context and retains visible history. `/new` starts a fresh saved chat with a keep/discard choice. `/history clear` clears the current visible archive without resetting the active engine. `/handoff [DIRECTORY]` exports full Markdown/JSON separately; hidden reasoning/tool internals and original attachment bytes are not transferred.
+`/compact` invokes native compaction while retaining the archive. `/clear` gives the engine fresh context and retains visible history. `/new` or `/chat new` creates a separate saved chat after the keep/discard choice and clears its display only on success. `/history clear` clears the current visible archive without resetting the active engine. `/handoff [DIRECTORY]` exports full Markdown/JSON separately; hidden reasoning/tool internals and original attachment bytes are not transferred.
 
 `/memory edit` accepts project rules/preferences/decisions until `/end`; `on|off|clear` controls that approved memory. Model output and discovered files cannot silently become approved memory. `/personalize setup` separately saves persona, language, tone, reply length/format and other instructions per endpoint/model/protocol. `/preferences` is its alias. These are developer instructions, not training or execution permissions.
 
@@ -213,6 +219,8 @@ Root Unix Chromium launch refuses to disable its sandbox. Run a browser MCP serv
 Training is under `/help advanced`. `/training export` creates a bounded JSONL dataset from complete text exchanges; review it. `/training setup` needs compatible Files/Fine-tuning APIs and a fine-tunable model. `/training start FILE` asks before upload/job creation; `status ID` and `cancel ID` use the real service. Provider costs, compute and outcomes remain external. These commands do not train every connected AI.
 
 `/update stage PACKAGE_OR_HTTPS_URL TRUSTED_SHA256` verifies a supplied trusted hash and stages a bounded ZIP. `/update install` validates compatible paths/package/runtime metadata, installs beside the old release and changes the registered launcher. `/update rollback` points it to the retained prior release. Review the checksum through a trusted channel and restart after switching versions. This is explicit update/rollback, not an automatic downloaded-code startup step.
+
+Official 0.6.4 packages check an Ed25519-signed manifest before startup. Altered or missing signed files, including credits, licenses and upstream notices, refuse startup. A deliberate fork can replace the verifier, so signing cannot prevent someone modifying a fork. Preserve the included credits, license texts and upstream notices when distributing packages. See [signed release integrity](release-integrity.md) for the publishing process and limits.
 
 ## What persists and what was tested
 

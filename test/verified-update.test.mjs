@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,readFile,readdir,mkdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,generateKeyPairSync,sign} from 'node:crypto';
 import {deflateRawSync} from 'node:zlib';
 import {stageUpdate,validateUpdateManifest,inspectZip,installStagedUpdate,rollbackUpdate,updateStatus} from '../src/verified-update.mjs';
 import {localCodex} from '../src/local-engine.mjs';
@@ -41,6 +41,42 @@ async function installedFixture(t){
   return{...value,currentRoot,runtimePath,register,registered,registrationPath};
 }
 async function stage(value,bytes){await writeFile(value.source,bytes);return stageUpdate({source:value.source,sha256:digest(bytes),stateDir:value.stateDir});}
+
+async function sourceFixture(root,version){for(const file of application(version)){const path=join(root,file.path.slice('codexcli/'.length));await mkdir(dirname(path),{recursive:true});await writeFile(path,file.content);}await nativeFixture(root);}
+
+test('unsigned releases from 0.6.4 onward fail before any verification runner or command registration',async t=>{
+  for(const version of ['0.6.4','0.7.0','0.10.0','1.0.0']){
+    const value=await fixture(t),currentRoot=join(value.root,'original');await sourceFixture(currentRoot,'0.6.3');await stage(value,zip(application(version)));const calls=[];
+    let caught;try{await installStagedUpdate({...value,currentRoot,commandRunner:async()=>{calls.push('runner');throw new Error('Unsigned release reached a runner.');},register:async()=>calls.push('register')});}catch(error){caught=error;}
+    assert.ok(caught,'unsigned update must fail');assert.deepEqual(calls,[]);assert.equal(caught.code,'RELEASE_INTEGRITY_FAILED');
+    assert.deepEqual(await readdir(join(value.stateDir,'releases')),[]);
+  }
+});
+
+test('a foreign publisher signature is rejected before update runtime or doctor execution',async t=>{
+  const value=await fixture(t),currentRoot=join(value.root,'original');await sourceFixture(currentRoot,'0.6.3');
+  const {privateKey}=generateKeyPairSync('ed25519'),manifest=Buffer.from('{}\n'),files=[...application('0.6.4'),{path:'codexcli/release-integrity.json',content:manifest},{path:'codexcli/release-integrity.sig',content:sign(null,manifest,privateKey)}];
+  await stage(value,zip(files));const calls=[];
+  await assert.rejects(installStagedUpdate({...value,currentRoot,commandRunner:async()=>{calls.push('runner');throw new Error('Foreign signature reached a runner.');},register:async()=>calls.push('register')}),/publisher signature/i);
+  assert.deepEqual(calls,[]);assert.deepEqual(await readdir(join(value.stateDir,'releases')),[]);
+});
+
+test('unsigned retained future releases cannot run their doctor during rollback',async t=>{
+  const value=await fixture(t),previous=join(value.root,'original'),current=join(value.stateDir,'releases','verified-test','codexcli');
+  await sourceFixture(previous,'0.6.4');await sourceFixture(current,'0.6.3');await mkdir(join(value.stateDir,'updates'),{recursive:true});
+  const target=platformRuntime(),record={version:1,originalRoot:previous,current,previous,currentNodePath:process.execPath,previousNodePath:process.execPath,currentRuntimePath:join(current,'runtime',target.id,'bin',target.executable),previousRuntimePath:join(previous,'runtime',target.id,'bin',target.executable),releaseVersion:'0.6.3'};
+  const path=join(value.stateDir,'updates','installation.json');await writeFile(path,JSON.stringify(record));const calls=[];
+  await assert.rejects(rollbackUpdate({...value,commandRunner:async()=>{calls.push('runner');throw new Error('Unsigned retained release reached a runner.');},register:async()=>calls.push('register')}),/integrity|manifest/i);
+  assert.deepEqual(calls,[]);assert.deepEqual(JSON.parse(await readFile(path,'utf8')),record);
+});
+
+test('unsigned 0.6.3 packages retain the verified install and rollback path',async t=>{
+  const value=await fixture(t),currentRoot=join(value.root,'original');await sourceFixture(currentRoot,'0.6.0');await stage(value,zip(application('0.6.3')));const calls=[];
+  const commandRunner=async(command,args,{cwd})=>{calls.push('runner');if(args[0]==='--version')return{code:0,stdout:command===process.execPath?'v24.19.0':`codex-cli ${CODEX_VERSION}`};const pkg=JSON.parse(await readFile(join(cwd,'package.json'),'utf8'));return{code:0,stdout:`codexcli ${pkg.version} | sudocli\nEngine: codex-cli ${CODEX_VERSION}\nReady.`};};
+  const options={...value,currentRoot,runtimePath:join(currentRoot,'runtime',platformRuntime().id,'bin',platformRuntime().executable),commandRunner,register:async()=>calls.push('register')};
+  const installed=await installStagedUpdate(options);assert.equal(installed.version,'0.6.3');assert.equal(calls.filter(call=>call==='register').length,1);
+  const rolled=await rollbackUpdate(options);assert.equal(rolled.version,'0.6.0');assert.equal(calls.filter(call=>call==='register').length,2);
+});
 
 test('failed staging removes its download and retains the previous verified package',async t=>{
   const value=await fixture(t);await writeFile(value.source,'fixture package');

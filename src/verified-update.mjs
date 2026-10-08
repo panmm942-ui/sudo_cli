@@ -9,6 +9,7 @@ import {createPrivateRecord,privateDirectory} from './private-state.mjs';
 import {defaultWorkStateDir} from './work-meter.mjs';
 import {CODEX_VERSION,platformRuntime} from './platforms.mjs';
 import {isolatedEnvironment} from './permission-scope.mjs';
+import {verifyReleaseIntegrity} from './release-integrity.mjs';
 
 const MAX_PACKAGE=512*1024*1024,MAX_EXPANDED=1024*1024*1024;
 const projectRoot=fileURLToPath(new URL('..',import.meta.url));
@@ -127,9 +128,15 @@ function inside(parent,path){const value=relative(resolve(parent),resolve(path))
 async function realParents(path){let parent=dirname(resolve(path));for(;;){const info=await lstat(parent);if(!info.isDirectory()||info.isSymbolicLink())throw new Error('Update paths require real directories without links.');const next=dirname(parent);if(next===parent)break;parent=next;}}
 async function realFile(path){await realParents(path);const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||info.nlink!==1)throw new Error('Update runtime requires regular files without links.');return resolve(path);}
 async function jsonFile(path){return JSON.parse((await boundedFile(path,1024*1024)).toString('utf8'));}
-async function verifyRelease(root,{nodePath=process.execPath,runtimePath,commandRunner=execute,signal,allowRuntimeSetup=false}={}){
-  root=resolve(root);await realParents(join(root,'package.json'));
+async function authenticateReleaseSource(root,signal){
+  signal?.throwIfAborted();await realParents(join(root,'package.json'));
   const pkg=await jsonFile(join(root,'package.json'));if(pkg.name!=='codexcli'||!semver.test(pkg.version||'')||pkg.type!=='module')throw new Error('Update does not contain a compatible codexcli release.');
+  const parts=pkg.version.split('.').map(BigInt),signed=parts[0]>0n||parts[1]>6n||parts[1]===6n&&parts[2]>=4n;
+  if(signed)await verifyReleaseIntegrity({root,expectedVersion:pkg.version});
+  signal?.throwIfAborted();return pkg;
+}
+async function verifyRelease(root,{nodePath=process.execPath,runtimePath,commandRunner=execute,signal,allowRuntimeSetup=false}={}){
+  root=resolve(root);const pkg=await authenticateReleaseSource(root,signal);
   const bundledNode=join(root,'runtime',process.platform==='win32'?'node.exe':'node');if(await lstat(bundledNode).catch(error=>{if(error.code!=='ENOENT')throw error;}))nodePath=bundledNode;
   nodePath=await realFile(nodePath);if(process.platform!=='win32'&&inside(root,nodePath))await chmod(nodePath,0o700);
   const env=isolatedEnvironment();let manifest;
@@ -186,11 +193,12 @@ export async function installStagedUpdate({stateDir=defaultWorkStateDir(),curren
     const bytes=await boundedFile(path,MAX_PACKAGE);if(bytes.length!==staged.size||digest(bytes)!==staged.sha256)throw new Error('Staged update hash or size changed.');zipEntries(bytes);
     const record=await createPrivateRecord({directory,filename:'installation.json'}),old=validateInstallation(await record.read(),stateDir);
     if(old?.currentRuntimePath&&!inside(old.current,old.currentRuntimePath)&&!register)throw new Error('An external runtime path requires explicit command registration.');
-    const originalRoot=old?.originalRoot||resolve(currentRoot),previous=await verifyRelease(old?.current||originalRoot,{nodePath:old?.currentNodePath||nodePath,runtimePath:old?.currentRuntimePath||runtimePath,commandRunner,signal});
-    if(old?.sha256===staged.sha256){if(expectedVersion!==undefined&&previous.version!==expectedVersion)throw new Error('Retained update version does not match the offered release.');return{installed:previous.projectRoot,version:previous.version,rollback:old.previous,alreadyInstalled:true,restart:'Run the registered sudocli command.'};}
+    const originalRoot=old?.originalRoot||resolve(currentRoot),previousOptions={nodePath:old?.currentNodePath||nodePath,runtimePath:old?.currentRuntimePath||runtimePath,commandRunner,signal};
+    if(old?.sha256===staged.sha256){const previous=await verifyRelease(old.current,previousOptions);if(expectedVersion!==undefined&&previous.version!==expectedVersion)throw new Error('Retained update version does not match the offered release.');return{installed:previous.projectRoot,version:previous.version,rollback:old.previous,alreadyInstalled:true,restart:'Run the registered sudocli command.'};}
     const releases=await privateDirectory(join(stateDir,'releases')),release=await mkdtemp(join(releases,'verified-'));let keep=false;
-    try{await extractZip(bytes,release,signal);const next=await verifyRelease(join(release,'codexcli'),{nodePath,runtimePath,commandRunner,signal,allowRuntimeSetup:true});
-      if(expectedVersion!==undefined&&next.version!==expectedVersion)throw new Error('Update package version does not match the offered release.');
+    try{await extractZip(bytes,release,signal);const nextRoot=join(release,'codexcli'),pkg=await authenticateReleaseSource(nextRoot,signal);
+      if(expectedVersion!==undefined&&pkg.version!==expectedVersion)throw new Error('Update package version does not match the offered release.');
+      const previous=await verifyRelease(old?.current||originalRoot,previousOptions),next=await verifyRelease(nextRoot,{nodePath,runtimePath,commandRunner,signal,allowRuntimeSetup:true});
       const registerFn=register||(await import('./command-setup.mjs')).registerCommand;
       signal?.throwIfAborted();await switchCommand(registerFn,next,previous,record,{version:1,originalRoot,current:next.projectRoot,previous:previous.projectRoot,currentNodePath:next.nodePath,currentRuntimePath:next.runtimePath,previousNodePath:previous.nodePath,previousRuntimePath:previous.runtimePath,releaseVersion:next.version,sha256:staged.sha256,previousSha256:old?.sha256},old);
       keep=true;return{installed:next.projectRoot,version:next.version,rollback:previous.projectRoot,restart:'Close this session and run the registered sudocli command.'};

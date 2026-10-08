@@ -43,14 +43,14 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
     if(action==='new')return newChat();
     if(action==='save'){await chatSession.checkpoint();note('Current chat saved.');return;}
     if(action==='rename'){await chatSession.rename(args.slice(1).join(' ')||await ask('  Chat title › '));note('Chat renamed.');return;}
-    if(action==='delete'){const id=args[1];if(!id)throw new Error('Use /chatt delete CHAT_ID.');if(/^y(es)?$/i.test(await ask('  Delete this saved chat permanently? [y/N] › '))){await chatSession.remove(id);note('Saved chat deleted.');}return;}
+    if(action==='delete'){const id=args[1];if(!id)throw new Error('Use /chat delete CHAT_ID.');if(/^y(es)?$/i.test(await ask('  Delete this saved chat permanently? [y/N] › '))){await chatSession.remove(id);note('Saved chat deleted.');}return;}
     const all=await chatSession.list();all.forEach((record,i)=>note(`${i+1}. ${record.title}${record.id===chatSession.current()?.id?' [current]':''} · ${record.id} · ${record.updatedAt}`));
     if(action==='list')return;if(!all.length){note('No saved chats in this project.');return;}
     const selected=(action==='open'?args[1]:action)||await ask('  Resume saved chat [number/ID; Enter cancels] › ');
     if(!selected)return;const id=/^\d+$/.test(selected)?all[Number(selected)-1]?.id:selected;if(!id)throw new Error('Saved chat selection was not found.');
-    await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);await chatSession.open(id);await onChatChange();note('Saved chat restored. Its full visible history is queued for your next prompt.');
+    await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const record=await chatSession.open(id);await onChatChange({reason:'open',record});note('Saved chat restored. Its full visible history is queued for your next prompt.');
   }
-  async function newChat(){const keep=!/^n(o)?$/i.test(await ask('  Keep the current saved chat? [Y/n] › '));await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);await chatSession.newChat({keep});await onChatChange();note('New chat started.');}
+  async function newChat(){const keep=!/^n(o)?$/i.test(await ask('  Keep the current saved chat? [Y/n] › '));await stopVoice();await coordinator?.stop();coordinator=undefined;onBackgroundState(undefined);const record=await chatSession.newChat({keep});await onChatChange({reason:'new',record});note('New chat started.');}
   async function persona(args){
     const connection=getConnection();if(!connection)throw new Error('Connect an AI first.');const previous=await personalization.get(connection);
     const action=args[0]||'status';
@@ -127,7 +127,7 @@ export function createAssistantFeatures({cwd,stateDir,settings,profiles,chatSess
   }
   return {
     async handle({name,args=[],rawArgs=''}){
-      if(name==='/chatt'||name==='/chats'){await chats(args);return true;}
+      if(name==='/chat'||name==='/chatt'||name==='/chats'){await chats(args);return true;}
       if(name==='/new'){await newChat();return true;}
       if(name==='/personalize'||name==='/preferences'){await persona(args);return true;}
       if(name==='/247'||name==='/agent'){await agent(args,rawArgs);return true;}

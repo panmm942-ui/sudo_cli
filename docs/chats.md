@@ -2,7 +2,7 @@
 
 SUDO CLI saves the active chat automatically and restores the last chat for the current working folder on the next launch. Saving includes every visible user and AI message, the selected model connection metadata, partial assistant replies and queued text prompts. A completed response or normal exit flushes the latest checkpoint. An abrupt process termination can lose text since the most recent successful checkpoint.
 
-Use `/new` to begin a new conversation. Choose whether to keep or discard the previous saved chat. Use `/chatt` to browse saved conversations and resume one. Resuming a conversation restores its visible transcript and asks for a connection key when one is needed; API key values are never stored in a chat record.
+Use `/new` or `/chat new` to begin a new conversation. Choose whether to keep or discard the previous saved chat. A successful new chat has a new ID, a blank conversation area and fresh AI context. Canceling the choice keeps the current conversation in place. Use `/chat` to browse saved conversations and resume one. Resuming a conversation restores its visible transcript and asks for a connection key when one is needed; API key values are never stored in a chat record. See [Chat commands](chat-commands.md) for all saved-chat actions.
 
 Each working folder has its own last-chat selection. Chats belonging to another folder may be listed explicitly, but they must be resumed from their original folder so that commands and file edits run in the intended project.
 

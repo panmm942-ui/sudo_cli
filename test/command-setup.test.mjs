@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, stat, symlink, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -186,22 +186,41 @@ test('first setup help makes no registration or model connection', () => {
 
 test('Unix first setup command-only completes registration end to end in a temporary home', { skip: process.platform === 'win32' }, async t => {
   const fixtureData = await fixture(t);
-  await mkdir(join(fixtureData.projectRoot, 'scripts'));
-  await mkdir(join(fixtureData.projectRoot, 'src'));
-  await mkdir(join(fixtureData.projectRoot, 'runtime'));
-  for (const file of ['command-setup.mjs', 'local-engine.mjs', 'runtime.mjs', 'platforms.mjs','permission-scope.mjs']) {
-    await copyFile(fileURLToPath(new URL(`../src/${file}`, import.meta.url)), join(fixtureData.projectRoot, 'src', file));
+  const { validateSignedReleaseManifest, verifyReleaseIntegrity, RELEASE_MANIFEST_FILE, RELEASE_SIGNATURE_FILE } = await import('../src/release-integrity.mjs');
+  const { VERSION } = await import('../src/version.mjs');
+  const { CODEX_VERSION } = await import('../src/platforms.mjs');
+  const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+  // Reuse the real publisher-authenticated release bytes. A five-module copy
+  // or a fake bin entry cannot exercise setup's signed source verification.
+  const [manifestBytes, signatureBytes] = await Promise.all([
+    readFile(join(sourceRoot, RELEASE_MANIFEST_FILE)),
+    readFile(join(sourceRoot, RELEASE_SIGNATURE_FILE)),
+  ]);
+  const manifest = validateSignedReleaseManifest({ manifestBytes, signatureBytes, expectedVersion: VERSION });
+  for (const entry of manifest.files) {
+    const target = join(fixtureData.projectRoot, ...entry.path.split('/'));
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(join(sourceRoot, ...entry.path.split('/')), target);
   }
-  await copyFile(fileURLToPath(new URL('../scripts/setup.mjs', import.meta.url)), join(fixtureData.projectRoot, 'scripts', 'setup.mjs'));
-  await writeFile(join(fixtureData.projectRoot, 'runtime', 'codex'), '#!/bin/sh\nprintf "%s\\n" "codex-cli 0.160.1"\n');
-  await chmod(join(fixtureData.projectRoot, 'runtime', 'codex'), 0o755);
-  const childEnv = { ...process.env, HOME: fixtureData.homeDir, SHELL: '/bin/bash' };
-  delete childEnv.SUDO_CLI_CODEX;
+  await writeFile(join(fixtureData.projectRoot, RELEASE_MANIFEST_FILE), manifestBytes);
+  await writeFile(join(fixtureData.projectRoot, RELEASE_SIGNATURE_FILE), signatureBytes);
+  await verifyReleaseIntegrity({ root: fixtureData.projectRoot, expectedVersion: VERSION });
+
+  // The native engine is deliberately external to the sealed source tree.
+  const native = join(fixtureData.root, 'native engine fixture');
+  const nativeArguments = join(fixtureData.root, 'native-arguments.txt');
+  await writeFile(native, `#!/bin/sh\nprintf '%s\\n' "$@" > "$SUDO_CLI_SETUP_ARGS_FILE"\nprintf '%s\\n' 'codex-cli ${CODEX_VERSION}'\n`);
+  await chmod(native, 0o755);
+  const childEnv = { ...process.env, HOME: fixtureData.homeDir, SHELL: '/bin/bash', SUDO_CLI_CODEX: native, SUDO_CLI_SETUP_ARGS_FILE: nativeArguments };
   const result = spawnSync(process.execPath, [join(fixtureData.projectRoot, 'scripts', 'setup.mjs'), '--command-only'], { encoding: 'utf8', shell: false, env: childEnv });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Registered sudocli/);
+  assert.equal(await readFile(nativeArguments, 'utf8'), '--version\n');
   const command = join(fixtureData.homeDir, '.local', 'bin', 'sudocli');
-  const run = spawnSync(command, ['doctor'], { encoding: 'utf8', shell: false });
-  assert.equal(run.status, 0);
-  assert.deepEqual(JSON.parse(run.stdout), ['doctor']);
+  await writeFile(nativeArguments, '');
+  const run = spawnSync(command, ['doctor'], { encoding: 'utf8', shell: false, env: childEnv });
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(run.stdout.includes(`Engine: codex-cli ${CODEX_VERSION}`));
+  assert.match(run.stdout, /Ready\. Model configuration happens at launch; no connection was made\./);
+  assert.equal(await readFile(nativeArguments, 'utf8'), '--version\n');
 });

@@ -1,6 +1,6 @@
 # codexcli
 
-**Project: codexcli · Command: `sudocli` · Version: 0.6.3**
+**Project: codexcli · Command: `sudocli` · Version: 0.6.4**
 
 A terminal coding assistant built on the open-source Codex engine, with the original red SUDO CLI dashboard and animated antenna. Start in an offline shell, connect a cloud or local AI, resume saved chats, review actual file changes, run your acceptance checks, and undo recorded edits while preserving later human changes.
 
@@ -36,7 +36,7 @@ Local launchers are `.\sudocli.cmd` on Windows and `sudo sh ./sudocli` on Unix. 
 
 The default launch opens a usable shell with no model traffic. `/local` offers Ollama, LM Studio or another compatible server already running on your computer. It lists available models when the server supports discovery and asks for a key only if you opt into local authentication. `/local file "PATH"` inspects a file or model folder and offers supported installed runners; `/local info "PATH"` only inspects it. GGUF and Safetensors detection reads bounded metadata and can recognize unusual extensions. Actual loading requires a supported model architecture, compatible runner and sufficient hardware. See [local model files](docs/local-model-files.md).
 
-`/connect` offers both cloud and local setup. `/chatt` opens saved project chats, `/help` lists all commands, and `/memory` shows your approved project rules.
+`/connect` offers both cloud and local setup. `/chat` opens saved project chats, `/help` lists all commands, and `/memory` shows your approved project rules.
 
 `/switch` selects saved/local AI profiles. `/switch save NAME` saves nonsecret connection metadata; `/model ID` changes the model. Selecting an AI shows its configured name immediately, while a real answer confirms response health. `/test-connection` probes the model catalog without generation; `/capabilities` separates observed, declared and unknown support. Tool, vision, reasoning, audio and training support depend on the endpoint/model.
 
@@ -44,7 +44,7 @@ The default launch opens a usable shell with no model traffic. `/local` offers O
 /connect
 /switch save Main coding
 /context capacity 131072
-/chatt
+/chat
 Explain this project and its main entry point.
 ```
 
@@ -72,7 +72,11 @@ Choose the check command for your project. **Verified** means the selected check
 
 ## Chats, context and readable input
 
-Visible user/assistant messages, partial replies and queued text prompts autosave per project. `/new` starts another saved chat; `/chatt open ID` restores one. Replies retain their AI attribution. Reopening restores the last chat without requiring an AI connection first.
+Visible user/assistant messages, partial replies and queued text prompts autosave per project. `/chat` browses saved chats and `/chat open ID` restores one. Replies retain their AI attribution. Reopening restores the last chat without requiring an AI connection first.
+
+`/new` or `/chat new` asks whether to keep the current saved chat. Enter or **Y** keeps it for later; **n** deletes its saved record. After the new chat is created successfully, it gets a new ID and the lower conversation display and AI context start fresh. Canceling the question or failing to create the new record does not reset the display. See [chat commands](docs/chat-commands.md).
+
+Use **PgUp/PgDn** or the mouse wheel to browse older/newer conversation text beneath the fixed dashboard. **Ctrl+Home** jumps to the first retained text; **Ctrl+End** returns to the live prompt. `/scroll up|down|top|bottom` provides the same navigation by command. New replies keep arriving while the older view stays in place; typing or pasting returns to live input. The command picker uses PgUp/PgDn for its own pages while open. See [chat scrolling](docs/chat-scrolling.md) for terminal support and display limits.
 
 The complete visible transcript stays archived. Before replaying it to a new native session, the CLI requires a declared context capacity and checks an explicitly labelled token estimate. Oversized replay stops before provider traffic. `/context review` lets you write a reviewed summary and choose message numbers; the summary is conversation input. `/clear` starts fresh engine context and retains the archive. `/handoff` exports the full visible chat to Markdown/JSON; hidden reasoning, internal tool state and original attachment bytes do not transfer.
 
@@ -138,7 +142,7 @@ Version 0.6.1 complete suites passed: Windows 537 tests with 24 platform skips; 
 
 Version 0.6.2 added green input accents, the live command picker and local model file inspection/import. Complete suites passed on Windows (580 passed, 24 platform skips) and root Linux (595 passed, 9 platform skips), with zero failures or cancellations. Its native acceptance selected all 59 commands, made 3 fixture requests and exited cleanly in four terminal variants. See [previous verification](docs/verification-v0.6.2.md) and [terminal evidence](docs/v0.6.2-terminal-evidence.md).
 
-Current release checks are recorded in [version 0.6.3 verification](docs/verification-v0.6.3.md). Real model inference and physical macOS/ARM terminal behavior require separate validation.
+Version 0.6.4 adds conversation scrolling, the canonical `/chat` command, fresh-chat display resets and signed source integrity. See [version 0.6.4 verification](docs/verification-v0.6.4.md) for the checks and their limits. Earlier release evidence remains in [version 0.6.3 verification](docs/verification-v0.6.3.md). Real model inference and physical macOS/ARM terminal behavior require separate validation.
 
 ## Launch options, source and licenses
 
@@ -150,6 +154,8 @@ sudocli --once "Explain this project" --model provider-model-id --base-url https
 Other options include `--permissions ask|allow-everything`, `--scope read-only|project|full`, `--web on|off`, `--effort LEVEL`, repeatable `--mcp NAME=URL`, `--help` and `--version`. There is no command-line key-value flag. An interactive launch stays offline until you choose `/local`, `/connect` or `/switch`, unless you explicitly supply `--model`. `SUDO_CLI_MODEL`, `SUDO_CLI_BASE_URL`, `SUDO_CLI_TRANSPORT` and `SUDO_CLI_API_KEY` supply defaults for explicit model or noninteractive launches; `--api-key-env` names a key variable. Local wizard choices do not borrow cloud keys. `SUDO_CLI_CODEX` selects a compatible engine; `SUDO_CLI_STATE_DIR` selects independent persistent state. Noninteractive Ask approvals are declined.
 
 The unchanged official engine is **OpenAI Codex 0.160.1**, tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`. Its complete Apache-2.0 source snapshot is included at [upstream/codex-rust-v0.160.1-source.zip](upstream/codex-rust-v0.160.1-source.zip). The frontend/tests use MIT; bundled **Node.js 24.19.0** retains its MIT/dependency notices. See [THIRD_PARTY.md](THIRD_PARTY.md), [LICENSE](LICENSE), [licenses](licenses) and [upstream source](https://github.com/openai/codex/tree/rust-v0.160.1). No npm runtime dependencies are required; run `node --test` for the automated suite.
+
+Official 0.6.4 packages verify an Ed25519-signed file manifest before startup and refuse altered or missing signed files, including credits and license notices. Someone deliberately forking the code can replace the verifier; these checks cannot prevent that. Keep the included credits, licenses and upstream notices in distributed packages. See [signed release integrity](docs/release-integrity.md) for verification, publishing and its limits.
 
 ## Credits
 

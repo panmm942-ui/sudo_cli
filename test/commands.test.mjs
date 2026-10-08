@@ -9,6 +9,16 @@ test('slash registry includes requested features and one discoverable command me
   assert.ok(completeCommand('/sw')[0].includes('/switch'));
 });
 
+test('saved chats use the canonical chat command in menus and completion',async()=>{
+  const {COMMANDS,commandMenu,completeCommand}=await import('../src/commands.mjs');
+  assert.ok(COMMANDS.some(command=>command.name==='/chat'));
+  for(const alias of ['/chatt','/chats'])assert.ok(!COMMANDS.some(command=>command.name===alias));
+  for(const menu of [commandMenu(),commandMenu('chat'),commandMenu('',{compact:true})]){
+    assert.match(menu,/\/chat\b/);assert.doesNotMatch(menu,/\/chatt\b|\/chats\b/);
+  }
+  assert.deepEqual(completeCommand('/chat')[0],['/chat']);
+});
+
 test('quoted file paths preserve Windows slashes, escaped spaces and user text', async () => {
   const { parseCommand } = await import('../src/commands.mjs');
   assert.deepEqual(parseCommand('/upload "C:\\My Project\\a.txt" "folder name"').args, ['C:\\My Project\\a.txt','folder name']);

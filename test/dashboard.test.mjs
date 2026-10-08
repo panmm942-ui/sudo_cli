@@ -230,3 +230,70 @@ test('tiny fallback keeps header cells nearblack when resizing a white chat back
   assert.ok(out.text.includes('\x1b[2;1H'+theme.bodyStyle+'\x1b[J'));
   dashboard.stop();
 });
+
+test('chat page navigation redraws only lower rows and keeps arriving output out of the paused view',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  let dashboard;const promptRestores=[];
+  dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:false,tickMs:0,onResize:()=>promptRestores.push(dashboard.isScrolled())});
+  dashboard.start();dashboard.write('FIRST USER\n',{user:true});dashboard.write('assistant line\n'.repeat(40));out.text='';
+  assert.equal(typeof dashboard.scrollToTop,'function','dashboard must expose retained chat navigation');
+  assert.equal(dashboard.scrollToTop(),true);
+  assert.equal(dashboard.isScrolled(),true);
+  assert.match(out.text,/FIRST USER/);
+  assert.doesNotMatch(out.text,/Software System|Credits:|\x1b\[2J/,'Scrolling cannot clear or redraw the antenna/header');
+  assert.ok(out.text.includes(`\x1b[${dashboard.inputArea().top};1H`));
+  out.text='';dashboard.write('INCOMING PRIVATE ANSWER\n');
+  assert.doesNotMatch(out.text,/INCOMING PRIVATE ANSWER|FIRST USER/);
+  assert.match(stripVTControlCharacters(out.text),/new output/i);
+  assert.ok(dashboard.scrollState().unseen>0);
+  out.text='';dashboard.scrollToBottom();
+  assert.equal(dashboard.isScrolled(),false);assert.match(out.text,/INCOMING PRIVATE ANSWER/);
+  assert.deepEqual(promptRestores,[true,false]);dashboard.stop();
+});
+
+test('saved chat hydration and chat clearing reset old scroll content without duplicating readline echo',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:false,tickMs:0});
+  dashboard.start();
+  assert.equal(typeof dashboard.replaceBody,'function','saved messages must hydrate the retained chat');
+  dashboard.replaceBody([{text:'SAVED USER\n',user:true},{text:'answer\n'.repeat(50),user:false}]);
+  dashboard.scrollToTop();assert.match(out.text,/SAVED USER/);
+  dashboard.clearBody();assert.equal(dashboard.isScrolled(),false);assert.equal(dashboard.scrollState().unseen,0);
+  out.text='';dashboard.remember('NEW USER\n',{user:true});assert.equal(out.text,'');
+  dashboard.redraw();assert.doesNotMatch(out.text,/SAVED USER/);
+  assert.equal(out.text.split('NEW USER').length-1,1);dashboard.stop();
+});
+
+test('paused chat survives terminal shrink and recolors only its lower region',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const {createTerminalTheme}=await import('../src/terminal-theme.mjs');
+  const theme=createTerminalTheme({color:true,env:{TERM:'xterm'}});await theme.set('bgcolor','white');await theme.set('txtcolor','maroon');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:132,rows:40,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:true,tickMs:0,theme:()=>theme});
+  dashboard.start();assert.equal(typeof dashboard.scrollToTop,'function');
+  dashboard.write('ANCHOR USER\n',{user:true});dashboard.write('other\n'.repeat(50));dashboard.scrollToTop();
+  out.text='';out.columns=35;out.rows=8;out.emit('resize');
+  assert.equal(dashboard.isScrolled(),true);assert.match(out.text,/Enlarge terminal/);assert.match(out.text,/ANCHOR USER/);
+  assert.match(out.text,/\x1b\[38;2;128;0;0mANCHOR USER/);
+  assert.doesNotMatch(out.text,/\x1b\[\d+;\d+r/);dashboard.stop();
+});
+
+test('plain terminals keep line output and decline managed scroll navigation',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  for(const isTTY of [true,false]){
+    const out=Object.assign(new EventEmitter(),{isTTY,columns:80,rows:24,text:'',write(value){this.text+=value;}});
+    const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'dumb'},tickMs:0});
+    dashboard.start();dashboard.write('plain body\n');assert.equal(typeof dashboard.pageUp,'function');
+    assert.equal(dashboard.pageUp(),false);assert.match(out.text,/plain body/);assert.doesNotMatch(out.text,/\x1b/);dashboard.stop();
+  }
+});
+
+test('a narrow paused terminal keeps its new output indicator readable for a long chat',async()=>{
+  const {createDashboard}=await import('../src/dashboard.mjs');
+  const out=Object.assign(new EventEmitter(),{isTTY:true,columns:35,rows:8,text:'',write(value){this.text+=value;}});
+  const dashboard=createDashboard({output:out,snapshot:()=>example,env:{TERM:'xterm'},color:false,tickMs:0});
+  dashboard.start();dashboard.write('old\n'.repeat(1200));dashboard.scrollToTop();out.text='';dashboard.write('new answer\n');
+  assert.match(stripVTControlCharacters(out.text),/New output/);dashboard.stop();
+});

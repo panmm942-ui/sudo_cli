@@ -52,6 +52,7 @@ import {VERSION} from './version.mjs';
 import {fileURLToPath} from 'node:url';
 import {createToolLoopGuard} from './tool-loop-guard.mjs';
 import {createCommandWatchdog} from './command-watchdog.mjs';
+import {createChatScrollInput} from './chat-scroll-input.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
@@ -68,8 +69,8 @@ export async function runUI(opts) {
     for (const key of secrets) if (key) text = text.split(key).join('[redacted]');
     return text;
   };
-  let dashboard,slashMenu;
-  const terminalTheme=createTerminalTheme({directory:join(stateOptions.stateDir,'preferences'),color,onChange:()=>{dashboard?.redraw();if(slashMenu?.snapshot().active)slashMenu.refresh();else if(currentPrompt&&!currentPrompt.hidden)rl?.prompt(true);}});
+  let dashboard,slashMenu,scrollInput;
+  const terminalTheme=createTerminalTheme({directory:join(stateOptions.stateDir,'preferences'),color,onChange:()=>{dashboard?.redraw();if(slashMenu?.snapshot().active)slashMenu.refresh();else if(!dashboard?.isScrolled()&&currentPrompt&&!currentPrompt.hidden)rl?.prompt(true);}});
   const write = (text,options) => dashboard ? dashboard.write(text,options) : process.stdout.write(terminalTheme.styleBodyText(text,options));
   const note = (text) => {
     const message = `${dim('  ·')} ${safe(text)}\n`;
@@ -92,12 +93,14 @@ export async function runUI(opts) {
   let activity = 'Offline shell', currentPrompt = null;
 
   let muted = false;
-  const output = new Writable({ write(chunk, _encoding, done) { if (!muted) {const text=Buffer.isBuffer(chunk)?chunk.toString('utf8'):String(chunk);process.stdout.write((currentPrompt?.input||!currentPrompt)?terminalTheme.styleUserInput(text):terminalTheme.styleBodyText(text));} done(); } });
+  const output = new Writable({ write(chunk, _encoding, done) { if (!muted&&!dashboard?.isScrolled()) {const text=Buffer.isBuffer(chunk)?chunk.toString('utf8'):String(chunk);process.stdout.write((currentPrompt?.input||!currentPrompt)?terminalTheme.styleUserInput(text):terminalTheme.styleBodyText(text));} done(); } });
   output.isTTY = process.stdout.isTTY;
   Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
   let rl;
-  const pasteInput=interactive?createPasteInput({input:process.stdin,onPaste:text=>{slashMenu?.closeMenu({reason:'paste',restore:false});if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){enqueue(text,{literal:true});return '';}return text.replace(/\n/g,' ');},onError:error=>note(error.message)}):undefined;
-  const terminalInput=interactive?slashMenu=createSlashMenuInput({input:pasteInput,getContext:()=>({enabled:!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
+  const pasteInput=interactive?createPasteInput({input:process.stdin,onPaste:text=>{slashMenu?.closeMenu({reason:'paste',restore:false});if(dashboard?.isScrolled())dashboard.scrollToBottom();if(currentPrompt?.raw){currentPrompt.resolvePaste?.(text);return '';}if(currentPrompt?.input||!currentPrompt){enqueue(text,{literal:true});return '';}return text.replace(/\n/g,' ');},onError:error=>note(error.message)}):undefined;
+  const scrollAction=name=>{if(name==='page-up')return dashboard?.pageUp();if(name==='page-down')return dashboard?.pageDown();if(name==='top')return dashboard?.scrollToTop();if(name==='bottom')return dashboard?.scrollToBottom();return dashboard?.scroll(name==='wheel-up'?-3:name==='wheel-down'?3:name==='line-up'?-1:1);};
+  if(interactive)scrollInput=createChatScrollInput({input:pasteInput,getContext:()=>({enabled:process.env.TERM!=='dumb'&&!slashMenu?.snapshot().active&&(!currentPrompt||currentPrompt.input&&!currentPrompt.hidden&&!currentPrompt.raw),paused:!!dashboard?.isScrolled()}),onScroll:scrollAction,onLive:()=>dashboard?.scrollToBottom(),onError:error=>note(error.message)});
+  const terminalInput=interactive?slashMenu=createSlashMenuInput({input:scrollInput,getContext:()=>({enabled:!!currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&!busy&&process.env.TERM!=='dumb',line:rl?.line||'',cursor:rl?.cursor||0}),
     getSize:()=>dashboard?.inputArea()||{columns:Math.max(1,(process.stdout.columns||80)-1),rows:Math.max(3,(process.stdout.rows||24)-2)},
     onRender:view=>{const area=dashboard?.inputArea();if(!area)return;const lines=view.lines.slice(0,Math.max(1,area.rows-1)).map((line,index)=>index===0||line.startsWith('>')?green(line):line);process.stdout.write(terminalTheme.styleBodyText(`\x1b[${area.top};1H\x1b[J`+lines.map(line=>line+'\x1b[K').join('\r\n')));},
     onClose:({selected,query,restore})=>{dashboard?.redraw();if(currentPrompt?.input&&!currentPrompt.hidden&&!currentPrompt.raw&&(selected||restore)){rl?.write(null,{ctrl:true,name:'u'});rl?.write(selected||'/'+query);}},onError:error=>note(error.message),
@@ -105,6 +108,7 @@ export async function runUI(opts) {
   rl = interactive ? createInterface({ input: terminalInput, output, terminal: true, completer: completeCommand }) : null;
   const prompts = createPromptQueue({ question: async (prompt, { signal, hidden, input,raw }) => {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');
+    if(!input&&dashboard?.isScrolled())dashboard.scrollToBottom();
     if(input&&engine&&queuedInputs.length)throw new DOMException('A queued task is ready.','AbortError');
     const localController=new AbortController();let resolvePaste;const pasted=new Promise(resolve=>{resolvePaste=text=>{resolve(text);localController.abort();};});
     currentPrompt = { prompt, hidden, input,raw,resolvePaste };
@@ -123,6 +127,7 @@ export async function runUI(opts) {
   if (interactive) dashboard = createDashboard({ snapshot, activity: () => activity, color,theme:()=>terminalTheme,
     onResize: () => {
       if (!rl) return;
+      if(dashboard?.isScrolled()){process.stdout.write('\x1b[?25l');return;}
       if(slashMenu?.snapshot().active){slashMenu.refresh();return;}
       if (!currentPrompt) { if(busy && rl.line)rl.prompt(true);return; }
       if (currentPrompt.hidden) process.stdout.write(terminalTheme.styleBodyText(currentPrompt.prompt));
@@ -167,6 +172,10 @@ export async function runUI(opts) {
   };
   const handleRuntimeCommands=async command=>{
     const {name,args=[]}=command;
+    if(name==='/scroll'){
+      const action=args[0]||'up';if(args.length>1||!['up','down','top','bottom','live'].includes(action))throw new Error('Use /scroll up|down|top|bottom.');
+      const handled=scrollAction(action==='up'?'page-up':action==='down'?'page-down':action==='top'?'top':'bottom');if(!handled)note('Use an interactive terminal and enlarge it to browse chat history.');return true;
+    }
     if(name==='/bgcolor'||name==='/txtcolor'){
       if(args.length>1)throw new Error(`Use ${name} COLOR or ${name} status.`);
       const target=name.slice(1);let value=args[0];
@@ -398,7 +407,7 @@ export async function runUI(opts) {
   try {
     await terminalTheme.load();
     dashboard?.start();
-    if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h');
+    if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h\x1b[?1000h\x1b[?1006h');
     const selected = initialConnection;
     if(selected?.apiKey)secrets.push(selected.apiKey);
     workMeter = await createWorkMeter(stateOptions);profiles=await createModelProfiles(stateOptions);
@@ -414,7 +423,8 @@ export async function runUI(opts) {
     chatSession=createChatSession({store,history,getConnection:()=>connection,getPending:()=>queuedInputs.map(input=>input.text)});
     const resumed=await chatSession.resumeLast();
     features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>{assistantFeatures?.interruptSpeech();settings.serviceController?.abort();return engine?.interrupt().catch(()=>{});}});
-    const restoreChat=async()=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;settings.pendingAgentContext='';const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';};
+    const chatBody=()=>history.snapshot().messages.map(message=>({text:`\n  ${message.role==='user'?'you':'sudo'}${message.model?' · '+safe(message.model):''}\n${safe(message.content)}\n`,user:message.role==='user'}));
+    const restoreChat=async({reason}={})=>{await assistantFeatures?.stop();queuedInputs.length=0;settings.contextReview=undefined;settings.pendingAgentContext='';const record=chatSession.current();for(const text of record.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});settings.attachments=[];settings.skills=[];if(reason==='new')dashboard?.clearBody();else dashboard?.replaceBody(chatBody());if(connection)await connect(connection,{carryHistory:true});else settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';if(reason==='new')dashboard?.clearBody();else dashboard?.replaceBody(chatBody());};
     assistantFeatures=createAssistantFeatures({cwd,stateDir:stateOptions.stateDir,settings,profiles,chatSession,personalization,note,ask,getConnection:()=>connection,reconnect:connect,onChatChange:restoreChat,enqueue,secrets:()=>secrets,loadCredential:async selected=>liveKeys.get(credentialIdentity(selected))||await vault.load(selected),extraInstructions:async()=>[await memory.instructions(),upgrades?.instructions()].filter(Boolean).join('\n\n'),capabilitiesFor:selected=>({...selected.capabilities,...settings.capabilityByIdentity?.[credentialIdentity(selected)]}),
       rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},interrupt:()=>{assistantFeatures?.interruptSpeech();if(busy&&!currentPrompt)void engine?.interrupt().catch(()=>{});},
       onVoiceState:state=>{if(!busy&&!backgroundWorking)activity=state?.status||'Ready';dashboard?.refresh();},
@@ -465,9 +475,9 @@ export async function runUI(opts) {
     }});
     const handleReset=async command=>{resetRefresh=false;try{return await resetCommands.handle(command);}finally{if(resetRefresh&&connection)await connect(connection,{carryHistory:true});}};
     if(interactive)await network.start();
-    if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chatt remains available.`);}}
-    else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chatt.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
-    if(resumed){settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chatt opens saved chats.`);}
+    if(selected||opts.model){try{await connect(selected||await configure());}catch(error){if(once)throw error;await cleanup();connection=undefined;session.updateConnection(undefined);note(`Connection setup failed: ${error.message}. Continuing offline; /chat remains available.`);}}
+    else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chat.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
+    if(resumed){dashboard?.replaceBody(chatBody());settings.pendingContext=history.snapshot().messages.length?history.toPrompt():'';for(const text of resumed.pendingInputs||[])queuedInputs.push({text,recorded:false,literal:true});if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chat opens saved chats.`);}
     await chatSession.ensure();await checkpoint();
     if(interactive&&updateSettings.enabled){try{await checkUpdates();}catch(error){if(error.name!=='AbortError'&&!quitting)note(`Update check: ${error.message}`);}}
     saveTimer=setInterval(()=>{if((busy||backgroundWorking)&&saving===0)void checkpoint();},1000);saveTimer.unref();
@@ -498,7 +508,7 @@ export async function runUI(opts) {
     process.removeListener('SIGHUP', terminate);
     prompts.close();
     rl?.close();
-    terminalInput?.detach();pasteInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004l');
+    terminalInput?.detach();scrollInput?.detach();pasteInput?.detach();if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?1000l\x1b[?1006l\x1b[?2004l');
     await assistantFeatures?.stop().catch(error=>note(error.message));
     await upgrades?.close().catch(error=>note(error.message));
     agents?.close();

@@ -12,8 +12,9 @@ export const COMMANDS = [
   {name:'/attachments',usage:'[clear]',description:'List or remove queued files'},
   {name:'/handoff',usage:'[DIRECTORY]',description:'Export the whole user/AI chat as Markdown and JSON'},
   {name:'/history',usage:'[clear]',description:'Visible chat history kept in this session'},
-  {name:'/chatt',usage:'[list|open ID|new|save|rename TITLE|delete ID]',description:'Saved project chats; last chat resumes automatically'},
+  {name:'/chat',usage:'[list|open ID|new|save|rename TITLE|delete ID]',description:'Saved project chats; last chat resumes automatically'},
   {name:'/new',usage:'',description:'New chat; choose whether to keep the current saved chat'},
+  {name:'/scroll',usage:'[up|down|top|bottom]',description:'Browse the full chat; PageUp/PageDown and mouse wheel also work'},
   {name:'/personalize',usage:'[status|setup|set FIELD VALUE|unset FIELD|on|off|clear]',description:'Saved persona and preferences for this AI only'},
   {name:'/preferences',usage:'[status|setup|set FIELD VALUE|unset FIELD|on|off|clear]',description:'Per-AI language, tone, length, format and instructions'},
   {name:'/247',usage:'[setup|start|detach|stop|status|add TASK|list|result ID|retry ID]',description:'Always-on local coordinator and durable task inbox'},
@@ -64,7 +65,7 @@ export const COMMANDS = [
   {name:'/update',usage:'[check|repo OWNER/REPO|on|off|stage PACKAGE_OR_URL SHA256|install|rollback|status]',description:'GitHub launch check, confirmed verified updates and rollback'},
 ];
 const groups={
-  'Chat':['/help','/chatt','/new','/history','/handoff','/prompt','/search-chat','/compact','/clear','/readability','/details','/quit'],
+  'Chat':['/help','/chat','/new','/scroll','/history','/handoff','/prompt','/search-chat','/compact','/clear','/readability','/details','/quit'],
   'AI':['/switch','/model','/connect','/local','/test-connection','/capabilities','/context','/effort','/personalize','/preferences','/memory','/route','/credentials'],
   'Work':['/upload','/attachments','/checks','/verify','/changes','/undo','/workflow','/team','/agents','/review','/diff','/security','/stop','/steer'],
   'Access':['/permissions','/web','/search','/browser','/computer-use','/mcp','/skills','/ide'],
@@ -73,7 +74,7 @@ const groups={
   'Advanced':['/training','/update','/doctor','/status','/bgcolor','/txtcolor','/reset','/loopguard'],
 };
 export function commandMenu(query='',{compact=false}={}) {
-  if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chatt  Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
+  if(compact&&!query)return ['Common commands:','/local   Local AI      /switch Saved AIs','/agents  Specialists   /chat   Saved chats','/prompt  Multi-line    /voice  Voice mode','/changes Review edits /verify Check work','/undo    Undo edits    /247    Background work','/permissions          /budget Spending limits','','Browse: /help chat | ai | work | access | voice | background | advanced','Find a command: /help SEARCH'].join('\n');
   const lower=query.toLowerCase();return Object.entries(groups).map(([group,names])=>{const items=COMMANDS.filter(command=>names.includes(command.name)&&(!lower||group.toLowerCase()===lower||(command.name+' '+command.description).toLowerCase().includes(lower)));return items.length?group+'\n\n'+items.map(command=>`${command.name}${command.usage ? ' '+command.usage : ''}\n    ${command.description}`).join('\n\n'):'';}).filter(Boolean).join('\n\n');
 }
 export function completeCommand(line) {
