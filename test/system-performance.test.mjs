@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { win32 } from 'node:path';
+import { tmpdir } from 'node:os';
 import { windowsGpuInventory } from '../src/system-performance-windows.mjs';
+import { isolatedEnvironment } from '../src/permission-scope.mjs';
+import { runFixtureProcess } from './fixtures/native-process.mjs';
 
 const api = await import('../src/system-performance.mjs').catch(error => {
   if (error.code === 'ERR_MODULE_NOT_FOUND') return {};
@@ -305,12 +308,11 @@ test('installed-device fallback rejects a capacity record with another PNP insta
   assert.equal(result.adapters.length, 0);
 });
 
-test('Windows installed capacity follows the exact display-class instance and accepts only QWORD bytes', { skip: process.platform !== 'win32' }, async () => {
-  const run = feature('runPerformanceProbe');
+test('Windows installed capacity follows the exact display-class instance and accepts only QWORD bytes', { skip: process.platform !== 'win32', timeout: 35000 }, async t => {
   const powershell = win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const displayDriver = '{4d36e968-e325-11ce-bfc1-08002be10318}\\0042';
-  async function readFixture(kind, driver = displayDriver) {
-    // Mock only read APIs in an isolated child; the production inventory script resolves identity and byte type.
+  function fixtureScript(kind, driver = displayDriver) {
+    // Mock only read APIs; the full production inventory script resolves identity and byte type.
     const mocks = `
 function Get-CimInstance {
   [CmdletBinding()] param([string]$ClassName)
@@ -335,12 +337,36 @@ function Get-Item {
   $fixtureKey
 }
 `;
-    const script = mocks + windowsGpuInventory.replace("Add-Type -TypeDefinition @'", "throw 'DXGI fixture unavailable'\nAdd-Type -TypeDefinition @'");
-    // Cold CI PowerShell startup is outside this identity/type correctness
-    // assertion. Production sampling bounds and timeout failures stay separate.
-    return JSON.parse(await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 10000, maxBytes: 32768 }));
+    return mocks + windowsGpuInventory.replace("Add-Type -TypeDefinition @'", "throw 'DXGI fixture unavailable'\nAdd-Type -TypeDefinition @'");
   }
-  const valid = await readFixture('QWord');
+  // One bounded stock PowerShell session verifies script correctness separately
+  // from the production sampling deadlines exercised by the probe tests below.
+  const cases = [fixtureScript('QWord'), fixtureScript('DWord'), fixtureScript('QWord', '{00000000-0000-0000-0000-000000000000}\\0042')];
+  const script = "[Console]::Error.WriteLine('GPU_FIXTURE_SCRIPT_STARTED')\n$fixtureClock = [Diagnostics.Stopwatch]::StartNew()\n" + cases.map((body, index) =>
+    `[Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_STARTED ' + $fixtureClock.ElapsedMilliseconds)\n& {\n${body}\n}\n[Console]::Error.WriteLine('GPU_FIXTURE_CASE_${index}_COMPLETE ' + $fixtureClock.ElapsedMilliseconds)`
+  ).join('\n');
+  const stages = [];
+  let stageBuffer = '';
+  let verified = false;
+  t.after(() => {
+    if (!verified) t.diagnostic('Windows GPU fixture stages: ' + (stages.join(', ') || 'none observed'));
+  });
+  const result = await runFixtureProcess(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    timeoutMs: 30000, maxBytes: 32768, signal: t.signal, cwd: tmpdir(),
+    env: isolatedEnvironment(process.env, { LC_ALL: 'C', LANG: 'C' }),
+    onStderr: chunk => {
+      const lines = (stageBuffer + String(chunk)).slice(-4096).split(/\r?\n/);
+      stageBuffer = lines.pop() || '';
+      for (const line of lines) {
+        if (/^GPU_FIXTURE_(?:SCRIPT_STARTED|CASE_[0-2]_(?:STARTED|COMPLETE) \d{1,8})$/.test(line) && stages.length < 7) stages.push(line);
+      }
+    },
+  });
+  let fixtures;
+  try { fixtures = result.stdout.trim().split(/\r?\n/).map(line => JSON.parse(line)); }
+  catch { throw new Error('Windows GPU fixture returned invalid JSON.'); }
+  assert.equal(fixtures.length, 3, 'all original fixture cases complete in the isolated session');
+  const [valid, dword, wrongClass] = fixtures;
   assert.equal(valid.complete, false, 'installed devices survive an independent DXGI failure');
   assert.equal(valid.adapters.length, 1);
   assert.equal(valid.adapters[0].id, deviceId(nvidiaPnp));
@@ -348,11 +374,12 @@ function Get-Item {
   assert.equal(valid.adapters[0].dedicatedBytes, String(8 * 1024 ** 3));
   assert.equal(valid.adapters[0].driverErrorCode, 43);
   assert.equal(valid.adapters[0].capacitySource, 'windows-driver-registry-qword');
-  for (const unsupported of [await readFixture('DWord'), await readFixture('QWord', '{00000000-0000-0000-0000-000000000000}\\0042')]) {
+  for (const unsupported of [dword, wrongClass]) {
     assert.equal(unsupported.adapters.length, 1, 'unverified capacity does not erase installed inventory');
     assert.equal(unsupported.adapters[0].dedicatedBytes, null);
     assert.equal(unsupported.adapters[0].capacitySource, 'unavailable');
   }
+  verified = true;
 });
 
 test('known shared-only adapters retain shared capacity independently of unknown usage', () => {

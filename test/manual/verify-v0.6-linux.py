@@ -73,7 +73,9 @@ def ready_prompt_visible(raw):
     # A retained user message starts with the same label. Only the empty final
     # input line is an editable prompt; earlier prompts and Working echoes are
     # not evidence that the submitted operation has returned.
-    return bool(re.search(r'(?:\r?\n|^)  you › $', plain(raw)))
+    # Notification BELs do not change cells or cursor position. Ignore only
+    # standalone BELs left after ANSI/OSC removal, including delayed rhythms.
+    return bool(re.search(r'(?:\r?\n|^)  you › $', plain(raw).replace('\x07', '')))
 
 
 def sanitized(value):
@@ -332,8 +334,11 @@ def verify_ready_prompt_regression():
         ('\n  you › V6_MULTILINE_PROMPT\n/permissions allow-everything\n  · Working · Ctrl+C to interrupt\n', False),
         ('\n  you › /status', False),
         ('\n  you › \n  · Working · Ctrl+C to interrupt\n', False),
+        ('\n  you › /status\x07\x07', False),
+        ('\n  you › \n  · Working · Ctrl+C to interrupt\n\x07\x07', False),
         ('\n  you › \x1b[39m', True),
         ('\n  you › \x1b7header redraw\x1b8', True),
+        ('\n  you › \x1b[39m\x07\x07', True),
     ]
     for text, expected in samples:
         assert ready_prompt_visible(text.encode()) is expected, repr(text)
