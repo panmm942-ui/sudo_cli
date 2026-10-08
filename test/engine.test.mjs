@@ -369,12 +369,30 @@ test('compaction waits for matching native completion after acknowledgement and 
   }
 });
 
-test('compaction can be interrupted before its native turn id arrives', async (t) => {
-  const engine = await createEngine(options('compact-interrupt'));
+test('compaction can be interrupted before its native turn id arrives', { timeout: 10000 }, async (t) => {
+  let awaitingId;
+  const ready = new Promise(resolve => { awaitingId = resolve; });
+  const events = [];
+  const engine = await createEngine(options('compact-interrupt-gated', { onEvent: event => {
+    events.push(event);
+    if (event.method === 'fixture/compactionAwaitingId') awaitingId();
+  } }));
   t.after(() => engine.close());
   const completed = engine.compact();
-  await within(engine.interrupt());
-  assert.equal((await within(completed)).status, 'interrupted');
+  void completed.catch(() => {});
+  await ready;
+  assert.equal(events.some(event => event.method === 'turn/started'), false);
+  const interrupted = engine.interrupt();
+  void interrupted.catch(() => {});
+  // Let the interrupt's acknowledgement continuation reach its ID wait before
+  // the fixture releases that ID through a separate protocol request.
+  await new Promise(resolve => setImmediate(resolve));
+  const gate = (await engine.listModels({ cursor: 'fixture-release-compaction-id' })).fixtureCompaction;
+  assert.deepEqual(gate, { awaitingTurnId: true, interruptsBeforeTurnId: [] });
+  await interrupted;
+  const result = await completed;
+  assert.equal(result.id, 'compact-turn');
+  assert.equal(result.status, 'interrupted');
 });
 
 test('missing compaction start notifications time out instead of hanging an operation', async (t) => {

@@ -9,6 +9,9 @@ const input = createInterface({ input: process.stdin });
 let initialized = false;
 let threadParams;
 let turnsStarted = 0;
+let releaseCompactionId;
+let compactionIdReleased = false;
+const interruptsBeforeCompactionId = [];
 const background = new Set(['background-commands', 'background-race'].includes(scenario) ? ['23', '24'] : []);
 const commandTerminations = [];
 const approvalResponses = {};
@@ -59,7 +62,13 @@ input.on('line', async (line) => {
     if (scenario === 'read-only-fallback') sandbox = { type: 'readOnly', networkAccess: false };
     response(message.id, { thread: { id: 'thread-1', turns: [], ephemeral: true }, model: message.params.model, modelProvider: 'fixture', cwd: message.params.cwd, approvalPolicy: message.params.approvalPolicy, sandbox });
   } else if (message.method === 'model/list') {
-    response(message.id, { data: [{ id: 'fixture-model', model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }], nextCursor: null, received: message.params });
+    let fixtureCompaction;
+    if (scenario === 'compact-interrupt-gated' && message.params.cursor === 'fixture-release-compaction-id') {
+      fixtureCompaction = { awaitingTurnId: Boolean(releaseCompactionId), interruptsBeforeTurnId: interruptsBeforeCompactionId };
+      releaseCompactionId?.();
+      releaseCompactionId = undefined;
+    }
+    response(message.id, { data: [{ id: 'fixture-model', model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }], nextCursor: null, received: message.params, ...(fixtureCompaction ? { fixtureCompaction } : {}) });
   } else if (message.method === 'thread/backgroundTerminals/list') {
     const data = [...background].map(processId => ({ itemId: 'command-'+processId, processId, command: 'fixture sleep', cwd: process.cwd(), osPid: null }));
     if (scenario === 'background-race') setTimeout(() => response(message.id, { data, nextCursor: null }), 80);
@@ -80,6 +89,10 @@ input.on('line', async (line) => {
     if (scenario === 'compact-early') { started(); completed(); return setTimeout(() => response(message.id, {}), 20); }
     response(message.id, {});
     if (scenario === 'compact-no-start') return;
+    if (scenario === 'compact-interrupt-gated') {
+      releaseCompactionId = () => { compactionIdReleased = true; started(); };
+      return event('fixture/compactionAwaitingId', { threadId: 'thread-1' });
+    }
     if (scenario === 'compact-interrupt') return setTimeout(started, 25);
     started();
     event('turn/completed', { threadId: 'other-thread', turn: { ...compactTurn, status: 'completed' } });
@@ -129,6 +142,10 @@ input.on('line', async (line) => {
   } else if (message.method === 'turn/steer') {
     response(message.id, { turnId: message.params.expectedTurnId, received: message.params });
   } else if (message.method === 'turn/interrupt') {
+    if (scenario === 'compact-interrupt-gated' && !compactionIdReleased) {
+      interruptsBeforeCompactionId.push(message.params);
+      return response(message.id, {});
+    }
     event('turn/completed', { threadId: 'thread-1', turn: { ...turn('interrupted'), id: message.params.turnId } });
     response(message.id, {});
   }
