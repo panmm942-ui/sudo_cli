@@ -12,6 +12,27 @@ const messageResult = (message = { role: 'assistant', content: 'Hello from the m
   usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
 });
 
+test('bridge forwards explicit reasoning effort and preserves provider default when omitted', async (t) => {
+  const { requests, post } = await setup(t);
+  for (const effort of ['none', 'xhigh', 'max', 'ultra', 'adaptive']) {
+    const res = await post({ input: 'Think', reasoning: { effort }, stream: false });
+    assert.equal(res.status, 200);
+    await res.text();
+    assert.equal(requests.at(-1).body.reasoning_effort, effort);
+  }
+  await (await post({ input: 'Default', reasoning: {}, stream: false })).text();
+  assert.equal(Object.hasOwn(requests.at(-1).body, 'reasoning_effort'), false);
+  await (await post({ input: 'Default', stream: false })).text();
+  assert.equal(Object.hasOwn(requests.at(-1).body, 'reasoning_effort'), false);
+  const count = requests.length;
+  for (const reasoning of [null, [], { effort: null }, { effort: 'secret\nvalue' }]) {
+    const res = await post({ input: 'Invalid', reasoning });
+    assert.equal(res.status, 400);
+    assert.ok(!(await res.text()).includes('secret'));
+  }
+  assert.equal(requests.length, count);
+});
+
 async function setup(t, handler = () => messageResult(), options = {}) {
   const requests = [];
   const upstream = createServer(async (req, res) => {

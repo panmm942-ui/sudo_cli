@@ -251,3 +251,79 @@ test('rejects empty input before sending a model request', async (t) => {
   for (const text of ['', '  ', null]) await assert.rejects(engine.startTurn(text), /non-empty text/);
   assert.equal((await engine.startTurn('valid after invalid')).status, 'completed');
 });
+
+test('typed skill and image inputs reach native turns together with explicit reasoning', async (t) => {
+  const engine = await createEngine(options('normal', { supportedEfforts: ['high', 'adaptive'] }));
+  t.after(() => engine.close());
+  const input = [{ type: 'skill', name: 'review', path: '/workspace/.agents/skills/review/SKILL.md' }, { type: 'localImage', path: '/workspace/shot.png', detail: 'high' }, { type: 'text', text: 'Review this' }];
+  const audit = JSON.parse((await engine.startTurn(input, { effort: 'adaptive' })).items[0].text);
+  assert.deepEqual(audit.params.input, [input[0], input[1], { ...input[2], text_elements: [] }]);
+  assert.equal(audit.params.effort, 'adaptive');
+  await assert.rejects(engine.startTurn('Unsupported profile effort', { effort: 'low' }), /model profile/);
+  const next = JSON.parse((await engine.startTurn('Default')).items[0].text);
+  assert.equal(Object.hasOwn(next.params, 'effort'), false);
+  for (const input of [[], [{ type: 'skill', path: '/x' }], [{ type: 'tool', name: 'fake' }], [{ type: 'text', text: 'x', sandbox: 'danger-full-access' }]]) await assert.rejects(engine.startTurn(input), /input/);
+});
+
+test('native discovery uses documented methods and current thread scope', async (t) => {
+  const engine = await createEngine(options());
+  t.after(() => engine.close());
+  const models = await engine.listModels({ limit: 2, includeHidden: true });
+  assert.deepEqual(models.received, { limit: 2, includeHidden: true });
+  assert.equal(models.data[0].supportedReasoningEfforts[0].reasoningEffort, 'high');
+  assert.deepEqual((await engine.listSkills({ cwd: '/workspace', forceReload: true })).received, { cwds: ['/workspace'], forceReload: true });
+  assert.deepEqual((await engine.listMcpServers({ serverName: 'browser' })).received, { threadId: 'thread-1', detail: 'toolsAndAuthOnly', serverName: 'browser' });
+  const tools = await engine.listMcpTools();
+  assert.equal(tools[0].serverName, 'browser');
+  assert.equal(tools[0].name, 'click');
+  assert.equal(tools[0].tool.description, 'Click a button');
+  assert.deepEqual(await engine.capabilities(), { namespaceTools: true, imageGeneration: false, webSearch: false });
+});
+
+test('compaction waits for matching native completion after acknowledgement and supports early notifications', async (t) => {
+  for (const scenario of ['compact-normal', 'compact-early']) {
+    const engine = await createEngine(options(scenario));
+    t.after(() => engine.close());
+    const completed = engine.compact();
+    await assert.rejects(engine.startTurn('Overlap'), /already active/);
+    assert.equal((await within(completed)).id, 'compact-turn');
+    assert.equal((await engine.startTurn('Continue')).status, 'completed');
+  }
+});
+
+test('compaction can be interrupted before its native turn id arrives', async (t) => {
+  const engine = await createEngine(options('compact-interrupt'));
+  t.after(() => engine.close());
+  const completed = engine.compact();
+  await within(engine.interrupt());
+  assert.equal((await within(completed)).status, 'interrupted');
+});
+
+test('missing compaction start notifications time out instead of hanging an operation', async (t) => {
+  const engine = await createEngine(options('compact-no-start', { requestTimeoutMs: 250 }));
+  t.after(() => engine.close());
+  await assert.rejects(within(engine.compact()), /compaction.*timed out/i);
+});
+
+test('steering waits for the active native turn and includes its required id precondition', async (t) => {
+  const engine = await createEngine(options('interrupt'));
+  t.after(() => engine.close());
+  await assert.rejects(engine.steer('Before any turn'), /active turn/);
+  const turn = engine.startTurn('Initial task');
+  const result = await engine.steer([{ type: 'text', text: 'Focus on tests' }]);
+  assert.equal(result.turnId, 'turn-1');
+  assert.deepEqual(result.received, { threadId: 'thread-1', expectedTurnId: 'turn-1', input: [{ type: 'text', text: 'Focus on tests', text_elements: [] }] });
+  await engine.interrupt();
+  assert.equal((await turn).status, 'interrupted');
+  await assert.rejects(engine.steer('After completion'), /active turn/);
+});
+
+test('compaction cannot accept same-turn steering', async (t) => {
+  const engine = await createEngine(options('compact-interrupt'));
+  t.after(() => engine.close());
+  const compaction = engine.compact();
+  void compaction.catch(() => {}); // A failing assertion still closes the pending operation safely.
+  await assert.rejects(engine.steer('Additional task'), /compaction/);
+  await engine.interrupt();
+  await compaction;
+});

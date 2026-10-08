@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,83 @@ import { startBridge } from '../src/bridge.mjs';
 import { createEngine } from '../src/engine.mjs';
 import { providerArgs, createSessionHome } from '../src/runtime.mjs';
 import { createWorkMeter } from '../src/work-meter.mjs';
+
+test('native MCP disabled_tools removes computer actions while retaining other server tools', { timeout: 45000 }, async (t) => {
+  let enginePath;
+  try { enginePath = localCodex(); } catch { t.skip('Install Codex engine to run its real integration'); return; }
+  const workspace = await mkdtemp(join(tmpdir(), 'codexcli-mcp-policy-'));
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push(JSON.parse(raw));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'chatcmpl-mcp-policy', object: 'chat.completion', model: 'fixture-model', choices: [{ index: 0, message: { role: 'assistant', content: 'Native tool policy checked.' }, finish_reason: 'stop' }] }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const home = await createSessionHome();
+  let engine, bridge;
+  t.after(async () => { await engine?.close(); await bridge?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await home.cleanup(); await rm(workspace, { recursive: true, force: true }); });
+  const connection = { model: 'fixture-model', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, transport: 'chat-completions' };
+  bridge = await startBridge(connection);
+  const fixture = fileURLToPath(new URL('./fixtures/mcp-server.mjs', import.meta.url));
+  engine = await createEngine({ codexPath: enginePath, cwd: workspace, model: connection.model,
+    providerArgs: [...providerArgs(connection, { baseUrl: bridge.baseUrl }), '-c', `mcp_servers.fixture.command=${JSON.stringify(process.execPath)}`, '-c', `mcp_servers.fixture.args=${JSON.stringify([fixture, '--serve-mcp'])}`, '-c', 'mcp_servers.fixture.disabled_tools=["browser_click"]'],
+    env: { ...process.env, CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: bridge.token } });
+  assert.equal((await engine.startTurn('List available tools without calling them.')).status, 'completed');
+  const tools = await engine.listMcpTools();
+  assert.ok(tools.some(tool => tool.tool?.name === 'add_numbers'));
+  assert.ok(!tools.some(tool => tool.tool?.name === 'browser_click'));
+  const declarations = JSON.stringify(requests[0].tools);
+  assert.ok(declarations.includes('add_numbers'));
+  assert.ok(!declarations.includes('browser_click'));
+});
+
+test('native engine discovers workspace skills, loads typed skill input, propagates reasoning and completes manual compaction', { timeout: 60000 }, async (t) => {
+  let enginePath;
+  try { enginePath = localCodex(); } catch { t.skip('Install Codex engine to run its real integration'); return; }
+  const workspace = await mkdtemp(join(tmpdir(), 'codexcli-native-features-'));
+  const skillPath = join(workspace, '.agents', 'skills', 'fixture-review', 'SKILL.md');
+  await mkdir(join(workspace, '.agents', 'skills', 'fixture-review'), { recursive: true });
+  await writeFile(skillPath, '---\nname: fixture-review\ndescription: Review local fixture content.\n---\nFixture native skill instruction: use a short response.\n');
+  await writeFile(join(workspace, 'AGENTS.md'), 'Fixture workspace instruction: be concise.\n');
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push(JSON.parse(raw));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: `chatcmpl-native-${requests.length}`, object: 'chat.completion', model: 'fixture-model', choices: [{ index: 0, message: { role: 'assistant', content: 'Native feature fixture summary.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 5, total_tokens: 55 } }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const home = await createSessionHome();
+  const nativeEvents = [];
+  let engine, bridge;
+  t.after(async () => { await engine?.close(); await bridge?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await home.cleanup(); await rm(workspace, { recursive: true, force: true }); });
+  const connection = { model: 'fixture-model', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, transport: 'chat-completions', supportedEfforts: ['high'] };
+  bridge = await startBridge(connection);
+  engine = await createEngine({ codexPath: enginePath, cwd: workspace, model: connection.model, supportedEfforts: connection.supportedEfforts, onEvent: event => nativeEvents.push(event),
+    providerArgs: providerArgs(connection, { baseUrl: bridge.baseUrl }), env: { ...process.env, CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: bridge.token } });
+  const skills = await engine.listSkills({ forceReload: true });
+  const skill = skills.data.flatMap(group => group.skills).find(skill => skill.name === 'fixture-review');
+  assert.ok(skill, 'The native engine must discover the workspace SKILL.md');
+  assert.ok(engine.instructionSources.some(path => path.endsWith('AGENTS.md')));
+  assert.ok(Array.isArray((await engine.listModels({ limit: 1 })).data));
+  assert.ok(Array.isArray((await engine.listMcpServers()).data));
+  assert.equal(typeof (await engine.capabilities()).namespaceTools, 'boolean');
+  const completed = await engine.startTurn([{ type: 'skill', name: skill.name, path: skill.path }, { type: 'text', text: 'Review this native fixture.' }], { effort: 'high' });
+  assert.equal(completed.status, 'completed');
+  assert.equal(requests[0].reasoning_effort, 'high');
+  assert.ok(JSON.stringify(requests[0].messages).includes('Fixture native skill instruction'));
+  const compacted = await engine.compact();
+  assert.equal(compacted.status, 'completed');
+  assert.ok(nativeEvents.some(event => event.method === 'item/completed' && event.params?.item?.type === 'contextCompaction'), 'Native compaction must emit its completed item');
+  assert.ok(requests.length >= 2, 'Compaction must actually call the model');
+  assert.equal((await engine.startTurn('Continue after compaction.')).status, 'completed');
+  assert.ok(JSON.stringify(requests.at(-1).messages).includes('Native feature fixture summary.'));
+});
 
 test('actual Codex app-server runs a sudo cli task through the compatibility bridge', { timeout: 45000 }, async (t) => {
   let enginePath;

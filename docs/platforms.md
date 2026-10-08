@@ -69,3 +69,13 @@ An explicit `SUDO_CLI_CODEX` environment variable can select another compatible 
 Windows x64 and Linux x64 under an existing WSL2 distribution have native runtime and command tests. Setup's registration tests use temporary homes and an injected Windows PATH store to avoid changing real user settings. Actual command registration is a separate first setup action. macOS and arm64 package mappings are present, but native execution still needs validation on those hosts.
 
 Underlying shell permissions and filesystem sandboxes remain platform-dependent. Linux uses the bundled Bubblewrap helper and may need working user namespaces; WSL uses the Linux package. macOS permissions follow the user's operating-system policy. The [upstream installation guide](https://github.com/openai/codex/blob/rust-v0.160.1/docs/install.md) documents supported system versions.
+
+## Version 0.4 runtime features
+
+The [user guide](user-guide.md) covers saved AI selection, local model endpoints, complete visible-chat transfer on the next prompt, queued tasks, steering, attachments, skills and explicit optional services. Saved profiles contain only nonsecret model metadata; keys, execution choices and service settings remain in the running process. Worked totals persist separately as numbers. Setup itself does not save a model connection.
+
+The WiFi monitor reads local interfaces only: NetAdapter PowerShell on Windows, sysfs on Linux, and networksetup/ifconfig/netstat on macOS. It measures current physical-interface traffic rather than maximum bandwidth and cannot infer host WiFi from WSL guest interfaces. Missing tools, permissions or ambiguous data remain Unknown.
+
+Microphone recording additionally needs FFmpeg and OS microphone permission. Its backend is DirectShow on Windows (an exact device name is required), PulseAudio on Linux, and AVFoundation on macOS. `/microphone on` only arms recording; `/voice record` starts a bounded recording. A separately configured compatible transcription API is needed for text. Physical device operation was not tested during development.
+
+`/ide` requires installed VS Code/Cursor. Browser/desktop automation requires your running HTTP MCP service and model tool/vision support. Fine-tuning controls require a compatible provider service and fine-tunable model; they do not supply GPU resources. Native macOS and Windows/Linux ARM execution remain unverified. The [verification record](verification.md) distinguishes actual native tests from fixtures and pending host/service coverage.

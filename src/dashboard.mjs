@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from 'node:util';
 import { basename } from 'node:path';
 import { VERSION } from './version.mjs';
+import { ANTENNA_ROWS, renderAntenna, createAntennaClock, BACKGROUND_STYLE, FPS } from './antenna.mjs';
 
 const LOGO = [
   ' ____  _   _ ____   ___      ____ _     ___ ',
@@ -34,8 +35,11 @@ export function describeSystem({ platform = process.platform, arch = process.arc
   return `${({ win32: 'Windows', linux: 'Linux', darwin: 'macOS' })[platform] || platform} (${arch})`;
 }
 
+const clockFormatters = new Map();
 function clock(date, timeZone) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short', numberingSystem: 'latn' }).formatToParts(date).map(part => [part.type, part.value]));
+  let formatter=clockFormatters.get(timeZone);
+  if(!formatter){formatter=new Intl.DateTimeFormat('en-GB', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short', numberingSystem: 'latn' });clockFormatters.set(timeZone,formatter);}
+  const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]));
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${parts.timeZoneName}`;
 }
 
@@ -49,14 +53,23 @@ function contextText(context, columns) {
   return `${percentage} ${compact(context.used)}/${compact(context.limit)} tokens`;
 }
 
-export function renderDashboard({ state, columns = 100, rows = 24, color = false, now = new Date(), timeZone, platform = process.platform, arch = process.arch, activity = 'Idle' }) {
+export function trafficRate(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Measuring';
+  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']; let unit = 0;
+  while (bytes >= 1024 && unit < units.length - 1) { bytes /= 1024; unit++; }
+  return `${unit ? bytes.toFixed(1) : Math.round(bytes)} ${units[unit]}`;
+}
+
+export function renderDashboard({ state, columns = 100, rows = 24, color = false, now = new Date(), timeZone, platform = process.platform, arch = process.arch, activity = 'Idle', antennaElapsed = 0, antennaIdle = !state.working }) {
   columns = Math.max(1, Math.floor(columns || 80) - 1); rows = Math.max(1, Math.floor(rows || 24));
-  const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
+  const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m${BACKGROUND_STYLE}` : text;
   const logoWidth = Math.max(...LOGO.map(line => line.length));
-  const beside = columns >= logoWidth + 36;
-  const available = beside ? columns - logoWidth - 3 : columns;
+  const big = columns >= logoWidth + 36 && rows >= LOGO.length + ANTENNA_ROWS.length + 7;
+  const artWidth = Math.max(...ANTENNA_ROWS.map(line => line.length));
+  const leftWidth = big ? logoWidth : artWidth;
+  const beside = columns >= leftWidth + 36;
+  const available = beside ? columns - leftWidth - 3 : columns;
   const field = (label, value, code = 37) => paint(90, `${label}: `) + paint(code, fit(value, Math.max(0, available - label.length - 2)));
-  const pending = state.connectionState === 'pending' ? ' (not checked)' : '';
   const quality = state.health?.percent;
   const qualityColor = quality == null ? 90 : quality > 70 ? 32 : quality > 50 ? '38;5;208' : 31;
   const qualityLabel = quality == null ? 'Not measured' : `${quality}% ${quality > 70 ? 'Good' : quality > 50 ? 'Fair' : 'Bad'}`;
@@ -65,30 +78,42 @@ export function renderDashboard({ state, columns = 100, rows = 24, color = false
   const fields = [
     field('Time', clock(now, timeZone)),
     field('Software System', describeSystem({ platform, arch })),
-    field('Working', state.working ? 'Working' : 'Not working', state.working ? 32 : 31),
-    field('Status', state.status + pending, state.status === 'Online' ? 32 : 31),
+    field('Status', state.working ? 'Working' : 'Not Working', state.working ? 32 : 31),
+    field('WiFi Connection', state.network?.wifi || 'Unknown', state.network?.wifi === 'Yes' ? 32 : state.network?.wifi === 'No' ? 31 : 90),
+    ...(state.network?.wifi === 'Yes' ? [field('Download', `${trafficRate(state.network.downloadBps)} | Upload: ${trafficRate(state.network.uploadBps)}`)] : []),
     field('Connected AI', state.connectedAI || 'No AI connected'),
-    field('Connection', qualityText, qualityColor),
+    field('AI Connection', qualityText, qualityColor),
     field('Context', contextText(state.context, available - 9)),
     field('Permissions', state.permissions === 'allow-everything' ? 'Allow Everything' : 'Ask', state.permissions === 'allow-everything' ? '38;5;208' : 37),
     field('Web Access', state.webAccess ? 'On' : 'Off', state.webAccess ? 32 : 90),
+    field('Effort', state.effort || 'Provider default'),
     field('Worked', `${workedTime(state.worked?.sessionMs)} | In Total: ${workedTime(state.worked?.totalMs)}`),
     field('Activity', activity),
     field('Project', basename(String(state.cwd || '').replace(/\\/g, '/')) || '/'),
   ];
   let lines;
-  if (beside) lines = fields.map((right, index) => paint(36, (LOGO[index] || '').padEnd(logoWidth)) + '   ' + right);
-  else if (columns >= logoWidth && rows >= LOGO.length + fields.length + 7) lines = [...LOGO.map(line => paint(36, fit(line, columns))), '', ...fields];
-  else lines = [paint(36, 'SUDO CLI'), ...fields];
-  lines.push(paint(90, fit(`v${VERSION} | /help | Connection: latency/error estimate | Context: last reported`, columns)), paint(90, '-'.repeat(columns)));
+  if (beside) {
+    const antenna = renderAntenna({ elapsed: antennaElapsed, idle: antennaIdle, color });
+    const left = big ? [...LOGO.map(line => paint(36, line)), '', ...antenna] : [paint(36, 'SUDO CLI'), ...antenna];
+    lines = Array.from({ length: Math.max(left.length, fields.length) }, (_, index) => {
+      const value = left[index] || '';
+      return value + ' '.repeat(Math.max(0, leftWidth-width(value))) + '   ' + (fields[index] || '');
+    });
+  } else lines = [paint(36, 'SUDO CLI'), ...fields];
+  lines.push(paint(90, fit(`v${VERSION} | / for commands | Connection: estimate | Context: reported`, columns)), paint(90, '-'.repeat(columns)));
+  if (color) lines[0] = BACKGROUND_STYLE + lines[0];
   if (rows - lines.length < 4 || columns <= logoWidth) return { lines: [paint(36, fit('SUDO CLI | Enlarge terminal', columns))], height: 1, sticky: false };
   return { lines, height: lines.length, sticky: true };
 }
 
 /** A terminal-only header. It never reads or redraws secret input. */
-export function createDashboard({ output = process.stdout, snapshot, now = () => new Date(), timeZone, platform, arch, activity = () => 'Idle', color = output.isTTY && !process.env.NO_COLOR, env = process.env, tickMs = 1000, onResize = () => {} }) {
+export function createDashboard({ output = process.stdout, snapshot, now = () => new Date(), monotonic = () => performance.now(), timeZone, platform, arch, activity = () => 'Idle', color = output.isTTY && !process.env.NO_COLOR, env = process.env, tickMs = 1000/FPS, onResize = () => {} }) {
   let started = false, sticky = false, alternate = false, height = 0, last = '', timer, body = '';
-  const view = () => renderDashboard({ state: snapshot(), columns: output.columns || 80, rows: output.rows || 24, color: color && !!output.isTTY && env.TERM !== 'dumb', now: now(), timeZone, platform, arch, activity: activity() });
+  const antennaClock = createAntennaClock({ now: monotonic });
+  const view = () => {
+    const state = snapshot(), elapsed = antennaClock.elapsed(!!state.working);
+    return renderDashboard({ state, columns: output.columns || 80, rows: output.rows || 24, color: color && !!output.isTTY && env.TERM !== 'dumb', now: now(), timeZone, platform, arch, activity: activity(), antennaElapsed: elapsed, antennaIdle: !antennaClock.hasWorked() });
+  };
   const draw = (lines) => '\x1b[H' + lines.map(line => line + '\x1b[K').join('\r\n');
   function resize() {
     if (!started) return;
@@ -115,7 +140,7 @@ export function createDashboard({ output = process.stdout, snapshot, now = () =>
     const current = view(), next = current.lines.join('\n');
     if (!sticky) {
       // Legacy/tiny terminals get state changes without per-second output spam.
-      const withoutTime = lines => lines.split('\n').filter(line => !/^(Time|Worked|Connection):/.test(stripVTControlCharacters(line))).join('\n');
+      const withoutTime = lines => lines.split('\n').filter(line => !/^(Time|Worked|Connection|Download):/.test(stripVTControlCharacters(line))).join('\n');
       if (withoutTime(next) !== withoutTime(last)) { last = next; output.write('\n' + next + '\n'); }
       return;
     }

@@ -7,6 +7,27 @@ const windows = process.platform === 'win32';
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const controlCharacters = /[\u0000-\u001f\u007f]/;
 
+// Pinned native ReasoningEffort strings. A provider may additionally declare
+// its own values; accepting a native value is not a claim of model support.
+export const REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']);
+const effortIdentifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
+
+export function validateSupportedEfforts(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 64 || value.some(effort => !effortIdentifier(effort)) || new Set(value).size !== value.length) {
+    throw new Error('Supported reasoning efforts must be a list of unique effort identifiers.');
+  }
+  return [...value];
+}
+
+export function validateReasoningEffort(value, { supportedEfforts } = {}) {
+  const supported = validateSupportedEfforts(supportedEfforts);
+  if (value === undefined) return undefined; // Keep the provider's default.
+  if (!effortIdentifier(value) || (!REASONING_EFFORTS.includes(value) && !supported?.includes(value))) throw new Error('Reasoning effort must be a native level or a declared model effort.');
+  if (supported && !supported.includes(value)) throw new Error('Reasoning effort is not supported by the selected model profile.');
+  return value;
+}
+
 function environmentValue(env, name) {
   if (env[name] !== undefined) return env[name];
   if (windows) {
@@ -103,7 +124,7 @@ export function validateConnection(connection) {
   if (!connection || typeof connection !== 'object' || Array.isArray(connection)) {
     throw new Error('A model connection is required.');
   }
-  const { transport, model, baseUrl, apiKeyEnv, apiKey, contextWindow } = connection;
+  const { transport, model, baseUrl, apiKeyEnv, apiKey, contextWindow, supportedEfforts } = connection;
   if (!['responses', 'chat-completions'].includes(transport)) {
     throw new Error('Transport must be responses or chat-completions.');
   }
@@ -111,6 +132,7 @@ export function validateConnection(connection) {
     throw new Error('Model must be a nonempty identifier without control characters.');
   }
   const normalized = { transport, model, baseUrl: validatedUrl(baseUrl) };
+  if (supportedEfforts !== undefined) normalized.supportedEfforts = validateSupportedEfforts(supportedEfforts);
   if (apiKeyEnv !== undefined) normalized.apiKeyEnv = validatedEnvironmentName(apiKeyEnv);
   if (apiKey !== undefined) {
     if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error('API key must be a nonempty string.');

@@ -16,18 +16,25 @@ import { createConnectionHealth } from './connection-health.mjs';
 import { createWorkMeter } from './work-meter.mjs';
 import { startResponsesMonitor } from './responses-monitor.mjs';
 import { workedTime } from './dashboard.mjs';
+import { createModelProfiles } from './model-profiles.mjs';
+import { createChatHistory } from './chat-history.mjs';
+import { createNetworkStatus } from './network-status.mjs';
+import { createFeatureCommands } from './features.mjs';
+import { completeCommand, parseCommand, parseMcpEntry } from './commands.mjs';
+import { BACKGROUND_STYLE } from './antenna.mjs';
+import { enabledMcpEntries } from './computer-policy.mjs';
 
 export async function runUI(opts) {
   const once = opts.once !== undefined;
   const interactive = !!process.stdin.isTTY && !once;
   const color = process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb';
-  const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
+  const paint = (code, text) => color ? `\x1b[${code}m${text}\x1b[0m${BACKGROUND_STYLE}` : text;
   const cyan = (s) => paint('96', s);
   const dim = (s) => paint('90', s);
   let secrets = [];
   const assistantOutput = createRedactor({ secrets: () => secrets });
   const safe = (value) => {
-    let text = stripVTControlCharacters(String(value ?? '')).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
+    let text = stripVTControlCharacters(String(value ?? '')).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
     for (const key of secrets) if (key) text = text.split(key).join('[redacted]');
     return text;
   };
@@ -40,16 +47,19 @@ export async function runUI(opts) {
   const cwd = resolve(opts.cwd || process.cwd());
   if (!(await stat(cwd).catch(() => null))?.isDirectory()) throw new Error('Project directory does not exist. Choose a directory with --cwd.');
   const session = createSessionState({ cwd });
-  let permissions = opts.permissions || 'ask', webAccess = opts.web === 'on';
-  let health = createConnectionHealth(), workMeter;
-  const snapshot = () => ({ ...session.snapshot(), permissions, webAccess, health: health.snapshot(), worked: workMeter?.snapshot() });
+  const settings = { permissions: opts.permissions || 'ask', webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
+  for (const entry of opts.mcp || []) { const {name,url}=parseMcpEntry(entry); if(settings.mcp.has(name))throw new Error('Duplicate MCP server name.');settings.mcp.set(name,url); }
+  let health = createConnectionHealth(), workMeter, profiles, features;
+  const history = createChatHistory({secrets:()=>secrets});
+  const network = createNetworkStatus();
+  const snapshot = () => ({ ...session.snapshot(), permissions: settings.permissions, webAccess: settings.webAccess, effort: settings.effort, health: health.snapshot(), worked: workMeter?.snapshot(), network: network.snapshot() });
   let activity = 'Configure connection', currentPrompt = null;
 
   let muted = false;
   const output = new Writable({ write(chunk, encoding, done) { if (!muted) process.stdout.write(chunk, encoding); done(); } });
   output.isTTY = process.stdout.isTTY;
   Object.defineProperty(output, 'columns', { get: () => process.stdout.columns });
-  const rl = interactive ? createInterface({ input: process.stdin, output, terminal: true }) : null;
+  const rl = interactive ? createInterface({ input: process.stdin, output, terminal: true, completer: completeCommand }) : null;
   const prompts = createPromptQueue({ question: async (prompt, { signal, hidden }) => {
     if (!rl) throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');
     currentPrompt = { prompt, hidden };
@@ -60,10 +70,12 @@ export async function runUI(opts) {
   const ask = (prompt, hidden = false) => prompts.ask(cyan(prompt), hidden);
 
   let engine, bridge, home, connection, busy = false, quitting = false, hasText = false;
+  const queuedInputs = [];
   const displayed = new Set();
   if (interactive) dashboard = createDashboard({ snapshot, activity: () => activity, color,
     onResize: () => {
-      if (!currentPrompt || !rl) return;
+      if (!rl) return;
+      if (!currentPrompt) { if(busy && rl.line)rl.prompt(true);return; }
       if (currentPrompt.hidden) process.stdout.write(currentPrompt.prompt);
       else rl.prompt(true);
     },
@@ -79,7 +91,7 @@ export async function runUI(opts) {
 
   const configure = async (refresh = false) => {
     const selected = await configureConnection({ opts, interactive, ask, refresh, report: note });
-    secrets = selected.apiKey ? [selected.apiKey] : [];
+    if(selected.apiKey && !secrets.includes(selected.apiKey))secrets.push(selected.apiKey);
     return selected;
   };
 
@@ -87,11 +99,13 @@ export async function runUI(opts) {
     session.applyEvent({ method, params });
     dashboard?.refresh();
     if (method === 'item/agentMessage/delta') {
+      history.appendAssistant(`${params.threadId || engine?.threadId}:${params.itemId}`,String(params.delta || ''),{model:connection?.model});
       if (!hasText && !once) write(`\n${cyan('  sudo')}\n`);
       hasText = true;
       displayed.add(params.itemId);
       write(assistantOutput.write(params.delta));
     } else if (method === 'item/completed' && params.item?.type === 'agentMessage') {
+      history.finishAssistant(`${params.threadId || engine?.threadId}:${params.item.id}`,params.item.text,{model:connection?.model});
       if (!displayed.has(params.item.id)) {
         if (!hasText && !once) write(`\n${cyan('  sudo')}\n`);
         hasText = true;
@@ -116,7 +130,8 @@ export async function runUI(opts) {
     await home?.cleanup().catch(() => {}); home = undefined;
   };
 
-  const connect = async (selected) => {
+  const connect = async (selected, {carryHistory = false} = {}) => {
+    const transfer = carryHistory && history.snapshot().messages.length ? history.toPrompt() : '';
     await cleanup();
     health = createConnectionHealth();
     session.updateConnection(selected);
@@ -134,18 +149,19 @@ export async function runUI(opts) {
       bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics });
       baseUrl = bridge.baseUrl; env.SUDO_CLI_SESSION_KEY = bridge.token; secrets.push(bridge.token);
     }
-    const args = providerArgs(selected, { baseUrl, keyEnv: 'SUDO_CLI_SESSION_KEY', permissions, webAccess });
-    for (const entry of opts.mcp || []) {
-      const match = /^([A-Za-z][A-Za-z0-9_-]*)=(https?:\/\/.+)$/.exec(entry);
-      if (!match) throw new Error('Use --mcp NAME=URL with a simple server name and HTTP URL.');
-      const url = new URL(match[2]);
-      if (url.username || url.password || url.hash) throw new Error('MCP URLs must not contain credentials or fragments.');
-      if (webAccess) args.push('-c', `mcp_servers.${match[1]}.url=${JSON.stringify(url.href)}`);
+    const args = providerArgs(selected, { baseUrl, keyEnv: 'SUDO_CLI_SESSION_KEY', permissions:settings.permissions, webAccess:settings.webAccess });
+    for (const [name,url] of enabledMcpEntries(settings)) {
+      if (settings.webAccess) {
+        args.push('-c', `mcp_servers.${name}.url=${JSON.stringify(url)}`);
+        const disabled=settings.disabledComputerTools?.get(name);
+        if(settings.computerUse===false && disabled?.length)args.push('-c',`mcp_servers.${name}.disabled_tools=${JSON.stringify(disabled)}`);
+      }
     }
-    engine = await createEngine({ codexPath: localCodex(), cwd, model: selected.model, providerArgs: args, env, onEvent: event, permissions, webAccess,
+    engine = await createEngine({ codexPath: localCodex(), cwd, model: selected.model, providerArgs: args, env, onEvent: event, permissions:settings.permissions, webAccess:settings.webAccess, supportedEfforts:selected.supportedEfforts,
       onApproval: async ({ method, params }) => {
         if (!interactive) return false;
         workMeter?.pause();
+        session.setWorking(false);
         activity = 'Waiting for permission'; dashboard?.refresh();
         note(`Permission requested: ${method}`);
         note(params.command || params.reason || 'This action needs your permission.');
@@ -154,28 +170,37 @@ export async function runUI(opts) {
         if (params.fileChanges) note(`Files: ${Object.keys(params.fileChanges).join(', ')}`);
         if (params.permissions) note(`Requested permissions: ${JSON.stringify(params.permissions)}`);
         try { return /^y(es)?$/i.test(await ask(cyan('  Allow once? [y/N] › '))); }
-        finally { if (busy && !quitting) workMeter?.start(); activity = 'Working'; dashboard?.refresh(); }
+        finally { if (busy && !quitting) {workMeter?.start();session.setWorking(true);} activity = 'Working'; dashboard?.refresh(); }
       },
     });
     connection = selected;
+    features?.remember(selected);
+    settings.pendingContext=transfer;
     session.bindThread(engine.threadId);
     activity = 'Ready'; dashboard?.refresh();
     if (!once) {
       note(`Configured: ${selected.model} · ${new URL(selected.baseUrl).host}. API status is confirmed by its first response.`);
-      note('Enter a task. /model changes the model; /connect starts a new connection.');
-      if (!webAccess && permissions === 'allow-everything') note('Web tools are Off. Allow Everything still permits commands to use the OS network.');
+      note('Enter a task. / opens commands; Tab completes them. /switch selects a saved or local AI.');
+      if(transfer)note('Full visible chat queued for the new AI with your next prompt.');
+      if (!settings.webAccess && settings.permissions === 'allow-everything') note('Web tools are Off. Allow Everything still permits commands to use the OS network.');
       if (engine.runtimePolicy?.sandbox?.type === 'readOnly') note('Native engine is using a read-only sandbox here; writes may require approval.');
-      if (!webAccess && opts.mcp?.length) note('HTTP MCP servers are disabled until /web on.');
+      if (!settings.webAccess && settings.mcp.size) note('HTTP MCP servers are disabled until /web on.');
     }
   };
 
-  const turn = async (text) => {
+  const turn = async (text, {recorded = false} = {}) => {
+    if(!engine)throw new Error('No engine connected. Use /switch or /connect before sending a task.');
+    const attachments=settings.attachments.flatMap(batch=>batch.files);
+    const input=features ? features.prepareTurn(text,{consume:false}) : text;
+    if(Array.isArray(input) && Buffer.byteLength(JSON.stringify(input))>8*1024*1024)throw new Error('Full chat plus attachments exceeds the request limit. Export /handoff and use /clear before continuing.');
+    if(!recorded)history.addUser(text,{attachments,model:connection.model});
+    features?.prepareTurn(text);
     hasText = false; assistantOutput.reset(); busy = true;
     workMeter?.start();
     session.setWorking(true); activity = 'Waiting for AI'; dashboard?.refresh();
     if (!once) note('Working · Ctrl+C to interrupt');
     try {
-      const result = await engine.startTurn(text, { model: connection.model });
+      const result = await engine.startTurn(input, { model: connection.model, effort:settings.effort, supportedEfforts:connection.supportedEfforts });
       if (result.status === 'completed') session.markOnline();
     } finally {
       workMeter?.pause();
@@ -184,64 +209,51 @@ export async function runUI(opts) {
       write(assistantOutput.flush()); if (hasText) write('\n');
     }
   };
+  const compact = async () => {
+    busy=true;workMeter?.start();session.setWorking(true);activity='Compacting context';dashboard?.refresh();
+    try {await engine.compact();note('Context compacted. Whole visible chat remains in /handoff.');}
+    finally {busy=false;workMeter?.pause();await workMeter?.flush().catch(()=>{});session.setWorking(false);activity='Ready';dashboard?.refresh();}
+  };
   const signal = () => {
+    if(settings.serviceController){note('Cancelling service operation…');settings.serviceController.abort();return;}
     prompts.cancel();
     if (busy) { note('Interrupting…'); engine?.interrupt().catch(() => {}); }
     else { quitting = true; prompts.close(); rl?.close(); }
   };
-  const terminate = () => { quitting = true; prompts.close(); rl?.close(); engine?.close().catch(() => {}); };
+  const terminate = () => { quitting = true;settings.serviceController?.abort(); prompts.close(); rl?.close(); engine?.close().catch(() => {}); };
   process.on('SIGINT', signal);
   process.on('SIGTERM', terminate);
   process.on('SIGHUP', terminate);
   rl?.on('SIGINT', signal);
   rl?.once('close', terminate);
+  rl?.on('line', text => {
+    if(!busy || currentPrompt || !text.trim())return;
+    if(text.trim()==='/stop'){signal();return;}
+    if(text.startsWith('/steer ')){
+      const message=text.slice(7).trim();history.addUser(message,{model:connection?.model});
+      engine?.steer(message).then(()=>note('Prompt sent to the active turn.')).catch(error=>note(error.message));return;
+    }
+    queuedInputs.push({text,recorded:false});note(`Queued prompt ${queuedInputs.length}; current work continues. /stop interrupts it.`);
+  });
   try {
     dashboard?.start();
-    const selected = await configure();
-    workMeter = await createWorkMeter({ ...(process.env.SUDO_CLI_STATE_DIR ? { stateDir: resolve(process.env.SUDO_CLI_STATE_DIR) } : {}) });
-    await connect(selected);
+    const stateOptions=process.env.SUDO_CLI_STATE_DIR?{stateDir:resolve(process.env.SUDO_CLI_STATE_DIR)}:{};
+    const selected = !interactive ? await configure() : undefined;
+    workMeter = await createWorkMeter(stateOptions);profiles=await createModelProfiles(stateOptions);
+    features=createFeatureCommands({cwd,settings,profiles,history,note,ask,getConnection:()=>connection,getEngine:()=>engine,reconnect:connect,configure,runTurn:turn,runCompact:compact,getSnapshot:snapshot,rememberSecret:key=>{if(!secrets.includes(key))secrets.push(key);},stop:()=>engine?.interrupt().catch(()=>{})});
+    if(interactive){await network.start();if(!opts.model && !process.env.SUDO_CLI_MODEL && await features.hasSavedProfiles())await features.chooseProfile();}
+    if(!connection)await connect(selected || await configure());
     if (once) { await turn(opts.once); return; }
     while (!quitting) {
-      const text = await ask(cyan('\n  you › '));
+      const queued=queuedInputs.shift();
+      const text = queued ? queued.text : await ask(cyan('\n  you › '));
       if (!text) continue;
       if (text === '/quit' || text === '/exit') break;
       try {
-        if (text === '/help') {
-          note('/connect — choose a new endpoint/model (fresh conversation)');
-          note('/model ID — change model on the current endpoint');
-          note('/clear — start a fresh conversation');
-          note('/status — show current connection');
-          note('/permissions ask|allow-everything — change access (fresh conversation)');
-          note('/web on|off — enable/disable web tools (fresh conversation)');
-          note('/quit — close sudocli · Ctrl+C interrupts work');
-        } else if (text === '/status') {
-          note(`${connection.model} · ${new URL(connection.baseUrl).host} · ${connection.transport}`);
-          const current = snapshot();
-          note(`Status: ${current.status} · Working: ${current.working ? 'Working' : 'Not working'}`);
-          note(`Context (last reported): ${current.context.used ?? 'unknown'} / ${current.context.limit ?? 'unknown'} tokens · ${current.context.percent == null ? 'unknown' : current.context.percent + '%'}`);
-          note(`Connection: ${current.health.percent == null ? 'Not measured' : current.health.percent + '%'} (observed latency/error estimate)`);
-          note(`Permissions: ${permissions === 'ask' ? 'Ask' : 'Allow Everything'} · Web Access: ${webAccess ? 'On' : 'Off'}`);
-          note(`Worked: ${workedTime(current.worked?.sessionMs)} | In Total: ${workedTime(current.worked?.totalMs)}`);
-          note('Model settings and credentials stay in memory. Only worked-time totals persist.');
-        } else if (text.startsWith('/model ')) {
-          const model = text.slice(7).trim();
-          connection = validateConnection({ ...connection, model });
-          health = createConnectionHealth();
-          session.updateConnection(connection); dashboard?.refresh();
-          note(`Model: ${model}`);
-        } else if (text.startsWith('/permissions ')) {
-          const mode = text.slice(13).trim().toLowerCase().replace(/ /g, '-');
-          if (!['ask', 'allow-everything'].includes(mode)) throw new Error('Use /permissions ask or /permissions allow-everything.');
-          permissions = mode; await connect(connection);
-        } else if (text.startsWith('/web ')) {
-          const mode = text.slice(5).trim().toLowerCase();
-          if (!['on', 'off'].includes(mode)) throw new Error('Use /web on or /web off.');
-          webAccess = mode === 'on'; await connect(connection);
-        } else if (text === '/clear') await connect(connection);
-        else if (text === '/connect') await connect(await configure(true));
-        else if (text.startsWith('/')) note('Unknown command. Use /help.');
+        const command=parseCommand(text);
+        if(command){if(!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');}
         else {
-          try { await turn(text); }
+          try { await turn(text,{recorded:queued?.recorded}); }
           catch (error) { if (!quitting) note(`Task failed: ${error.message}`); }
         }
       } catch (error) { if (!quitting) note(error.message); }
@@ -255,6 +267,7 @@ export async function runUI(opts) {
     prompts.close();
     rl?.close();
     await cleanup();
+    network.stop();
     await workMeter?.close().catch(() => note('Worked-time totals could not be saved.'));
     session.setWorking(false); session.markOffline(); activity = 'Session closed'; dashboard?.refresh(); dashboard?.stop();
     secrets = [];

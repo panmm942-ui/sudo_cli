@@ -164,3 +164,14 @@ test('web and permission options reach native configuration without blocking the
   assert.ok(chat.includes('web_search="disabled"'), 'The Chat bridge cannot execute native hosted search tools');
   assert.throws(() => feature('providerArgs')(connection, { permissions: 'secret-invalid-permission' }), error => /Permissions/.test(error.message) && !error.message.includes('secret-invalid-permission'));
 });
+
+test('reasoning uses native levels, preserves omitted defaults and restricts declared model profiles', () => {
+  const validate = feature('validateReasoningEffort');
+  assert.equal(validate(undefined), undefined);
+  for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']) assert.equal(validate(effort), effort);
+  assert.equal(validate('adaptive', { supportedEfforts: ['adaptive', 'high'] }), 'adaptive');
+  assert.throws(() => validate('adaptive'), /Reasoning effort/);
+  assert.throws(() => validate('high', { supportedEfforts: ['low'] }), /model profile/);
+  for (const value of [null, '', 'secret\nvalue', 2]) assert.throws(() => validate(value), error => /Reasoning effort/.test(error.message) && !error.message.includes('secret'));
+  assert.deepEqual(feature('validateConnection')({ transport: 'responses', model: 'm', baseUrl: 'https://example.com', supportedEfforts: ['adaptive', 'high'] }).supportedEfforts, ['adaptive', 'high']);
+});

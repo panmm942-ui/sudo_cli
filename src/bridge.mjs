@@ -171,6 +171,16 @@ function modelRequest(body, model, reasoning) {
   if (body.stream !== undefined && typeof body.stream !== 'boolean') invalid('stream must be a boolean.');
   const { tools, custom, byFlat, byLogical } = convertTools(body.tools);
   const request = { model: selectedModel, stream: false, messages: messages(body, reasoning, byLogical) };
+  if (body.reasoning !== undefined) {
+    if (!record(body.reasoning)) invalid('reasoning must be an object.');
+    const effort = body.reasoning.effort;
+    // Native models can use custom effort identifiers. The runtime profile
+    // validates support; the adapter preserves the exact explicit request.
+    if (effort !== undefined) {
+      if (typeof effort !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(effort)) invalid('Reasoning effort must be a valid effort identifier.');
+      request.reasoning_effort = effort;
+    }
+  }
   if (tools?.length) request.tools = tools;
   for (const key of ['temperature', 'top_p']) {
     if (body[key] !== undefined) {

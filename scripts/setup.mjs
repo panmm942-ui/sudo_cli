@@ -17,7 +17,8 @@ keep this directory, or rerun setup after moving it.
 --command-only  Use an existing compatible engine; do not download a runtime.
 --help          Show this help without changing anything.
 
-Model endpoints, model selection and session keys remain runtime-only.
+Setup stores no model or key. Optional AI profiles can be saved later with /switch;
+profiles exclude API keys, which stay in memory or a chosen environment variable.
 `;
 const args = process.argv.slice(2);
 const root = fileURLToPath(new URL('../', import.meta.url));

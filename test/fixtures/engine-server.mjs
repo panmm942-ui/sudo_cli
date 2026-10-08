@@ -49,6 +49,26 @@ input.on('line', (line) => {
     if (scenario === 'ignored-network') sandbox = { type: 'workspaceWrite', networkAccess: false };
     if (scenario === 'read-only-fallback') sandbox = { type: 'readOnly', networkAccess: false };
     response(message.id, { thread: { id: 'thread-1', turns: [], ephemeral: true }, model: message.params.model, modelProvider: 'fixture', cwd: message.params.cwd, approvalPolicy: message.params.approvalPolicy, sandbox });
+  } else if (message.method === 'model/list') {
+    response(message.id, { data: [{ id: 'fixture-model', model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High' }] }], nextCursor: null, received: message.params });
+  } else if (message.method === 'skills/list') {
+    response(message.id, { data: [{ cwd: message.params.cwds[0], skills: [], errors: [] }], received: message.params });
+  } else if (message.method === 'mcpServerStatus/list') {
+    response(message.id, { data: [{ name: 'browser', runtimeStatus: 'connected', tools: { click: { name: 'click', description: 'Click a button', inputSchema: { type: 'object' } } } }], nextCursor: null, received: message.params });
+  } else if (message.method === 'modelProvider/capabilities/read') {
+    response(message.id, { namespaceTools: true, imageGeneration: false, webSearch: false });
+  } else if (message.method === 'thread/compact/start') {
+    const compactTurn = { ...turn('inProgress'), id: 'compact-turn' };
+    const started = () => event('turn/started', { threadId: 'thread-1', turn: compactTurn });
+    const completed = () => event('turn/completed', { threadId: 'thread-1', turn: { ...compactTurn, status: 'completed', items: [{ type: 'contextCompaction', id: 'compact-item' }] } });
+    if (scenario === 'compact-early') { started(); completed(); return setTimeout(() => response(message.id, {}), 20); }
+    response(message.id, {});
+    if (scenario === 'compact-no-start') return;
+    if (scenario === 'compact-interrupt') return setTimeout(started, 25);
+    started();
+    event('turn/completed', { threadId: 'other-thread', turn: { ...compactTurn, status: 'completed' } });
+    event('turn/completed', { threadId: 'thread-1', turn: { ...compactTurn, id: 'wrong-turn', status: 'completed' } });
+    setTimeout(completed, 30);
   } else if (message.method === 'turn/start') {
     turnsStarted++;
     const audit = { argv: process.argv.slice(2), home: process.env.CODEX_HOME, keyPresent: process.env.SUDO_CLI_SESSION_KEY === 'fixture-only', thread: threadParams, params: message.params };
@@ -89,8 +109,10 @@ input.on('line', (line) => {
     const cut = delta.indexOf(Buffer.from('🌍')) + 1;
     process.stdout.write(delta.subarray(0, cut));
     setTimeout(() => { process.stdout.write(delta.subarray(cut)); event('turn/completed', { threadId: 'thread-1', turn: completed }); }, 5);
+  } else if (message.method === 'turn/steer') {
+    response(message.id, { turnId: message.params.expectedTurnId, received: message.params });
   } else if (message.method === 'turn/interrupt') {
-    event('turn/completed', { threadId: 'thread-1', turn: turn('interrupted') });
+    event('turn/completed', { threadId: 'thread-1', turn: { ...turn('interrupted'), id: message.params.turnId } });
     response(message.id, {});
   }
 });

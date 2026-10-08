@@ -19,7 +19,7 @@ test('branded help works without connecting a model or modifying app settings', 
 test('version works with no runtime installed', () => {
   const result = run(['--version'], { SUDO_CLI_CODEX: 'missing-runtime' });
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /0\.3\.0/);
+  assert.match(result.stdout, /0\.4\.0/);
 });
 
 test('missing settings in noninteractive mode are actionable and do not initiate a model request', () => {
@@ -66,4 +66,9 @@ test('permissions and web flags reject invalid values with actionable errors', (
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Use --permissions|Use --web/);
   }
+});
+
+test('reasoning flag validates before connecting or saving state', () => {
+  const result=run(['--effort','invented-level']);
+  assert.equal(result.status,1);assert.match(result.stderr,/effort|reasoning/i);
 });

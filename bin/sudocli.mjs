@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { VERSION } from '../src/version.mjs';
+import { validateReasoningEffort } from '../src/runtime.mjs';
 
 const HELP = `codexcli ${VERSION} | sudocli (sudo cli)
 Your terminal. Your model. Powered by the open-source Codex engine.
 
 First setup: node scripts/setup.mjs (or setup.cmd / sh ./setup)
 Start: sudocli
-Choose a model, endpoint and key interactively. Settings last only this session.
+Choose a model, endpoint and key interactively. /switch saves optional model profiles.
 
 Options:
   --model ID                Model served by your endpoint
@@ -15,6 +16,7 @@ Options:
   --transport FORMAT        chat-completions (default) or responses
   --api-key-env NAME        Read an API key from an environment variable
   --context-window TOKENS   Optional model context limit
+  --effort LEVEL            Optional standard reasoning request; provider-dependent
   --cwd DIRECTORY          Project directory (default: current directory)
   --mcp NAME=URL            Connect an HTTP MCP tool server; repeatable
   --permissions MODE        ask (default) or allow-everything
@@ -25,14 +27,14 @@ Options:
 
 Environment: SUDO_CLI_MODEL, SUDO_CLI_BASE_URL, SUDO_CLI_TRANSPORT,
 SUDO_CLI_API_KEY, SUDO_CLI_CODEX (optional engine executable).
-Model settings and keys are not saved. Worked-time totals persist separately.
+Keys stay in memory. Saved profiles exclude keys. Worked-time totals persist.
 sudocli does not elevate privileges.
 `;
 
 function parse(args) {
   if (args[0] === 'cli') args = args.slice(1);
   const opts = { mcp: [] };
-  const values = { '--model': 'model', '--base-url': 'baseUrl', '--transport': 'transport', '--api-key-env': 'apiKeyEnv', '--context-window': 'contextWindow', '--cwd': 'cwd', '--once': 'once', '--permissions': 'permissions', '--web': 'web' };
+  const values = { '--model': 'model', '--base-url': 'baseUrl', '--transport': 'transport', '--api-key-env': 'apiKeyEnv', '--context-window': 'contextWindow', '--effort':'effort', '--cwd': 'cwd', '--once': 'once', '--permissions': 'permissions', '--web': 'web' };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') opts.help = true;
@@ -47,6 +49,7 @@ function parse(args) {
   }
   if (opts.permissions && !['ask', 'allow-everything'].includes(opts.permissions)) throw new Error('Use --permissions ask or allow-everything.');
   if (opts.web && !['on', 'off'].includes(opts.web)) throw new Error('Use --web on or off.');
+  if(opts.effort)opts.effort=validateReasoningEffort(opts.effort==='default'?undefined:opts.effort);
   return opts;
 }
 
