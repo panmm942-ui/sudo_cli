@@ -8,6 +8,10 @@ A background task does not report successful completion when its native cleanup 
 
 Windows checks the original live engine and captured descendants before terminating its tree. If the engine exits before ownership can be captured, cleanup is reported as unverified. Unix uses a private process group and recorded birth identities. An unobserved orphan or an ambiguous escaped process is also reported as unverified; it is not treated as a successful stop.
 
+Windows metadata helpers restrict module discovery to the stock Windows PowerShell system module directory before loading Microsoft modules. They do not use inherited user module paths.
+
+On macOS, a known helper in a separate process group may exit naturally during the existing 250 ms shutdown grace, such as when its input closes. The CLI does not send individual signals using macOS's second-precision birth metadata. A helper that remains live after that grace keeps cleanup unverified.
+
 `/stop` interrupts the current turn and requests termination of its native background commands. It retains the AI connection for another turn. Closing the session performs the additional process cleanup described above.
 
 The native runtime may refresh its public plugin catalog during startup. This is separate from an AI model request. Cleanup does not disable that catalog or change the selected permission scope.

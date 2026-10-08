@@ -23,7 +23,6 @@ const turn = (status = 'completed', items = []) => ({
   id: 'turn-1', status, items, startedAt: 1, completedAt: status === 'inProgress' ? null : 2,
   durationMs: status === 'inProgress' ? null : 1000, error: status === 'failed' ? { message: 'fixture failure', codexErrorInfo: 'other', additionalDetails: null } : null,
 });
-if (scenario === 'exit-startup') process.exit(7);
 const descendantReady = scenario.startsWith('owned-') ? new Promise(resolve => {
   const worker=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.send({ready:true});setInterval(()=>{},1000);"],{detached:process.platform==='win32',stdio:['ignore','ignore','ignore','ipc']});
   worker.once('message',()=>{event('fixture/descendant',{pid:worker.pid});resolve();});
@@ -39,6 +38,8 @@ input.on('line', async (line) => {
     return;
   }
   if (message.method === 'initialize') {
+    // Fail during initialization, after Unix ownership capture.
+    if (scenario === 'exit-startup') return process.exit(7);
     await descendantReady;
     if (scenario === 'hang-startup' || scenario==='owned-hang-startup') return;
     if (scenario === 'wrong-id') response(String(message.id), { misleading: true });
@@ -89,7 +90,7 @@ input.on('line', async (line) => {
     const audit = { argv: process.argv.slice(2), home: process.env.CODEX_HOME, keyPresent: process.env.SUDO_CLI_SESSION_KEY === 'fixture-only', thread: threadParams, params: message.params, commandTerminations };
     const completed = turn('completed', [{ id: 'assistant-1', type: 'agentMessage', text: JSON.stringify(audit), phase: 'final_answer' }]);
     if (scenario === 'exit-turn') return process.exit(6);
-    if (scenario === 'oversized-line') return process.stdout.write('x'.repeat(8 * 1024 * 1024 + 1));
+    if (scenario === 'oversized-line') { response(message.id, { turn: turn('inProgress') }); return process.stdout.write('x'.repeat(8 * 1024 * 1024 + 1)); }
     if (scenario === 'request-timeout') return;
     if (scenario === 'bad-turn') return response(message.id, { turn: null });
     if (scenario === 'retry-turn' && turnsStarted === 1) return process.stdout.write(`${JSON.stringify({ id: message.id, error: { code: -32000, message: 'fixture rejected' } })}\n`);

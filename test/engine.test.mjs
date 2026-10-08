@@ -318,8 +318,8 @@ test('rejects a runtime request when the app-server stops responding', async (t)
 test('bounds incomplete JSON lines instead of retaining unlimited server output', async (t) => {
   const engine = await createEngine(options('oversized-line'));
   t.after(() => engine.close());
-  // The outer harness must outlast the engine's own 2-second request bound
-  // while the child transfers this 8 MiB fixture under concurrent CI load.
+  // Acknowledge turn/start before streaming the corrupt incomplete line, so
+  // this checks the byte limit within the unchanged bounded outer deadline.
   await assert.rejects(within(engine.startTurn('large output'),5000), /output exceeded/);
 });
 

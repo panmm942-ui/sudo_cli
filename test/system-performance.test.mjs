@@ -108,14 +108,16 @@ test('GPU aggregate keeps real zero usage and partial VRAM capacity truthful', a
   monitor.stop();
 });
 
-test('start returns immediately and CPU/RAM continue during a single pending GPU probe', async () => {
+test('start returns immediately and CPU/RAM continue during a single pending GPU probe', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
   let calls = 0, resolve, ticks = 0;
   const monitor = feature('createSystemPerformance')({ intervalMs: 10, gpuIntervalMs: 10,
     system: { cpus: () => { ticks++; return [cpu(ticks, ticks)]; }, totalmem: () => 100, freemem: () => 50 },
     gpuSampler: () => { calls++; return new Promise(done => { resolve = done; }); } });
+  t.after(() => { monitor.stop(); resolve?.({ source: 'test', adapters: [] }); });
   const result = monitor.start();
   assert.equal(result.status, 'running');
-  await delay(45);
+  t.mock.timers.tick(20);
   assert.ok(ticks >= 3);
   assert.equal(calls, 1);
   const first = monitor.sample(), second = monitor.sample();
@@ -123,7 +125,7 @@ test('start returns immediately and CPU/RAM continue during a single pending GPU
   monitor.stop(); resolve({ source: 'test', adapters: [{ id: 'a', name: 'a', percent: 99 }] });
   await first;
   assert.equal(monitor.snapshot().gpu.percent, null);
-  const stoppedTicks = ticks; await delay(30); assert.equal(ticks, stoppedTicks);
+  const stoppedTicks = ticks; t.mock.timers.tick(30); assert.equal(ticks, stoppedTicks);
 });
 
 test('stop aborts the outstanding probe and failed reads discard stale GPU statistics', async () => {

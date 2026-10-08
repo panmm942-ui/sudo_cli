@@ -1,5 +1,6 @@
 // Fixed read-only probes. No user text or environment credentials enter these scripts.
 export const windowsGpuCounters = `
+$env:PSModulePath = $PSHOME + '\\Modules'
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $engines = @(Get-CimInstance -ClassName Win32_PerfRawData_GPUPerformanceCounters_GPUEngine -ErrorAction Stop | ForEach-Object {
@@ -16,6 +17,7 @@ ConvertTo-Json -InputObject ([pscustomobject]@{engines=$engines;memory=$memory})
 // failed/disabled driver prevents DXGI enumeration. QWORD capacity is read only
 // through the exact PNP instance's Enum.Driver link, never by model-name matching.
 export const windowsGpuInventory = `
+$env:PSModulePath = $PSHOME + '\\Modules'
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $dxgiRows = @()

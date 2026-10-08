@@ -221,12 +221,13 @@ test('a standing-goal heartbeat and its nested cloud task leave one fresh watch 
   const watches=interceptedWatches(t);let cloud=0;
   const {agent,inbox,cwd}=await fixture(t,{watchPaths:['.'],standingGoal:'Explicit standing goal',heartbeatMs:1000,watchDebounceMs:10,assess:async job=>job.source==='standing-goal'?{action:'cloud'}:{action:'local',result:'External edit assessed'},runCloud:async()=>{cloud++;return 'Done';}});
   t.after(()=>watches.restore());await agent.start();
-  await until(()=>agent.snapshot().completed===1&&agent.snapshot().state==='idle');
+  await until(()=>agent.snapshot().completed===1&&agent.snapshot().state==='idle'&&watches.streams.some(stream=>!stream.closed));
   assert.equal(cloud,1);assert.equal(watches.streams.length,2);assert.equal(watches.streams.filter(stream=>!stream.closed).length,1);
   await writeFile(join(cwd,'external.txt'),'later external edit');watches.streams.at(-1).callback('change','external.txt');
-  await until(()=>agent.snapshot().completed===2&&agent.snapshot().state==='idle');
-  assert.equal((await inbox.list()).length,2);assert.equal(watches.streams.filter(stream=>!stream.closed).length,1);
-  await agent.stop();assert.ok(watches.streams.every(stream=>stream.closed));
+  await until(()=>agent.snapshot().completed===2&&agent.snapshot().state==='idle'&&watches.streams.some(stream=>!stream.closed));
+  // Observe the idle stream before inbox I/O can yield to another standing-goal assessment.
+  assert.equal(watches.streams.filter(stream=>!stream.closed).length,1);
+  await agent.stop();assert.equal((await inbox.list()).length,2);assert.ok(watches.streams.every(stream=>stream.closed));
 });
 
 test('an eligible-entry cap disables replay admission without changing a completed task',async t=>{

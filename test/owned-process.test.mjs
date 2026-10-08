@@ -44,6 +44,15 @@ test('a captured descendant is stopped even when its direct parent has already e
   assert.equal(await running(descendant),true);
   await owned.close();assert.equal(await running(descendant),false);
 });
+
+test('an unobserved Unix parent cannot verify an escaped helper after its original group becomes empty',{skip:process.platform==='win32',timeout:20000},async t=>{
+  const {child,descendant,owned}=await fixture(t,{capture:false,escaped:true});
+  const exit=new Promise(resolve=>child.once('exit',resolve));child.send('exit');await exit;
+  assert.equal(child.exitCode,0);
+  await assert.rejects(owned.capture(),/could not be verified/);
+  await assert.rejects(owned.close(),/could not be verified/);
+  assert.equal(await running(descendant),true);
+});
 test('an uncaptured orphan cannot re-anchor a numeric Unix process group',{skip:process.platform==='win32',timeout:20000},async t=>{
   const {child,descendant,owned}=await fixture(t);
   const exit=new Promise(r=>child.once('exit',r));child.send('exit');await exit;

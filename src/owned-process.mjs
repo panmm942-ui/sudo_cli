@@ -37,7 +37,7 @@ async function processTable(deadline = Date.now() + 5000) {
   if (process.platform === 'win32') {
     const executable = win32.join(windowsDirectory(), 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     // Stock module only. Read identity/ancestry, never arguments or environment.
-    const script = "$ErrorActionPreference='Stop';Import-Module ($PSHOME+'\\Modules\\CimCmdlets\\CimCmdlets.psd1');$PSModuleAutoLoadingPreference='None';foreach($p in (Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId,CreationDate)){if($null -eq $p.CreationDate){throw 'identity'};[Console]::WriteLine(('{0} {1} {2}' -f $p.ProcessId,$p.ParentProcessId,$p.CreationDate.ToUniversalTime().Ticks))}";
+    const script = "$ErrorActionPreference='Stop';$env:PSModulePath=$PSHOME+'\\Modules';Import-Module ($PSHOME+'\\Modules\\CimCmdlets\\CimCmdlets.psd1');$PSModuleAutoLoadingPreference='None';foreach($p in (Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId,CreationDate)){if($null -eq $p.CreationDate){throw 'identity'};[Console]::WriteLine(('{0} {1} {2}' -f $p.ProcessId,$p.ParentProcessId,$p.CreationDate.ToUniversalTime().Ticks))}";
     const text = await execute(executable, ['-NoProfile', '-NonInteractive', '-Command', script], deadline);
     rows = text.split(/\r?\n/).filter(line => line.trim()).map(line => {
       const m = /^(\d+) (\d+) (\d+)$/.exec(line.trim()); if (!m) throw failure();
@@ -74,7 +74,7 @@ function closeWindows(pid, root, known, originalAlive) {
   // ChildProcess lifetime check before it can kill an uncaptured root PID.
   const records = JSON.stringify([...known.values()].map(row => ({pid: row.pid, birth: row.birth})));
   if (records.length > 16000) return Promise.reject(failure());
-  const script = `$ErrorActionPreference='Stop';Import-Module ($PSHOME+'\\Modules\\CimCmdlets\\CimCmdlets.psd1');Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1');$PSModuleAutoLoadingPreference='None';
+  const script = `$ErrorActionPreference='Stop';$env:PSModulePath=$PSHOME+'\\Modules';Import-Module ($PSHOME+'\\Modules\\CimCmdlets\\CimCmdlets.psd1');Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1');$PSModuleAutoLoadingPreference='None';
 $owned=@{};foreach($r in (ConvertFrom-Json '${records}')){$owned[[int]$r.pid]=[string]$r.birth};$rootId=${pid};$rootBirth='${root?.birth || ''}';
 function Table {$result=@{};foreach($p in (Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId,CreationDate)){if($p.ProcessId -eq 0){continue};if($null -eq $p.CreationDate){throw 'identity'};$result[[int]$p.ProcessId]=@{pid=[int]$p.ProcessId;ppid=[int]$p.ParentProcessId;birth=[string]$p.CreationDate.ToUniversalTime().Ticks}};if($result.Count -gt ${MAX_PROCESSES}){throw 'limit'};return ,$result}
 $table=Table;if($table.ContainsKey($rootId)){if($rootBirth -and $rootBirth -ne $table[$rootId].birth){throw 'identity'};$rootBirth=$table[$rootId].birth;$owned[$rootId]=$rootBirth}else{if(-not $rootBirth){throw 'unverified'}};
@@ -167,7 +167,10 @@ export function ownProcess(child) {
       if (!sameProcess(record, checked) || !live(checked)) continue;
       // Darwin ps lstart has second precision, insufficient for an escaped
       // individual PID. The private process group remains the safe boundary.
-      if (process.platform === 'darwin') throw failure();
+      if (process.platform === 'darwin') {
+        if (signal === 'SIGTERM') continue; // Observe natural exit during the existing grace; never signal this PID.
+        throw failure();
+      }
       try {process.kill(record.pid, signal);} catch (error) {if (error.code !== 'ESRCH') throw failure();}
     }
   }

@@ -40,7 +40,7 @@ async function ownedGroupStillRunning(pid, timeoutMs = 1000) {
     }, (error, stdout) => error ? failure(error) : success(stdout)));
     let live = false;
     for (const line of text.split('\n').filter(line => line.trim())) {
-      const row = /^\s*(\d+)\s+([A-Za-z+<>]+)\s*$/.exec(line);
+      const row = /^\s*(\d+)\s+([A-Za-z?+<>]+)\s*$/.exec(line);
       if (!row) throw new Error('Process group state could not be verified.');
       if (Number(row[1]) === pid && row[2][0] !== 'Z') live = true;
     }

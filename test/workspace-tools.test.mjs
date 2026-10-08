@@ -169,12 +169,14 @@ for (const reason of ['timed-out','cancelled']) test(`${reason} checks stop a SI
   const timer = reason === 'cancelled' ? setTimeout(() => controller.abort(), 1000) : undefined;
   t.after(() => clearTimeout(timer));
   const [result] = await workspace.runChecks([{ command: process.execPath, args: ['-e', script] }], { timeoutMs: reason === 'timed-out' ? 1000 : 4000, signal: controller.signal });
-  assert.equal(result.status, reason);
-  pid = Number(result.stdout.trim()); assert.ok(pid > 0, 'The owned descendant must report readiness before the timeout');
-  assert.equal(await stillRunning(pid), false, 'runChecks must finish terminating the owned process group before returning');
+  pid = Number(result.stdout.trim());
+  const diagnostic = JSON.stringify({ status: result.status, terminationIncomplete: result.terminationIncomplete === true, exitCode: result.exitCode, signal: result.signal, elapsedMs: result.elapsedMs, reportedPid: Number.isSafeInteger(pid) && pid > 0 });
+  assert.equal(result.status, reason, diagnostic);
+  assert.ok(pid > 0, `The owned descendant must report readiness before the timeout: ${diagnostic}`);
+  assert.equal(await stillRunning(pid), false, `runChecks must finish terminating the owned process group before returning: ${diagnostic}`);
 });
 
-for (const observation of ['zombie','live','invalid','unavailable']) test(`Darwin group EPERM requires bounded ${observation} process-state evidence before cancellation is accepted`,{skip:process.platform==='win32',timeout:5000},async t=>{
+for (const observation of ['zombie','unrelated-unknown','owned-unknown','live','invalid','unavailable']) test(`Darwin group EPERM requires bounded ${observation} process-state evidence before cancellation is accepted`,{timeout:5000},async t=>{
   const {workspace}=await fixture(t),childProcess=createRequire(import.meta.url)('node:child_process');
   const platform=Object.getOwnPropertyDescriptor(process,'platform'),originalKill=process.kill,originalExecFile=childProcess.execFile;
   let group,inspections=0;
@@ -186,7 +188,7 @@ for (const observation of ['zombie','live','invalid','unavailable']) test(`Darwi
     if(file!=='/bin/ps')return originalExecFile(file,args,options,callback);
     inspections++;assert.deepEqual(args,['-A','-o','pgid=,stat=']);assert.equal(options.shell,false);
     assert.ok(options.timeout<=1000);assert.equal(options.env.OPENAI_API_KEY,undefined);
-    const states=observation==='zombie'?`${group} Z+\n${group+1} S\n`:observation==='live'?`${group} S\n${group} Z\n`:'unparseable process state';
+    const states=observation==='zombie'?`${group} Z+\n${group+1} S\n`:observation==='unrelated-unknown'?`${group} Z+\n${group+1} ?N\n`:observation==='owned-unknown'?`${group} ?N\n${group+1} S\n`:observation==='live'?`${group} S\n${group} Z\n`:'unparseable process state';
     queueMicrotask(()=>callback(observation==='unavailable'?Object.assign(new Error('Synthetic unavailable process table.'),{code:'EACCES'}):null,states,''));
   });
   Object.defineProperty(process,'platform',{...platform,value:'darwin'});syncBuiltinESMExports();
@@ -194,12 +196,12 @@ for (const observation of ['zombie','live','invalid','unavailable']) test(`Darwi
   let result;
   try{
     [result]=await workspace.runChecks([{command:process.execPath,args:['-e','setInterval(()=>{},1000)']}],{signal:controller.signal,timeoutMs:3000});
-    assert.equal(result.status,observation==='zombie'?'cancelled':'error');
-    assert.equal(result.terminationIncomplete,observation==='zombie'?undefined:true);
+    assert.equal(result.status,['zombie','unrelated-unknown'].includes(observation)?'cancelled':'error');
+    assert.equal(result.terminationIncomplete,['zombie','unrelated-unknown'].includes(observation)?undefined:true);
     assert.ok(inspections>0,'Darwin EPERM must be resolved by actual process-state inspection');
   }finally{
     clearTimeout(timer);Object.defineProperty(process,'platform',platform);kill.mock.restore();inspect.mock.restore();syncBuiltinESMExports();
-    if(group)try{originalKill(-group,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
+    if(group&&platform.value!=='win32')try{originalKill(-group,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
   }
 });
 
