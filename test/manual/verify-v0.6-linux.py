@@ -69,6 +69,13 @@ def plain(raw):
     return ANSI.sub(b'', body).decode('utf-8', errors='replace')
 
 
+def ready_prompt_visible(raw):
+    # A retained user message starts with the same label. Only the empty final
+    # input line is an editable prompt; earlier prompts and Working echoes are
+    # not evidence that the submitted operation has returned.
+    return bool(re.search(r'(?:\r?\n|^)  you › $', plain(raw)))
+
+
 def sanitized(value):
     text = value if isinstance(value, str) else json.dumps(value, indent=2)
     text = text.replace(KEY, '[redacted]')
@@ -236,7 +243,7 @@ class Terminal:
         return marker
 
     def ready(self, marker=0):
-        self.read_until(lambda raw: re.search(r'(?:\r?\n|^)  you › ', plain(raw[marker:])),
+        self.read_until(lambda raw: ready_prompt_visible(raw[marker:]),
                         expectation='ready prompt')
 
     def command(self, text):
@@ -264,6 +271,7 @@ class Terminal:
         if tail:
             marker = self.answer(marker, tail[0], tail[1])
         self.ready(marker)
+        return marker
 
     def task(self, text):
         baseline = len(requests)
@@ -319,6 +327,22 @@ def progress(label):
     print(f'Observed: {label} ({len(requests)} native model requests)', flush=True)
 
 
+def verify_ready_prompt_regression():
+    samples = [
+        ('\n  you › V6_MULTILINE_PROMPT\n/permissions allow-everything\n  · Working · Ctrl+C to interrupt\n', False),
+        ('\n  you › /status', False),
+        ('\n  you › \n  · Working · Ctrl+C to interrupt\n', False),
+        ('\n  you › \x1b[39m', True),
+        ('\n  you › \x1b7header redraw\x1b8', True),
+    ]
+    for text, expected in samples:
+        assert ready_prompt_visible(text.encode()) is expected, repr(text)
+    results['readyPromptExcludesRenderedUserEchoWhileWorking'] = True
+
+
+verify_ready_prompt_regression()
+
+
 try:
     with tempfile.TemporaryDirectory(prefix='sudocli-v6-native-') as temporary:
         root = Path(temporary)
@@ -330,7 +354,7 @@ try:
         baseline = len(requests)
         assert '/switch' in terminal.command('/help')
         assert 'No AI selected' in terminal.command('/status')
-        terminal.command('/chatt list')
+        terminal.command('/chat list')
         assert 'Project memory is empty' in terminal.command('/memory')
         terminal.multiline('/memory edit', 'V6 approved project rule: preserve human edits and report actual checks.')
         terminal.drain(.3)
@@ -347,7 +371,7 @@ try:
         assert memory_messages and all(message['role'] in ['system', 'developer'] for message in memory_messages)
         assert 'User-approved project memory' in str(memory_messages)
         first_id = chat_pointer(terminal.state)
-        terminal.command('/chatt rename V6 first saved chat')
+        terminal.command('/chat rename V6 first saved chat')
         baseline = len(requests)
         declared = terminal.command('/capabilities declare vision on')
         assert re.search(r'"vision":\s*\{\s*"state": "declared"', declared)
@@ -375,7 +399,11 @@ try:
         # prompts, and pasted slash commands must remain literal model input.
         baseline = len(requests)
         literal_prompt = 'V6_MULTILINE_PROMPT\n/permissions allow-everything\nKeep these lines as literal context.'
-        terminal.multiline('/prompt', literal_prompt)
+        marker = terminal.multiline('/prompt', literal_prompt)
+        terminal.read_until(lambda raw: len(requests)>baseline, expectation='ordinary multiline native request')
+        terminal.read_until(lambda raw: f'V6 response {baseline+1} from ' in plain(raw[marker:]),
+                            expectation='ordinary multiline native answer')
+        terminal.ready(marker)
         assert len(requests) == baseline+1
         assert literal_prompt in json.dumps(requests[-1]['messages']).replace('\\n', '\n')
         assert 'Permissions: Ask' in terminal.command('/status')
@@ -489,7 +517,7 @@ try:
         second_id = chat_pointer(terminal.state)
         assert second_id != first_id
         assert 'FIRST_SAVED_CHAT_BASELINE' not in json.dumps(unrelated['messages'])
-        terminal.command('/chatt open '+first_id)
+        terminal.command('/chat open '+first_id)
         resumed = terminal.task('FIRST_CHAT_CONTINUATION')[0]
         assert 'FIRST_SAVED_CHAT_BASELINE' in json.dumps(resumed['messages'])
         assert 'UNRELATED_SECOND_CHAT' not in json.dumps(resumed['messages'])
@@ -570,11 +598,11 @@ try:
                                                      '--transport', 'chat-completions'])
             fallback.ready()
             assert 'Connection setup failed:' in plain(fallback.transcript)
-            assert 'Continuing offline; /chatt remains available.' in plain(fallback.transcript)
+            assert 'Continuing offline; /chat remains available.' in plain(fallback.transcript)
             assert 'No AI selected' in fallback.command('/status')
-            listing = fallback.command('/chatt list')
+            listing = fallback.command('/chat list')
             assert 'V6 first saved chat' in listing
-            fallback.command('/chatt open '+first_id)
+            fallback.command('/chat open '+first_id)
             assert 'FIRST_SAVED_CHAT_BASELINE' in fallback.command('/history')
             assert_no_requests(baseline, 'invalid explicit connection offline fallback and saved chats')
             fallback.finish()
@@ -586,8 +614,8 @@ try:
         assert 'Local AI on this PC: /local' in plain(inherited.transcript)
         assert 'API key' not in plain(inherited.transcript)
         assert 'No AI selected' in inherited.command('/status')
-        assert 'V6 first saved chat' in inherited.command('/chatt list')
-        inherited.command('/chatt open '+first_id)
+        assert 'V6 first saved chat' in inherited.command('/chat list')
+        inherited.command('/chat open '+first_id)
         assert 'FIRST_SAVED_CHAT_BASELINE' in inherited.command('/history')
         assert_no_requests(baseline, 'inherited model environment leaves interactive startup offline')
         inherited.finish()

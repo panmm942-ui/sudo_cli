@@ -225,7 +225,9 @@ export async function createSessionHome({ baseDir = process.platform==='linux'&&
     path,
     async cleanup() {
       // This exact absolute path is the owned mkdtemp child, never a user-supplied deletion target.
-      await rm(path, { recursive: true, force: true });
+      // Native background helpers and Windows scanners can release a handle just after exit.
+      // Retry only this owned directory; persistent cleanup errors still reject.
+      await rm(path, { recursive: true, force: true, maxRetries:5, retryDelay:100 });
       disposableSessionHomes.delete(path);
     },
   };

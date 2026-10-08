@@ -58,7 +58,9 @@ jobs:
         run: sudo -E "$(command -v node)" scripts/ci/linux-native-preflight.mjs
       - name: Test Windows admission, real engine and local fixtures
         if: runner.os == 'Windows'
-        run: node --test --test-concurrency=4 --test-timeout=120000
+        # Native startup and durable-state fixtures share this small runner.
+        # Serialize files without changing the product's timing limits.
+        run: node --test --test-concurrency=1 --test-timeout=120000
       - name: Test Unix root admission, real engine and local fixtures
         if: runner.os != 'Windows'
         run: sudo -E "$(command -v node)" --test --test-concurrency=4 --test-timeout=120000

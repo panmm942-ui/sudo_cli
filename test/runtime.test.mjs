@@ -4,6 +4,9 @@ import { mkdtemp, writeFile, mkdir, readdir, access, rm, chmod, lstat, symlink }
 import { tmpdir } from './fixtures/temp-root.mjs';
 import { join, delimiter } from 'node:path';
 import * as runtime from '../src/runtime.mjs';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {isolatedEnvironment} from '../src/permission-scope.mjs';
 
 function feature(name) {
   assert.equal(typeof runtime[name], 'function', `${name} must be implemented`);
@@ -143,6 +146,25 @@ test('isolated session home starts empty and cleanup removes only its owned dire
   await access(second.path);
   await access(sentinel);
   await second.cleanup();
+});
+
+test('session cleanup waits for a transient Windows native file lock without deleting siblings', {skip:process.platform!=='win32',timeout:10000}, async t=>{
+  const base=await temporary(t),home=await runtime.createSessionHome({baseDir:base});
+  const sibling=join(base,'keep.txt'),held=join(home.path,'.tmp','plugins-clone-fixture','held.txt');
+  await writeFile(sibling,'keep');await mkdir(join(home.path,'.tmp','plugins-clone-fixture'),{recursive:true});await writeFile(held,'native fixture');
+  const command="$stream=[IO.File]::Open($env:SUDO_CLI_LOCK_FIXTURE_PATH,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None); try { [Console]::WriteLine('LOCK_READY'); Start-Sleep -Milliseconds 450 } finally { $stream.Dispose() }";
+  const child=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{env:isolatedEnvironment(process.env,{SUDO_CLI_LOCK_FIXTURE_PATH:held}),windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const closed=once(child,'close');child.stderr.resume();
+  try {
+    await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(new Error('Native file-lock fixture did not become ready.')),5000);
+      let output='';child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('LOCK_READY')){clearTimeout(timer);resolve();}});
+      child.once('error',()=>{clearTimeout(timer);reject(new Error('Native file-lock fixture could not start.'));});
+      child.once('close',()=>{clearTimeout(timer);if(!output.includes('LOCK_READY'))reject(new Error('Native file-lock fixture exited before readiness.'));});
+    });
+    await home.cleanup();
+    await assert.rejects(access(home.path),{code:'ENOENT'});await access(sibling);
+  } finally { child.kill();await closed; }
 });
 
 test('runtime permissions default to asking and web access defaults to off', () => {

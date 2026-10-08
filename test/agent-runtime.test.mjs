@@ -6,19 +6,20 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import {trackNativeFixture} from './fixtures/native-cleanup.mjs';
 
 const engineFixture = fileURLToPath(new URL('./fixtures/engine-server.mjs', import.meta.url));
 const connection = { model: 'fixture-model', transport: 'chat-completions', baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'runtime-only-secret', contextWindow: 128000, supportedEfforts: ['high'] };
 async function fixture(t, scenario = 'normal') {
   const directory = await mkdtemp(join(tmpdir(), 'codexcli-agent-runtime-test-'));
   const homes = join(directory, 'homes'); await mkdir(homes);
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  trackNativeFixture(t,{cleanup:()=>rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100})});
   const module = await import('../src/agent-runtime.mjs');
   return { ...module, directory, homes, options: { connection, cwd: directory, prompt: 'Run an isolated task.', runtime: { codexPath: [process.execPath, engineFixture, scenario], baseDir: homes, requestTimeoutMs: 1000 } } };
 }
 async function httpFixture(t, handler) {
   const server = createServer(handler); server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  trackNativeFixture(t,{server});
   return `http://127.0.0.1:${server.address().port}`;
 }
 

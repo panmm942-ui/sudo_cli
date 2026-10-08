@@ -12,6 +12,7 @@ import { startBridge } from '../src/bridge.mjs';
 import { createEngine } from '../src/engine.mjs';
 import { providerArgs, createSessionHome } from '../src/runtime.mjs';
 import { createWorkMeter } from '../src/work-meter.mjs';
+import {cleanupNativeFixture} from './fixtures/native-cleanup.mjs';
 
 test('native MCP disabled_tools removes computer actions while retaining other server tools', { timeout: 45000 }, async (t) => {
   let enginePath;
@@ -29,7 +30,7 @@ test('native MCP disabled_tools removes computer actions while retaining other s
   await once(server, 'listening');
   const home = await createSessionHome();
   let engine, bridge;
-  t.after(async () => { await engine?.close(); await bridge?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await home.cleanup(); await rm(workspace, { recursive: true, force: true }); });
+  t.after(()=>cleanupNativeFixture({engine,bridge,server,home,workspace}));
   const connection = { model: 'fixture-model', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, transport: 'chat-completions' };
   bridge = await startBridge(connection);
   const fixture = fileURLToPath(new URL('./fixtures/mcp-server.mjs', import.meta.url));
@@ -66,7 +67,7 @@ test('native engine discovers workspace skills, loads typed skill input, propaga
   const home = await createSessionHome();
   const nativeEvents = [];
   let engine, bridge;
-  t.after(async () => { await engine?.close(); await bridge?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await home.cleanup(); await rm(workspace, { recursive: true, force: true }); });
+  t.after(()=>cleanupNativeFixture({engine,bridge,server,home,workspace}));
   const connection = { model: 'fixture-model', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, transport: 'chat-completions', supportedEfforts: ['high'] };
   bridge = await startBridge(connection);
   engine = await createEngine({ codexPath: enginePath, cwd: workspace, model: connection.model, supportedEfforts: connection.supportedEfforts, onEvent: event => nativeEvents.push(event),
@@ -151,7 +152,7 @@ test('actual Codex engine executes a model tool call inside the selected workspa
   await once(server, 'listening');
   const home = await createSessionHome();
   let engine, bridge;
-  t.after(async () => { await engine?.close(); await bridge?.close(); server.closeAllConnections(); await new Promise(r => server.close(r)); await home.cleanup(); await rm(workspace, { recursive: true, force: true }); });
+  t.after(()=>cleanupNativeFixture({engine,bridge,server,home,workspace}));
   const connection = { model: 'fixture-model', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, transport: 'chat-completions' };
   bridge = await startBridge(connection);
   const approvals = [];
@@ -186,7 +187,7 @@ test('sudo native model tools use the admitted private project owner and disposa
   const quoted=script.replaceAll("'","'\"'\"'"),nodeQuoted=process.execPath.replaceAll("'","'\"'\"'");
   const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);requests.push({body,authorization:req.headers.authorization});const tool=body.messages.findLast(message=>message.role==='tool');const message=tool?{role:'assistant',content:'Private project verified.'}:{role:'assistant',content:null,tool_calls:[{id:'call_private_project',type:'function',function:{name:'exec_command',arguments:JSON.stringify({cmd:`'${nodeQuoted}' -e '${quoted}'`,workdir:workspace,login:false,max_output_tokens:1000})}}]};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({id:`chat-private-${requests.length}`,object:'chat.completion',created:1,model:'private-sudo-fixture',choices:[{index:0,message,finish_reason:tool?'stop':'tool_calls'}]}));});
   server.listen(0,'127.0.0.1');await once(server,'listening');const home=await createSessionHome();let engine,bridge;
-  t.after(async()=>{await engine?.close();await bridge?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await home.cleanup();await rm(root,{recursive:true,force:true});for(const name of names)if(saved[name]===undefined)delete process.env[name];else process.env[name]=saved[name];});
+  t.after(async()=>{try{await cleanupNativeFixture({engine,bridge,server,home,workspace:root});}finally{for(const name of names)if(saved[name]===undefined)delete process.env[name];else process.env[name]=saved[name];}});
   const connection={model:'private-sudo-fixture',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,transport:'chat-completions',apiKey:'synthetic-provider-key-root-only'};bridge=await startBridge(connection);
   engine=await createEngine({codexPath:enginePath,cwd:workspace,model:connection.model,providerArgs:providerArgs(connection,{baseUrl:bridge.baseUrl,scope:'project',webAccess:false}),scope:'project',webAccess:false,env:{...process.env,CODEX_HOME:home.path,SUDO_CLI_SESSION_KEY:bridge.token,OPENAI_API_KEY:'synthetic-root-secret'},onApproval:async()=>false});
   const completed=await engine.startTurn('Verify this private project.');assert.equal(completed.status,'completed');assert.equal(requests.length,2);assert.ok(requests.every(request=>request.authorization==='Bearer synthetic-provider-key-root-only'));
