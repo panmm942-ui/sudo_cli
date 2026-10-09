@@ -1,4 +1,4 @@
-# Using sudocli 0.6.12
+# Using sudocli 0.6.13
 
 Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/textcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
@@ -11,6 +11,8 @@ The Search line in the command picker now holds the cursor, with blank lines bet
 `/loopguard` controls repeated tool action protection and native command timeouts. [Color examples](terminal-colors.md), [reset targets](reset-settings.md), [update setup](github-updates.md), [model connection and coding tests](model-compatibility.md).
 
 Complete [first setup](platforms.md), then launch from the project you want to work on. Windows requires an Administrator terminal; Unix uses `sudo "$HOME/.local/bin/sudocli"` or the full local launcher path. Setup, help, version and doctor work normally without elevation. The CLI never elevates itself.
+
+Project files are indexed in the background at launch, so the prompt and AI connection setup stay available in large folders. Workspace work waits for the initial file baseline; Ctrl+C or `/stop` cancels that wait. Indexing does not animate the antenna. `/changes` reports indexing until its first inventory is ready. Start in your project folder rather than `C:\Windows\System32` to avoid indexing unrelated system files.
 
 The original red SUDO CLI logo, Braille antenna, credits and timing are preserved. A UTF-8 truecolor terminal around 100 columns by 32 rows leaves room for the dashboard and conversation. `NO_COLOR=1` removes colors; `TERM=dumb` uses plain output. The terminal's previous screen returns on normal exit.
 

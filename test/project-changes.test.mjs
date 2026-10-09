@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,readdir,realpath,rename} from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
 import {join,dirname,basename} from 'node:path';
 import {tmpdir as osTmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
@@ -14,6 +15,37 @@ import {isolatedEnvironment} from '../src/permission-scope.mjs';
 async function fixture(t){const root=await mkdtemp(join(tmpdir(),'project-changes-'));const cwd=join(root,'project');await mkdir(cwd);t.after(()=>rm(root,{recursive:true,force:true}));return{root,cwd};}
 function git(cwd,...args){const run=spawnSync('git',['-c','core.hooksPath=','-c','commit.gpgsign=false',...args],{cwd,encoding:'utf8',env:isolatedEnvironment(process.env,{GIT_CONFIG_NOSYSTEM:'1',GIT_TERMINAL_PROMPT:'0'}),timeout:10000,windowsHide:true});assert.equal(run.status,0,'Fixture Git command must succeed.');return run.stdout;}
 const files=service=>service.snapshot().files.map(file=>[file.path,file.status]);
+
+test('initial inventory walks each project directory once while refresh observes later edits',async t=>{
+  const {cwd}=await fixture(t),nested=join(cwd,'nested');await mkdir(nested);await writeFile(join(nested,'file.txt'),'before\n');
+  const original=fsPromises.opendir,traversals=[];
+  const replacement=t.mock.method(fsPromises,'opendir',(...args)=>{traversals.push(args[0]);return original(...args);});
+  syncBuiltinESMExports();t.after(()=>{replacement.mock.restore();syncBuiltinESMExports();});
+  const service=createProjectChanges({cwd});t.after(()=>service.close());await service.initialize();
+  assert.deepEqual(files(service),[]);assert.equal(service.snapshot().partial,false);
+  assert.deepEqual(traversals,[cwd,nested],'Initial inventory must not repeat the real directory traversal.');
+  await writeFile(join(nested,'file.txt'),'after\n');await writeFile(join(cwd,'new.txt'),'new\n');await service.refresh();
+  assert.deepEqual(traversals,[cwd,nested,cwd,nested]);
+  assert.deepEqual(files(service),[['nested/file.txt','modified'],['new.txt','added']]);
+  assert.match(await service.diff('nested/file.txt'),/-before[\s\S]*\+after/);
+});
+
+test('initial reconciliation refuses a project directory replaced after baseline traversal',async t=>{
+  const {cwd,root}=await fixture(t);await writeFile(join(cwd,'file.txt'),'original\n');
+  const original=fsPromises.opendir;let substituted=false;
+  const replacement=t.mock.method(fsPromises,'opendir',async(...args)=>{
+    const directory=await original(...args),iterate=directory[Symbol.asyncIterator].bind(directory);
+    if(args[0]===cwd)directory[Symbol.asyncIterator]=async function*(){
+      for await(const entry of iterate())yield entry;
+      if(!substituted){substituted=true;await rename(cwd,join(root,'original-project'));await mkdir(cwd);await writeFile(join(cwd,'replacement.txt'),'preserve\n');}
+    };
+    return directory;
+  });
+  syncBuiltinESMExports();t.after(()=>{replacement.mock.restore();syncBuiltinESMExports();});
+  const service=createProjectChanges({cwd});t.after(()=>service.close());
+  await assert.rejects(service.initialize(),/excluded|outside|unavailable/);
+  assert.equal(substituted,true);assert.equal(await readFile(join(cwd,'replacement.txt'),'utf8'),'preserve\n');
+});
 
 test('Git inspection works when the native Git build rejects null-device global configs',async t=>{
   const {cwd}=await fixture(t);git(cwd,'init','--quiet');await writeFile(join(cwd,'tracked.txt'),'base\n');git(cwd,'add','--all');git(cwd,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','base');await writeFile(join(cwd,'tracked.txt'),'working\n');

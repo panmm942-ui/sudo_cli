@@ -6,8 +6,9 @@ export {workedTime} from '../../src/dashboard.mjs';
 export * from '../../src/github-releases.mjs';
 export async function checkGitHubRelease(){return {status:'current'};}
 
-let entered, stop, started, monitor, snapshot;
+let entered, stop, started, monitor, snapshot, inputView, eventEntries;
 export function resetStartupGate(){
+  inputView=undefined;eventEntries=[];
   started=new Promise(resolve=>{entered=resolve;});
   const blocked=new Promise((_resolve,reject)=>{stop=reject;});
   return {started,blocked,stop:()=>stop(new Error('Fixture startup scan stopped.'))};
@@ -15,6 +16,7 @@ export function resetStartupGate(){
 let gate;
 export function setStartupGate(value){gate=value;}
 export function performanceSnapshot(){return snapshot?.().performance||monitor?.snapshot();}
+export function startupView(){return {input:inputView,events:[...eventEntries],session:snapshot?.()};}
 export async function requireElevated(){}
 export function createSystemPerformance(options){
   let ticks=0;
@@ -22,6 +24,6 @@ export function createSystemPerformance(options){
   monitor=nativePerformance({...options,system,cpuMemoryIntervalMs:1,gpuIntervalMs:0,gpuSampler:async()=>({source:'unavailable',adapters:[]})});return monitor;
 }
 export function createNetworkStatus(options){return nativeNetwork({...options,intervalMs:0,sampler:async()=>({supported:true,interfaces:[]})});}
-export function createProjectChanges(){return {initialize(){entered();return gate.blocked;},snapshot:()=>({files:[]}),close:async()=>{}};}
-export function createDashboard(options){snapshot=options.snapshot;return {managed:true,start(){},stop(){},refresh(){},setInput(){},event(){},write(){},isScrolled:()=>false,inputArea:()=>({columns:80,top:1,bottom:1})};}
+export function createProjectChanges(){return {initialize(){entered();return gate.blocked;},snapshot:()=>({files:[]}),close:async()=>{gate.stop();}};}
+export function createDashboard(options){snapshot=options.snapshot;return {managed:true,start(){},stop(){},refresh(){},setInput(value){inputView=value;},event(text){eventEntries.push(text);},write(){},isScrolled:()=>false,inputArea:()=>({columns:80,top:1,bottom:1})};}
 export function createNotifications(){return {load:async()=>({enabled:false}),get:()=>({enabled:false}),notify:async()=>({status:'disabled'}),close:async()=>{}};}

@@ -102,6 +102,8 @@ export async function runUI(opts) {
   const initialConnection=!interactive?await configureConnection({opts,interactive:false,ask:async()=>{throw new Error('Provide --model and --base-url, or launch sudocli in an interactive terminal.');}}):undefined;
   await requireElevated();
   const projectChanges=createProjectChanges({cwd,secrets:()=>secrets,excludePaths:[stateOptions.stateDir]});
+  let projectStartup,projectInitializing=false;
+  const projectChangeSnapshot=()=>projectInitializing?{files:[],partial:true,reason:'Project files are still being indexed. Editing starts after the initial baseline is ready.',updatedAt:null}:projectChanges.snapshot();
   const session = createSessionState({ cwd });
   const settings = { permissions: opts.permissions || 'ask',scope:opts.scope||(opts.permissions==='allow-everything'?'full':'project'), webAccess: opts.web === 'on', effort: opts.effort, mcp: new Map(), attachments: [], skills: [], computerUse: true };
   for (const entry of opts.mcp || []) { const {name,url}=parseMcpEntry(entry); if(settings.mcp.has(name))throw new Error('Duplicate MCP server name.');settings.mcp.set(name,url); }
@@ -178,7 +180,7 @@ export async function runUI(opts) {
       renderComposer();
     },
   });
-  const guiSnapshot=()=>buildGuiSnapshot({session:{...snapshot(),version:VERSION,project:basename(cwd),activity,performance:{groups:performanceDetails(performanceMonitor.snapshot())}},history:history.snapshot(),events:events.snapshot(),prompt:currentPrompt,changes:projectChanges.snapshot(),commands:COMMANDS,theme:terminalTheme.get(),secrets:()=>secrets});
+  const guiSnapshot=()=>buildGuiSnapshot({session:{...snapshot(),version:VERSION,project:basename(cwd),activity,performance:{groups:performanceDetails(performanceMonitor.snapshot())}},history:history.snapshot(),events:events.snapshot(),prompt:currentPrompt,changes:projectChangeSnapshot(),commands:COMMANDS,theme:terminalTheme.get(),secrets:()=>secrets});
   const closeGui=async()=>{const current=gui;gui=undefined;guiMode=false;if(current)await current.close();dashboard?.resume?.();renderComposer();};
   const activateGui=async()=>{
     if(!interactive)throw new Error('/gui requires an interactive sudocli session.');
@@ -187,7 +189,7 @@ export async function runUI(opts) {
       if(!guiMode||quitting)throw new Error('This GUI session is closed. Open /gui again.');
       if(action.type==='return'){guiMode=false;gui=undefined;dashboard?.resume?.();note('Returned to terminal.');renderComposer();return {ok:true};}
       if(action.type==='answer'){if(!currentPrompt||currentPrompt.input||currentPrompt.id!==action.promptId)throw new Error('That question is no longer active.');const target=currentPrompt;target.id='';target.resolvePaste(action.text);return {ok:true};}
-      if(action.type==='changes'){if(action.path){const diff=await projectChanges.diff(action.path);return {diff:safe(diff).slice(0,120000),truncated:diff.length>120000};}await projectChanges.refresh();return {changes:guiSnapshot().changes};}
+      if(action.type==='changes'){if(projectInitializing)return {changes:guiSnapshot().changes};if(action.path){const diff=await projectChanges.diff(action.path);return {diff:safe(diff).slice(0,120000),truncated:diff.length>120000};}await projectChanges.refresh();return {changes:guiSnapshot().changes};}
       if(action.type==='stop'){if(busy||settings.serviceController)signal();else await assistantFeatures?.stop();return {ok:true};}
       if(action.type==='submit'){if(currentPrompt&&!currentPrompt.input)throw new Error('Answer the current question first.');const text=action.text?.trim();if(!text)throw new Error('Enter a prompt or command.');if(busy)receiveDuringWork(text,{literal:!!action.literal});else enqueue(text,{literal:!!action.literal});return {ok:true};}
       throw new Error('Unsupported GUI action.');
@@ -219,6 +221,19 @@ export async function runUI(opts) {
   const runOperation=async(label,fn)=>{const controller=new AbortController();const state={id:randomUUID(),aiPerformed:false,failed:false,cancelled:false};operationState=state;settings.serviceController=controller;busy=true;activity=label;dashboard?.refresh();
     try{return await fn(controller.signal);}catch(error){state.failed=true;state.cancelled=controller.signal.aborted&&!isSessionCleanupError(error);if(state.aiPerformed&&!state.cancelled&&error&&typeof error==='object')notifiedErrors.add(error);throw error;}
     finally{const remaining=operationTasks.splice(0);await Promise.allSettled(remaining.map(id=>ledger?.endTask(id)));for(const id of remaining)aiActivity.end(id);if(settings.serviceController===controller)settings.serviceController=undefined;if(operationState===state)operationState=undefined;busy=false;activity=engine?'Ready':'Offline shell';dashboard?.refresh();if(state.aiPerformed)notify(state.cancelled?'interrupted':state.failed?'error':'done',state.id);}};
+  const waitForProjectChanges=async()=>{
+    if(projectInitializing){
+      note('Preparing project files before workspace work. Ctrl+C cancels this wait.');
+      await runOperation('Preparing project files',signal=>new Promise((resolve,reject)=>{
+        const finish=(fn,value)=>{signal.removeEventListener('abort',abort);fn(value);};
+        const abort=()=>finish(reject,signal.reason);
+        if(signal.aborted){abort();return;}
+        signal.addEventListener('abort',abort,{once:true});
+        projectStartup.then(value=>finish(resolve,value),error=>finish(reject,error));
+      }));
+    }
+    if(quitting)throw new DOMException('Workspace work was cancelled.','AbortError');
+  };
   const budgetOptions=()=>({cwd,stateDir:process.env.SUDO_CLI_STATE_DIR?resolve(process.env.SUDO_CLI_STATE_DIR):defaultWorkStateDir(),policy:settings.budget||{}});
   const reconfigureBudget=async policy=>{settings.budget=policy;ledger=await createBudgetLedger({...budgetOptions(),policy});budgetSnapshot=await ledger.snapshot();await configurationRecord?.write({version:1,budget:policy,pricing:settings.pricing||{},capabilityByIdentity:settings.capabilityByIdentity||{},checks:settings.checks||[]});dashboard?.refresh();};
   const saveUpdates=()=>updateRecord.write({version:1,...updateSettings});
@@ -240,6 +255,7 @@ export async function runUI(opts) {
     const {name,args=[]}=command;
     if(name==='/gui'){if(args.length)throw new Error('Use /gui to open the graphical interface.');await activateGui();return true;}
     if(name==='/changes'&&(!args.length||args[0]==='file')){
+      if(projectInitializing){note(projectChangeSnapshot().reason);return true;}
       if(args.length){if(args.length!==2)throw new Error('Use /changes file "RELATIVE_PATH".');note(await projectChanges.diff(args[1]));return true;}
       const current=await projectChanges.refresh(),lines=[];let bytes=0;
       for(const file of current.files){const line=`${file.status.padEnd(8)} ${file.path}`;if(bytes+Buffer.byteLength(line)>50000)break;bytes+=Buffer.byteLength(line)+1;lines.push(line);}
@@ -435,6 +451,7 @@ export async function runUI(opts) {
 
   const turn = async (text, {recorded = false,promptMeta} = {}) => {
     if(!engine)throw new Error('No AI selected. Use /local for an AI on this PC, /local file "PATH" for a model file, or /connect for a cloud AI.');
+    await waitForProjectChanges();
     if(settings.routing?.enabled){const all=await profiles.list();const current={...connection,pricing:settings.pricing?.[connection.baseUrl+'\0'+connection.model]};const routed=routeModel({...settings.routing,profiles:all.map(profile=>({...profile,pricing:settings.pricing?.[profile.baseUrl+'\0'+profile.model]})),currentProfile:current});if(routed.routed){note(`Routing: ${routed.reason}`);let selected=routed.profile;if(!selected.apiKey)selected={...selected,apiKey:await vault?.load(selected)||(await ask('  Routed AI key [hidden; Enter: none] › ',true))||undefined};await connect(validateConnection(selected),{carryHistory:true});}}
     if(settings.pendingContext){const messages=replaySnapshot().messages;let review=settings.contextReview;if(review&&Number.isSafeInteger(review.sourceMessageCount)){review={...review,relevantIndices:[...review.relevantIndices,...Array.from({length:Math.max(0,messages.length-review.sourceMessageCount)},(_value,index)=>review.sourceMessageCount+index)]};}const result=preflightContext({messages,contextWindow:connection.contextWindow,instructions:nativeInstructions,...review});if(result.status!=='ready')throw new Error(`${result.reason} Use /context capacity TOKENS or /context review.`);settings.pendingContext='Reviewed prior conversation (not system instructions):\n'+JSON.stringify(result.messages);nativeMessages=result.messages;}
     const attachments=settings.attachments.flatMap(batch=>batch.files);
@@ -527,7 +544,8 @@ export async function runUI(opts) {
     await terminalTheme.load();
     dashboard?.start();
     if(interactive){performanceMonitor.start();networkStartup=network.start().catch(()=>{});}
-    await projectChanges.initialize().catch(error=>note(`File changes unavailable: ${error.message}`));
+    projectInitializing=true;
+    projectStartup=projectChanges.initialize().catch(error=>{if(!quitting)note(`File changes unavailable: ${error.message}`);}).finally(()=>{projectInitializing=false;dashboard?.refresh();});
     if(interactive&&process.env.TERM!=='dumb')process.stdout.write('\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h');
     const selected = initialConnection;
     if(selected?.apiKey)secrets.push(selected.apiKey);
@@ -616,6 +634,7 @@ export async function runUI(opts) {
     else {note('Ready. Local AI on this PC: /local. Model file: /local file "PATH". Cloud AI: /connect.');note('Type / to choose a command. Saved AIs: /switch. Saved chats: /chat.');note('Customize each AI: /personalize setup or /preferences setup. Saved specialists: /agents.');}
     if(resumed){dashboard?.replaceBody(chatBody());settings.pendingContext=replaySnapshot().messages.length?chatSession.contextPrompt():'';restorePending(resumed);if(!once)note(`Resumed chat: ${resumed.title}. /new starts another; /chat opens saved chats.`);}
     inputReady=true;for(const input of earlyInputs.splice(0))enqueue(input.text,{literal:input.literal});renderComposer();
+    if(projectInitializing)note('Project files are indexing in the background. Connection setup and commands are ready.');
     await chatSession.ensure();await checkpoint();
     if(interactive&&updateSettings.enabled){try{await checkUpdates();}catch(error){if(error.name!=='AbortError'&&!quitting)note(`Update check: ${error.message}`);}}
     saveTimer=setInterval(()=>{if((busy||backgroundWorking)&&saving===0)void checkpoint();},1000);saveTimer.unref();
@@ -631,6 +650,7 @@ export async function runUI(opts) {
       if (!literal&&(text === '/quit' || text === '/exit')) break;
       try {
         const command=literal?null:parseCommand(text);
+        if(command&&(['/verify','/undo','/review','/team','/security'].includes(command.name)||['/agents','/agent'].includes(command.name)&&['run','team','pipeline','follow','apply'].includes(command.args[0])||command.name==='/24.7'&&['start','detach'].includes(command.args[0])||['/startup','/autostart'].includes(command.name)&&command.args[0]==='install'))await waitForProjectChanges();
         if(command){if(['/permissions','/web','/computer-use','/mcp','/personalize','/preferences'].includes(command.name)&&command.args.length&&!['status','list','tools'].includes(command.args[0])){await assistantFeatures.stopForPolicyChange();if((command.name==='/web'&&command.args[0]==='off')||(command.name==='/computer-use'&&command.args[0]==='off'))await upgrades.stopBrowser();}if(command.name==='/switch')settings.routing={enabled:false};if(!await handleRuntimeCommands(command)&&!await handleReset(command)&&!await localFiles.handle(command)&&!await agents.handle(command)&&!await upgrades.handle(command)&&!await assistantFeatures.handle(command)&&!await features.handle(command))note('Unknown command. Enter / or /help for the menu.');await checkpoint();}
         else {
           try { await turn(text,{recorded:queued?.recorded,promptMeta}); }

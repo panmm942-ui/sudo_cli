@@ -155,8 +155,9 @@ export function createProjectChanges({cwd=process.cwd(),secrets=()=>[],excludePa
     }
     return{files:[...files].sort(([a],[b])=>a.localeCompare(b)).map(([path,status])=>({path,status})),partial,untracked};
   }
-  async function reconcile(){
-    const current=await scan();let files=[],partial=current.partial||baseline.partial,reason;gitUntracked=new Set();
+  async function reconcile(inventory){
+    if(inventory)await checkRoot();
+    const current=inventory??await scan();let files=[],partial=current.partial||baseline.partial,reason;gitUntracked=new Set();
     if(await safeGit()){
       try{const changes=await gitChanges();mode='git';files=changes.files;partial=changes.partial;gitUntracked=changes.untracked;}
       catch{check();mode='scan';reason='Git inspection unavailable; showing changes since this session opened.';}
@@ -175,7 +176,7 @@ export function createProjectChanges({cwd=process.cwd(),secrets=()=>[],excludePa
     }
     latest=current;state={files,partial,...(partial?{reason:reason||'Some paths could not be inspected safely or exceeded inventory limits.'}:reason?{reason}:{}),updatedAt:new Date().toISOString()};return snapshot();
   }
-  async function initialize(){return queue(async()=>{if(initialized)return snapshot();root=await realpath(resolve(cwd));rootIdentity=await lstat(root,{bigint:true});if(!rootIdentity.isDirectory())throw unavailable();baseline=await scan();initialized=true;return reconcile();});}
+  async function initialize(){return queue(async()=>{if(initialized)return snapshot();root=await realpath(resolve(cwd));rootIdentity=await lstat(root,{bigint:true});if(!rootIdentity.isDirectory())throw unavailable();baseline=await scan();initialized=true;return reconcile(baseline);});}
   function refresh(){if(pendingRefresh)return pendingRefresh;pendingRefresh=queue(async()=>{if(!initialized)throw new Error('Initialize project changes before refreshing.');return reconcile();}).finally(()=>{pendingRefresh=undefined;});return pendingRefresh;}
   function diff(path){return queue(async()=>{
     if(!initialized||!allowed(path)||!state.files.some(file=>file.path===path))throw unavailable();await inspect(path);
