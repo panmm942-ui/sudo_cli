@@ -6,8 +6,9 @@ const toolIdentifier = value => typeof value === 'string' && value.length > 0 &&
 const executableType = value => typeof value === 'string' && (/_call$/.test(value) || ['mcp_list_tools', 'mcp_approval_request'].includes(value));
 
 /** Request-scoped tool permissions, shared by both provider transports. */
-export function createToolPolicy({ toolsAllowed = true, toolAllowlist } = {}) {
+export function createToolPolicy({ toolsAllowed = true, toolAllowlist, parallelToolCalls } = {}) {
   if (typeof toolsAllowed !== 'boolean') throw new Error('toolsAllowed must be a boolean.');
+  if (parallelToolCalls !== undefined && typeof parallelToolCalls !== 'boolean') throw new Error('parallelToolCalls must be a boolean.');
   if (toolAllowlist !== undefined && (!Array.isArray(toolAllowlist) || toolAllowlist.length > 1024 || toolAllowlist.some(name => !toolIdentifier(name)) || new Set(toolAllowlist).size !== toolAllowlist.length)) throw new Error('Tool permissions must contain unique wire names.');
   const unrestricted = toolsAllowed && toolAllowlist === undefined;
   const selected = new Set(toolAllowlist ?? []), catalog = new Map(), ambiguous = new Set(), items = new Map();
@@ -52,8 +53,12 @@ export function createToolPolicy({ toolsAllowed = true, toolAllowlist } = {}) {
     getToolCatalog: () => [...catalog.keys()].sort(),
     filterRequest(request, { format = 'responses' } = {}) {
       gather(request.tools, format);
-      if (unrestricted) return request;
-      const result = { ...request }, tools = filter(request.tools, format);
+      if (unrestricted && parallelToolCalls !== false) return request;
+      const result = { ...request };
+      // Some endpoints reject the parameter itself, including an explicit false.
+      if (parallelToolCalls === false) delete result.parallel_tool_calls;
+      if (unrestricted) return result;
+      const tools = filter(request.tools, format);
       if (tools.length) result.tools = tools; else delete result.tools;
       if (!tools.length) { delete result.tool_choice; delete result.parallel_tool_calls; }
       else if (result.tool_choice && typeof result.tool_choice === 'object') {

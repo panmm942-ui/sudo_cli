@@ -8,6 +8,56 @@ import { startBridge } from '../src/bridge.mjs';
 
 const SECRET = 'sk-fake-boundary-secret';
 
+test('bridge parallel tool compatibility succeeds against a provider that rejects the parameter while preserving tool work', async t => {
+  const parameters = { type: 'object', properties: { path: { type: 'string' }, options: { type: 'object', properties: { lines: { type: 'integer' } } } }, required: ['path'], additionalProperties: false };
+  const tools = [{ type: 'function', name: 'read', description: 'Read a file', strict: true, parameters }, { type: 'function', name: 'stat', parameters }];
+  const calls = [{ id: 'read-1', type: 'function', function: { name: 'read', arguments: '{"path":"file.txt"}' } }, { id: 'stat-1', type: 'function', function: { name: 'stat', arguments: '{"path":"file.txt"}' } }];
+  for (const parallelToolCalls of [undefined, false]) {
+    const { post, requests } = await setup(t, (request, res, count) => {
+      if (Object.hasOwn(request.body, 'parallel_tool_calls')) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{"error":{"code":"unsupported_parameter","param":"parallel_tool_calls"}}');
+        return;
+      }
+      return count === 1 ? messageResult({ role: 'assistant', content: null, tool_calls: calls }) : messageResult();
+    }, { parallelToolCalls });
+    const response = await post({ input: 'Read and inspect file.txt', tools, tool_choice: 'required', parallel_tool_calls: true, stream: false });
+    assert.equal(response.status, parallelToolCalls === false ? 200 : 400);
+    const result = await response.json();
+    if (parallelToolCalls !== false) continue;
+    assert.deepEqual(requests[0].body.tools, [{ type: 'function', function: { name: 'read', description: 'Read a file', parameters, strict: true } }, { type: 'function', function: { name: 'stat', parameters } }]);
+    assert.equal(requests[0].body.tool_choice, 'required');
+    assert.equal(Object.hasOwn(requests[0].body, 'parallel_tool_calls'), false);
+    assert.deepEqual(result.output.map(({ type, name, call_id, arguments: args }) => ({ type, name, call_id, arguments: args })), [{ type: 'function_call', name: 'read', call_id: 'read-1', arguments: '{"path":"file.txt"}' }, { type: 'function_call', name: 'stat', call_id: 'stat-1', arguments: '{"path":"file.txt"}' }]);
+    const input = [{ role: 'user', content: 'Read and inspect file.txt' }, ...result.output, ...result.output.map(call => ({ type: 'function_call_output', call_id: call.call_id, output: 'done' }))];
+    const followup = await post({ input, tools, parallel_tool_calls: false, stream: false });
+    assert.equal(followup.status, 200); await followup.text();
+    assert.deepEqual(requests[1].body.messages[1].tool_calls, calls);
+    assert.deepEqual(requests[1].body.messages.slice(2), [{ role: 'tool', tool_call_id: 'read-1', content: 'done' }, { role: 'tool', tool_call_id: 'stat-1', content: 'done' }]);
+  }
+});
+
+test('bridge parallel tool compatibility preserves explicit caller values when supported', async t => {
+  for (const parallelToolCalls of [undefined, true]) {
+    const { post, requests } = await setup(t, () => messageResult(), { parallelToolCalls });
+    for (const value of [undefined, true, false]) {
+      const response = await post({ input: 'Hello', tools: [{ type: 'function', name: 'read' }], ...(value === undefined ? {} : { parallel_tool_calls: value }) });
+      assert.equal(response.status, 200); await response.text();
+      assert.equal(Object.hasOwn(requests.at(-1).body, 'parallel_tool_calls'), value !== undefined);
+      assert.equal(requests.at(-1).body.parallel_tool_calls, value);
+    }
+  }
+});
+
+test('bridge parallel tool compatibility validates configuration before starting', async () => {
+  for (const parallelToolCalls of [null, 'false', 0]) {
+    await assert.rejects(async () => {
+      const bridge = await startBridge({ baseUrl: 'http://127.0.0.1:1/v1', model: 'fixture', parallelToolCalls });
+      await bridge.close();
+    }, /parallelToolCalls must be a boolean/);
+  }
+});
+
 test('MiMo-shaped streaming chunks accept null role and tool_calls and replay reasoning', async t => {
   const {post,requests}=await setup(t,(_request,res)=>{
     res.writeHead(200,{'content-type':'text/event-stream'});

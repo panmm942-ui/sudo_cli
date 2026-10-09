@@ -371,12 +371,12 @@ export async function runUI(opts) {
     const env = isolatedEnvironment(process.env,{ CODEX_HOME: home.path, SUDO_CLI_SESSION_KEY: selected.apiKey || '' });
     let baseUrl = selected.baseUrl;
     if (selected.transport === 'chat-completions') {
-      bridge = await startBridge({ baseUrl, model: selected.model, apiKey: selected.apiKey,streaming:settings.capabilities.streaming!==false, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
+      bridge = await startBridge({ baseUrl, model: selected.model, apiKey: selected.apiKey,streaming:settings.capabilities.streaming!==false, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,parallelToolCalls:settings.capabilities.parallelToolCalls,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
       baseUrl = bridge.baseUrl;
       env.SUDO_CLI_SESSION_KEY = bridge.token;
       secrets.push(bridge.token);
     } else {
-      bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
+      bridge = await startResponsesMonitor({ baseUrl, apiKey: selected.apiKey, onMetrics: metrics,requestHooks,toolsAllowed:settings.capabilities.tools!==false,parallelToolCalls:settings.capabilities.parallelToolCalls,toolAllowlist:settings.toolAllowlist,onPolicyError:policyError,reasoningPolicy:()=>({effort:settings.effort,supportedEfforts:connection?.supportedEfforts,capabilities:settings.capabilities}) });
       baseUrl = bridge.baseUrl; env.SUDO_CLI_SESSION_KEY = bridge.token; secrets.push(bridge.token);
     }
     checkStartup();

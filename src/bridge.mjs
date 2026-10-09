@@ -491,12 +491,12 @@ async function readUpstream(response) {
 }
 
 /** Start a private, authenticated Responses-to-Chat-Completions adapter. */
-export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,streaming=true, toolsAllowed = true, toolAllowlist, reasoningPolicy, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
+export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,streaming=true, toolsAllowed = true, toolAllowlist, parallelToolCalls, reasoningPolicy, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
   const url = endpoint(baseUrl);
   if (!validModel(model)) throw new Error('A nonempty model identifier without control characters is required.');
   if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || /[\r\n]/.test(apiKey))) throw new Error('If provided, the API key must be a nonempty string without line breaks.');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new Error('timeoutMs must be a positive integer within the timer range.');
-  createToolPolicy({ toolsAllowed, toolAllowlist });
+  createToolPolicy({ toolsAllowed, toolAllowlist, parallelToolCalls });
   if (typeof onPolicyError !== 'function') throw new Error('The model policy callback must be a function.');
   if (reasoningPolicy !== undefined && typeof reasoningPolicy !== 'function') throw new Error('The reasoning policy must be a function.');
   const token = randomBytes(32).toString('hex');
@@ -540,7 +540,7 @@ export async function startBridge({ baseUrl, model, apiKey, timeoutMs = 120000,s
       if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') throw new BridgeError(415, 'Compressed request bodies are unsupported.');
       const body = await readRequest(req);
       const { request: preparedRequest, custom, toolNames } = modelRequest(body, model, reasoning, toolsAllowed);
-      const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist });
+      const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist, parallelToolCalls });
       let request = toolPolicy.filterRequest(preparedRequest, { format: 'chat-completions' });
       if(reasoningPolicy)request=applyReasoningPolicy(request,reasoningPolicy(),{format:'chat-completions'});
       if(!streaming){request.stream=false;delete request.stream_options;}

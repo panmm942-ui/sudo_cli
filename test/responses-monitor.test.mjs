@@ -3,6 +3,71 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
+import { startResponsesMonitor } from '../src/responses-monitor.mjs';
+
+test('native parallel tool compatibility succeeds against a provider rejecting the parameter and preserves schemas and history', async t => {
+  const tools = [{ type: 'function', name: 'read', description: 'Read a file', strict: true, parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } }, { type: 'custom', name: 'patch', format: { type: 'grammar', syntax: 'lark', definition: 'start: "patch"' } }, { type: 'web_search' }, { type: 'namespace', name: 'files', tools: [{ type: 'function', name: 'stat', parameters: { type: 'object', properties: {} } }] }];
+  const input = [{ role: 'user', content: 'Read file.txt' }, { type: 'function_call', name: 'read', call_id: 'previous', arguments: '{"path":"file.txt"}' }, { type: 'function_call_output', call_id: 'previous', output: 'contents' }];
+  const output = [{ type: 'function_call', name: 'read', call_id: 'next', arguments: '{"path":"next.txt"}' }, { type: 'custom_tool_call', name: 'patch', call_id: 'patch-1', input: 'patch' }];
+  const source = JSON.stringify({ object: 'response', status: 'completed', output });
+  for (const parallelToolCalls of [undefined, false]) {
+    let received;
+    const { post, metrics } = await fixture(t, async (req, res) => {
+      let raw = ''; for await (const chunk of req) raw += chunk; received = JSON.parse(raw);
+      if (Object.hasOwn(received, 'parallel_tool_calls')) {
+        res.writeHead(400, { 'content-type': 'application/json' }); res.end('{"error":{"code":"unsupported_parameter","param":"parallel_tool_calls"}}'); return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(source);
+    }, { parallelToolCalls });
+    for (const value of [true, false]) {
+      const response = await post({ body: JSON.stringify({ model: 'fixture', stream: false, input, tools, tool_choice: 'required', parallel_tool_calls: value }) });
+      assert.equal(response.status, parallelToolCalls === false ? 200 : 400);
+      const body = await response.text();
+      if (parallelToolCalls !== false) continue;
+      assert.equal(body, source);
+      assert.deepEqual(received, { model: 'fixture', stream: false, input, tools, tool_choice: 'required' });
+      assert.equal(metrics.at(-1).phase, 'succeeded');
+    }
+  }
+});
+
+test('native parallel tool compatibility preserves supported explicit values and original bytes', async t => {
+  for (const parallelToolCalls of [undefined, true]) {
+    let received;
+    const { post } = await fixture(t, async (req, res) => {
+      received = ''; for await (const chunk of req) received += chunk;
+      res.end('{"object":"response","status":"completed","output":[]}');
+    }, { parallelToolCalls });
+    for (const value of [undefined, true, false]) {
+      const source = '{ "model": "fixture", "tools": [{"type":"function","name":"read"}]' + (value === undefined ? '' : ', "parallel_tool_calls": ' + value) + ' }';
+      const response = await post({ body: source });
+      assert.equal(response.status, 200); await response.text();
+      assert.equal(received, source);
+    }
+  }
+});
+
+test('native parallel tool compatibility leaves unrestricted event forwarding permissive', async t => {
+  const source = 'data: provider-extension\n\ndata: {"type":"response.function_call_arguments.delta","delta":"{}"}\n\ndata: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","name":"provider-extension"}]}}\n\n';
+  const { post, metrics } = await fixture(t, async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    if (Object.hasOwn(JSON.parse(raw), 'parallel_tool_calls')) { res.writeHead(400); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(source);
+  }, { parallelToolCalls: false });
+  const response = await post({ body: '{"model":"fixture","stream":true,"parallel_tool_calls":true}' });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), source);
+  assert.equal(metrics.at(-1).phase, 'succeeded');
+});
+
+test('native parallel tool compatibility validates configuration before starting', async () => {
+  for (const parallelToolCalls of [null, 'false', 0]) {
+    await assert.rejects(async () => {
+      const monitor = await startResponsesMonitor({ baseUrl: 'http://127.0.0.1:1/v1', parallelToolCalls });
+      await monitor.close();
+    }, /parallelToolCalls must be a boolean/);
+  }
+});
 
 async function fixture(t, handler, options = {}) {
   const metrics = [];

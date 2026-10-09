@@ -19,10 +19,10 @@ const reportedUsage = usage => {
 };
 
 /** Private pass-through for native Responses. Content is neither logged nor saved. */
-export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 120000, toolsAllowed = true, toolAllowlist, reasoningPolicy, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
+export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 120000, toolsAllowed = true, toolAllowlist, parallelToolCalls, reasoningPolicy, onPolicyError = () => {}, onMetrics = () => {}, requestHooks = {}, beforeRequest = requestHooks.beforeRequest, onUsage = requestHooks.onUsage, afterRequest = requestHooks.afterRequest } = {}) {
   const connection = validateConnection({ model: 'responses-monitor', baseUrl, apiKey, transport: 'responses' });
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new Error('Invalid model timeout.');
-  createToolPolicy({ toolsAllowed, toolAllowlist });
+  createToolPolicy({ toolsAllowed, toolAllowlist, parallelToolCalls });
   if (typeof onPolicyError !== 'function') throw new Error('The model policy callback must be a function.');
   if (reasoningPolicy !== undefined && typeof reasoningPolicy !== 'function') throw new Error('The reasoning policy must be a function.');
   const endpoint = connection.baseUrl.replace(/\/$/, '') + '/responses';
@@ -71,11 +71,11 @@ export async function startResponsesMonitor({ baseUrl, apiKey, timeoutMs = 12000
       let outgoing = Buffer.concat(chunks), request;
       try { request = JSON.parse(outgoing.toString('utf8')); } catch { return json(res, 400, 'Model requests must contain JSON.'); }
       if (!request || typeof request !== 'object' || Array.isArray(request)) return json(res, 400, 'Model requests must contain a JSON object.');
-      const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist });
+      const toolPolicy = createToolPolicy({ toolsAllowed, toolAllowlist, parallelToolCalls });
       request = toolPolicy.filterRequest(request);
       if(reasoningPolicy)request=applyReasoningPolicy(request,reasoningPolicy());
       latestToolCatalog = toolPolicy.getToolCatalog().filter(name => !connection.apiKey || !name.includes(connection.apiKey));
-      if (!toolPolicy.unrestricted || reasoningPolicy) outgoing = Buffer.from(JSON.stringify(request));
+      if (!toolPolicy.unrestricted || parallelToolCalls === false || reasoningPolicy) outgoing = Buffer.from(JSON.stringify(request));
       model = request.model;
       requestId = randomUUID(); started = performance.now();
       let reservation;

@@ -1,4 +1,4 @@
-# Using sudocli 0.6.11
+# Using sudocli 0.6.12
 
 Your text defaults to bright green (`#00FF00`). Assistant replies and notices use soft white. Use `/bgcolor COLOR` and `/textcolor COLOR` for saved colors below the dashboard. Similar text/background colors adjust for readability.
 
@@ -54,7 +54,9 @@ Use the model's actual capacity; the number above is an example. Selected AI and
 
 Saved profiles retain nonsecret model/endpoint/protocol metadata, optional capacity and explicitly declared effort/capability information. They do not contain API-key values. `/switch remove NAME` removes a profile. `/switch` alone lists choices; switching sends no chat until your next task.
 
-`/capabilities` distinguishes observed facts, declarations and unknown support for text, streaming, tools, vision, reasoning, audio, structured output, hosted search, training and model discovery. `/capabilities declare FEATURE on|off` records your known service support. An observation from one model is not proof about another model. Unsupported declared features are refused; unknown support stays labelled.
+`/capabilities` distinguishes observed facts, declarations and unknown support for text, streaming, tools, parallel tool calls, vision, reasoning, audio, structured output, hosted search, training and model discovery. `/capabilities declare FEATURE on|off` records your known service support. An observation from one model is not proof about another model. Unsupported declared features are refused; unknown support stays labelled.
+
+If your provider rejects `parallel_tool_calls`, use `/capabilities declare parallelToolCalls off`. Both API formats omit that unsupported parameter while retaining their tool definitions, approvals and tool results. This declaration is saved for the selected endpoint/model/protocol; undeclared connections retain their existing behavior.
 
 For reasoning, `/effort supported low,medium,high` declares permitted values. `/effort default` omits the effort override from the provider request, even if the native model catalog suggested a level. An explicit supported selection replaces that suggestion on each request. A model name or parameter count never proves these capabilities. See [model compatibility](model-compatibility.md).
 

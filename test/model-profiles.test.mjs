@@ -28,6 +28,21 @@ test('profiles validate URLs and capability fields before saving without echoing
   }
   assert.deepEqual(await profiles.list(), []);
 });
+
+test('model profiles retain a per-AI parallel-call declaration without disabling tools', async t => {
+  const { profiles, stateDir } = await store(t);
+  await profiles.save({ ...connection, capabilities: { tools: true, parallelToolCalls: false } });
+  await profiles.save({ ...connection, name: 'Other AI', model: 'other-model', capabilities: { tools: true } });
+  const { createModelProfiles } = await import('../src/model-profiles.mjs');
+  const reopened = await createModelProfiles({ stateDir });
+  assert.deepEqual((await reopened.get(connection.name)).capabilities, { tools: true, parallelToolCalls: false });
+  assert.deepEqual((await reopened.get('Other AI')).capabilities, { tools: true });
+  assert.equal((await reopened.get(connection.name)).model, 'local-model');
+  for (const parallelToolCalls of ['off', null, 0]) {
+    await assert.rejects(profiles.save({ ...connection, capabilities: { tools: true, parallelToolCalls } }), /boolean declarations/i);
+  }
+  assert.deepEqual((await reopened.get(connection.name)).capabilities, { tools: true, parallelToolCalls: false });
+});
 test('concurrent distinct profiles are preserved and traversal-like names cannot escape storage', async t => {
   const { profiles, stateDir } = await store(t);
   await Promise.all(Array.from({ length: 12 }, (_, index) => profiles.save({ ...connection, name: index === 0 ? '../outside' : `Model ${index}` })));

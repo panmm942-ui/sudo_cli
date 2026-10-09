@@ -11,7 +11,7 @@ const controlCharacters = /[\u0000-\u001f\u007f]/;
 // Pinned native ReasoningEffort strings. A provider may additionally declare
 // its own values; accepting a native value is not a claim of model support.
 export const REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']);
-export const CAPABILITY_NAMES = Object.freeze(['text', 'streaming', 'tools', 'vision', 'reasoning', 'audio', 'structuredOutput', 'hostedSearch', 'training', 'modelDiscovery']);
+export const CAPABILITY_NAMES = Object.freeze(['text', 'streaming', 'tools', 'parallelToolCalls', 'vision', 'reasoning', 'audio', 'structuredOutput', 'hostedSearch', 'training', 'modelDiscovery']);
 const effortIdentifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
 
 export function validateCapabilities(value) {

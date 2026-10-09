@@ -168,7 +168,7 @@ test('GPU hook bounds response bytes, request time and cancellation', async t =>
   await assert.rejects(gpuHook({ url: hanging, signal: controller.signal }), { name: 'AbortError' });
 });
 
-test('agent runtime uses real native Codex workspace tools through a loopback model fixture', { timeout: 45000 }, async t => {
+test('agent runtime keeps native workspace tools enabled when the model disables parallel-call parameters', { timeout: 45000 }, async t => {
   const { localCodex } = await import('../src/local-engine.mjs');
   let codexPath; try { codexPath = localCodex(); } catch { t.skip('Install the native Codex runtime'); return; }
   const { runAgentTask, options, homes } = await fixture(t);
@@ -182,17 +182,18 @@ test('agent runtime uses real native Codex workspace tools through a loopback mo
     };
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ id: 'chatcmpl-agent', object: 'chat.completion', model: connection.model, choices: [{ index: 0, message, finish_reason: tool ? 'stop' : 'tool_calls' }] }));
   });
-  const result = await runAgentTask({ ...options, settings: { scope: 'full', webAccess: true }, connection: { ...connection, baseUrl: `${url}/v1` }, developerInstructions: 'Use the native workspace tools.', runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 }, onApproval: async ({ method, params }) => method === 'item/commandExecution/requestApproval' && String(params.command).includes('agent-proof.txt') });
+  const result = await runAgentTask({ ...options, settings: { scope: 'full', webAccess: true, capabilities: { tools: true, parallelToolCalls: true } }, connection: { ...connection, baseUrl: `${url}/v1`, capabilities: { tools: true, parallelToolCalls: false } }, developerInstructions: 'Use the native workspace tools.', runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 }, onApproval: async ({ method, params }) => method === 'item/commandExecution/requestApproval' && String(params.command).includes('agent-proof.txt') });
   assert.match(result.text, /Native agent task finished/);
   assert.match(await readFile(join(options.cwd, 'agent-proof.txt'), 'utf8'), /native runtime proof/);
   assert.equal(requests.length, 2);
   assert.equal(requests[0].reasoning_effort, undefined);
+  assert.ok(requests.every(request=>!Object.hasOwn(request,'parallel_tool_calls')));
   assert.ok(requests[0].tools.some(tool => tool.function?.name === 'exec_command'));
   assert.ok(JSON.stringify(requests[0].messages).includes('Use the native workspace tools.'));
   assert.deepEqual(await readdir(homes), []);
 });
 
-test('native Responses agent tasks use the selected API key and redact final output', { timeout: 45000 }, async t => {
+test('native Responses agent tasks omit unsupported parallel calls while preserving tools and redaction', { timeout: 45000 }, async t => {
   const { localCodex } = await import('../src/local-engine.mjs');
   let codexPath; try { codexPath = localCodex(); } catch { t.skip('Install the native Codex runtime'); return; }
   const { runAgentTask, options, homes } = await fixture(t);
@@ -213,10 +214,12 @@ test('native Responses agent tasks use the selected API key and redact final out
     for (const event of events) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     res.end();
   });
-  const result = await runAgentTask({ ...options, connection: { ...connection, transport: 'responses', baseUrl: `${url}/v1` }, runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 } });
+  const result = await runAgentTask({ ...options, settings: { capabilities: { tools: true, parallelToolCalls: false } }, connection: { ...connection, transport: 'responses', baseUrl: `${url}/v1` }, runtime: { ...options.runtime, codexPath, requestTimeoutMs: 10000 } });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].path, '/v1/responses');
   assert.equal(requests[0].auth, `Bearer ${connection.apiKey}`);
+  assert.ok(!Object.hasOwn(requests[0].body,'parallel_tool_calls'));
+  assert.ok(requests[0].body.tools.some(tool=>tool.name==='exec_command'));
   assert.match(result.text, /Native response \[redacted\] done/);
   assert.ok(!result.text.includes(connection.apiKey));
   assert.deepEqual(await readdir(homes), []);
